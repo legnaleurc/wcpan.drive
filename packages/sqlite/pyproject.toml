@@ -1,0 +1,30 @@
+[project]
+name = "wcpan-drive-sqlite"
+version = "2.1.0"
+description = "sqlite3 snapshot service for wcpan.drive"
+license = "MIT"
+readme = "README.md"
+authors = [
+    {name = "Wei-Cheng Pan", email = "legnaleurc@gmail.com"}
+]
+requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    "wcpan-drive-core>=4.1.0",
+]
+
+[project.urls]
+source = "https://github.com/legnaleurc/wcpan.drive.sqlite"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["wcpan"]

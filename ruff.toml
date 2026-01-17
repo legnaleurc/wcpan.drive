@@ -1,0 +1,39 @@
+target-version = "py312"
+line-length = 88
+
+extend-exclude = [
+    ".venv",
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # isort
+    "W",     # pycodestyle warnings
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "C4",    # flake8-comprehensions
+    "SIM",   # flake8-simplify
+]
+
+ignore = [
+    "E501",  # Line too long (handled by formatter)
+]
+
+[lint.isort]
+lines-after-imports = 2
+known-first-party = ["wcpan"]
+
+[lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "PLR2004"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
