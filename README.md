@@ -35,9 +35,18 @@ module paths from `wcpan.drive.google`, `.crypt`, and `.sqlite` to
 `wcpan.drive.client.google`, `.crypt`, and `.sqlite`, respectively.
 
 This initialization preserves the existing Synology-backed behavior. Backend
-contracts, generic reconciliation, and per-file hash algorithms remain planned
-work in `PLAN.md`; the server still contains Synology-specific orchestration and
-requires the Synology adapter to run. No filesystem backend is shipped yet.
+contracts and generic reconciliation remain planned work in `PLAN.md`; the server
+still contains Synology-specific orchestration and requires the Synology adapter
+to run. No filesystem backend is shipped yet.
+
+Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm in
+`hash_algorithm` (both empty for directories and for files without a checksum).
+Each provider defines its identifiers: Google reports `md5`, the Synology backend
+reports `md4`, and the remote client accepts `md4`, `md5`, `sha1`, and `sha256`. Use `Drive.get_hasher_factory(node)` to verify
+a file; it raises `UnsupportedHashAlgorithmError` instead of guessing. The client
+service API version is 6. The server migrates its database to schema 4, marking
+existing Synology digests as `md4`. Existing client SQLite snapshots (schema 6)
+are rejected and must be rebuilt or migrated manually to schema 7.
 
 ```bash
 uv sync --all-packages --locked

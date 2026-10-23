@@ -1,8 +1,10 @@
 # Drive client/server workspace and extraction plan
 
 Status: the uv workspace and namespace migration are initialized at version
-`0.1.0`. The generic backend architecture and hash interface changes below remain
-planned; initialization preserves the existing protocol and Synology behavior.
+`0.1.0`. The flat `hash`/`hash_algorithm` model and per-node hasher selection are
+implemented in this repository (protocol, server, and all client packages; client
+service API version 6). duld migration, pending-checksum visibility (decision 4),
+and the generic backend architecture below remain planned.
 
 ## Objective
 
@@ -340,8 +342,8 @@ Coordinated changes are required outside this repository:
 - Provider clients: populate the algorithm and select a compatible per-file
   factory. Google can keep its fixed MD5 implementation; the feed client selects
   from the returned node rather than hard-coding MD4.
-- `wcpan-drive-client-sqlite`: persist the algorithm and migrate existing records with a
-  source-aware policy. Remove assumptions that hash nullability identifies a
+- `wcpan-drive-client-sqlite`: persist the algorithm; existing snapshots are rebuilt or
+  migrated manually. Remove assumptions that hash nullability identifies a
   directory; pending or malformed file metadata must not change node kind.
 - `wcpan-drive-client-crypt`: forward node context and preserve the encrypt-before-hash
   wrapper. A global algorithm lookup must not bypass service transformations.
