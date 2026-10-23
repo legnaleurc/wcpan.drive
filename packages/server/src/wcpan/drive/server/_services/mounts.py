@@ -1,0 +1,191 @@
+"""Mounts, and the virtual root and mount nodes owned by the core.
+
+The root is the only node without a parent, and a mount's node is the root's
+child named after the mount. Their IDs are assigned when first seen and are
+opaque; renaming a mount in the config makes it a new mount.
+"""
+
+import uuid
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+
+from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE, utc_now
+from wcpan.drive.protocol.types import NodeId, NodeRecord
+
+from .._types import NodeObservation
+from .mirror.store import (
+    MirrorReader,
+    MirrorStore,
+)
+from .sync.service import NodeSyncService
+
+
+def _new_structural_id() -> NodeId:
+    """An ID for the root or a mount seen for the first time."""
+    return NodeId(uuid.uuid4().hex)
+
+
+def _virtual_directory(
+    node_id: NodeId, parent_id: NodeId | None, name: str
+) -> NodeRecord:
+    now = utc_now()
+    return NodeRecord(
+        id=node_id,
+        parent_id=parent_id,
+        name=name,
+        is_directory=True,
+        created_time=now,
+        modified_time=now,
+        changed_time=now,
+        mime_type=FOLDER_MIME_TYPE,
+        hash="",
+        hash_algorithm="",
+        size=0,
+        is_image=False,
+        is_video=False,
+        width=0,
+        height=0,
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class Mount:
+    """A configured mount: its name, the node it appears as, and its source."""
+
+    name: str
+    id: NodeId
+    # Source location, interpreted by the backend serving the mount.
+    source: str
+
+
+class Mounts(Mapping[str, Mount]):
+    """Mounts by name, with lookup by node ID, and the root they are under.
+
+    The core builds the full set from the config and hands each backend
+    instance the subset it serves. Node IDs of the root and mounts are opaque
+    to backends.
+    """
+
+    def __init__(self, mounts: Iterable[Mount] = (), *, root_id: NodeId) -> None:
+        self._root_id = root_id
+        self._by_name = {m.name: m for m in mounts}
+        self._by_id = {m.id: m for m in self._by_name.values()}
+
+    @property
+    def root_id(self) -> NodeId:
+        """The server root, parent of every mount."""
+        return self._root_id
+
+    def __getitem__(self, name: str) -> Mount:
+        return self._by_name[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._by_name)
+
+    def __len__(self) -> int:
+        return len(self._by_name)
+
+    def __repr__(self) -> str:
+        return f"Mounts({list(self._by_name.values())!r}, root_id={self._root_id!r})"
+
+    def subset(self, names: Iterable[str]) -> "Mounts":
+        return Mounts((self._by_name[name] for name in names), root_id=self._root_id)
+
+    def replace(self, mounts: Iterable[Mount]) -> "Mounts":
+        """Other *mounts* under the same root."""
+        return Mounts(mounts, root_id=self._root_id)
+
+    def by_id(self, node_id: NodeId) -> Mount | None:
+        """The mount whose node is *node_id*."""
+        return self._by_id.get(node_id)
+
+    def of_chain(self, ancestors: Sequence[NodeRecord]) -> Mount | None:
+        """The mount an ancestor chain from ``MirrorStore.get_ancestors`` ends under.
+
+        ``None`` for an empty or detached chain, or one under another mount.
+        """
+        if not ancestors:
+            return None
+        parent_id = ancestors[-1].parent_id
+        return self.by_id(parent_id) if parent_id is not None else None
+
+    async def source_path(
+        self, record: NodeRecord, *, mirror: MirrorReader
+    ) -> str | None:
+        """*record*'s path in its mount source, from its mirrored parent.
+
+        *record* itself need not be mirrored. ``None`` when its parent is not
+        under a mount.
+        """
+        if record.parent_id is None:
+            return None
+        names = [record.name]
+        mount = self.by_id(record.parent_id)
+        if mount is None:
+            ancestors = await mirror.get_ancestors(record.parent_id)
+            mount = self.of_chain(ancestors)
+            if mount is None:
+                return None
+            names = [a.name for a in reversed(ancestors)] + names
+        return "/".join([mount.source.rstrip("/"), *names])
+
+    async def containing(
+        self, node_id: NodeId, *, mirror: MirrorReader
+    ) -> Mount | None:
+        """The mount that is or contains *node_id*, or ``None``."""
+        mount = self.by_id(node_id)
+        if mount is not None:
+            return mount
+        return self.of_chain(await mirror.get_ancestors(node_id))
+
+
+async def load_mounts(sources: Mapping[str, str], *, mirror: MirrorReader) -> Mounts:
+    """Mounts named by the keys of *sources*, with the IDs of the mirrored nodes.
+
+    The root or a mount without a node gets a new ID; ``ensure_mount_nodes``
+    creates it.
+
+    Raises:
+        ValueError: If several root children are named after one mount.
+    """
+    root = await mirror.get_root()
+    root_id = root.id if root is not None else _new_structural_id()
+    existing: dict[str, NodeId] = {}
+    for record in await mirror.get_children(root_id):
+        if record.name in sources and record.name in existing:
+            raise ValueError(
+                f"Mount {record.name!r} matches several nodes under the root"
+            )
+        existing[record.name] = record.id
+    return Mounts(
+        (
+            Mount(
+                name=name, id=existing.get(name) or _new_structural_id(), source=source
+            )
+            for name, source in sources.items()
+        ),
+        root_id=root_id,
+    )
+
+
+async def ensure_mount_nodes(
+    mounts: Mounts, *, mirror: MirrorStore, node_sync: NodeSyncService
+) -> None:
+    """Create the root and any missing mount nodes, publishing each new one.
+
+    Existing nodes are left alone, so restarts add no feed rows; a mount added
+    to the config appears in the feed. Waits until they are written, since
+    backends add children under them.
+    """
+    records = [_virtual_directory(mounts.root_id, None, "")] + [
+        _virtual_directory(m.id, mounts.root_id, m.name) for m in mounts.values()
+    ]
+    existing = await mirror.get_nodes_by_ids([r.id for r in records])
+    missing = [r for r in records if r.id not in existing]
+    if not missing:
+        return
+    async with node_sync.observe() as read:
+        await node_sync.upsert_batch(
+            [NodeObservation(record=r, locator=None) for r in missing], read=read
+        )
+    await node_sync.flush()

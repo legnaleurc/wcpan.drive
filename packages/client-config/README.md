@@ -1,0 +1,61 @@
+# wcpan.drive.client.config
+
+YAML configuration loader for wcpan.drive.
+
+## Example Usage
+
+```python
+from pathlib import Path
+
+from wcpan.drive.client.config import create_drive_from_config
+
+
+async def main():
+    async with create_drive_from_config(Path("/path/to/config.yaml")) as drive:
+        ...
+```
+
+## Config
+
+Example config file:
+
+```yaml
+version: 1
+sources:
+  # In multi-source mode (2+ sources), each name becomes a path prefix.
+  # Names must not contain ":", which separates the source in node IDs.
+  - name: google
+    # The first function creates the backend; the rest are middleware
+    # applied in order. args and kwargs are optional.
+    backend:
+      - name: wcpan.drive.client.google.create_backend
+        kwargs:
+          client_secret: /path/to/client_secret.json
+          oauth_token: /path/to/oauth_token.json
+      - name: wcpan.drive.client.crypt.create_middleware
+    # SQLite file that caches this source's metadata. Relative paths
+    # resolve against the working directory.
+    cache: /path/to/google.sqlite
+```
+
+Generate a starting config from installed plugins with
+`wcpan.drive.client.cli init` (or `create_config_scaffold`):
+
+```sh
+wcpan.drive.client.cli init --list
+wcpan.drive.client.cli init -p google -p crypt > config.yaml
+```
+
+Plugins register factories under the `wcpan.drive.client.backend` entry point
+group; a factory that takes a positional argument is middleware for the backend
+it wraps. Settings marked required, and the cache path, are left empty to fill
+in.
+
+The config format is at version 1; a file at another version is rejected,
+not migrated.
+
+The whole file is validated before any factory is imported, and each factory's
+`kwargs` are checked against its settings before any factory is called:
+unknown, missing, or mistyped settings are errors. Factory names are imported
+and called as written, so a config file is trusted executable wiring; load only
+files you control.

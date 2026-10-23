@@ -1,0 +1,530 @@
+"""Mount lookup by name and node ID, and routing by mount and node owner."""
+
+import asyncio
+import os
+import sqlite3
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
+from dataclasses import replace
+from pathlib import Path
+from typing import cast
+from unittest import IsolatedAsyncioTestCase, TestCase
+from unittest.mock import AsyncMock
+
+from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server._lib.write_queue import (
+    create_write_queue,
+    write_worker,
+)
+from wcpan.drive.server._services.media.probe.runner import ProbeRunner
+from wcpan.drive.server._services.media.probing import MediaProbing
+from wcpan.drive.server._services.mirror.store import (
+    MirrorStore,
+)
+from wcpan.drive.server._services.mounts import (
+    Mounts,
+    ensure_mount_nodes,
+    load_mounts,
+)
+from wcpan.drive.server._services.off_main import OffMainService
+from wcpan.drive.server._services.operations import (
+    NodeOperations,
+    OperationConflictError,
+    OperationNotSupportedError,
+    OperationUnavailableError,
+)
+from wcpan.drive.server._services.routing import BackendRouter
+from wcpan.drive.server._services.sync.metadata import (
+    create_metadata_queue,
+)
+from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.upload.service import (
+    FileOpener,
+    UploadConflictError,
+    Uploader,
+)
+
+from ._mounts import ROOT_ID, make_mounts
+
+
+def _dir(node_id: str, parent_id: str | None) -> NodeRecord:
+    return NodeRecord(
+        id=NodeId(node_id),
+        parent_id=NodeId(parent_id) if parent_id is not None else None,
+        name=node_id,
+        is_directory=True,
+        created_time=0,
+        modified_time=0,
+        changed_time=0,
+        mime_type="",
+        hash="",
+        hash_algorithm="",
+        size=0,
+        is_image=False,
+        is_video=False,
+        width=0,
+        height=0,
+    )
+
+
+class _Ancestors:
+    """``get_ancestors`` over a fixed tree, stopping below mount nodes."""
+
+    def __init__(self, mounts: Mounts, records: list[NodeRecord]) -> None:
+        self._mounts = mounts
+        self._records = {r.id: r for r in records}
+        self.queried: list[NodeId] = []
+
+    async def get_ancestors(self, node_id: NodeId) -> list[NodeRecord]:
+        self.queried.append(node_id)
+        chain: list[NodeRecord] = []
+        current = self._records.get(node_id)
+        while current is not None:
+            chain.append(current)
+            parent = current.parent_id
+            if (
+                parent is None
+                or parent == self._mounts.root_id
+                or self._mounts.by_id(parent) is not None
+            ):
+                break
+            current = self._records.get(parent)
+        return chain
+
+
+_ALL = make_mounts({"docs": "/docs", "pics": "/pics"})
+_DOCS = _ALL["docs"]
+_PICS = _ALL["pics"]
+
+
+class TestMounts(TestCase):
+    def test_lookup_by_name_and_id(self) -> None:
+        # then
+        self.assertEqual(list(_ALL), ["docs", "pics"])
+        self.assertEqual(_DOCS.source, "/docs")
+        self.assertIs(_ALL.by_id(_DOCS.id), _DOCS)
+        self.assertIsNone(_ALL.by_id(_ALL.root_id))
+        self.assertIsNone(_ALL.by_id(NodeId("docs")))
+
+    def test_subset_serves_only_its_mounts(self) -> None:
+        # when
+        subset = _ALL.subset(["pics"])
+        # then
+        self.assertEqual(list(subset), ["pics"])
+        self.assertIsNone(subset.by_id(_DOCS.id))
+        self.assertIs(subset.by_id(_PICS.id), _PICS)
+
+    def test_chain_ends_under_its_mount(self) -> None:
+        # given
+        chain = [_dir("file", "folder"), _dir("folder", _DOCS.id)]
+        # then
+        self.assertIs(_ALL.of_chain(chain), _DOCS)
+        self.assertIsNone(_ALL.subset(["pics"]).of_chain(chain))
+
+    def test_empty_or_detached_chain_has_no_mount(self) -> None:
+        # then
+        self.assertIsNone(_ALL.of_chain([]))
+        self.assertIsNone(_ALL.of_chain([_dir("orphan", None)]))
+        self.assertIsNone(_ALL.of_chain([_dir("lost", "missing")]))
+
+
+class TestContaining(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.mirror = _Ancestors(
+            _ALL,
+            [
+                _dir(_ALL.root_id, None),
+                _dir(_DOCS.id, _ALL.root_id),
+                _dir(_PICS.id, _ALL.root_id),
+                _dir("folder", _DOCS.id),
+                _dir("file", "folder"),
+                _dir("photo", _PICS.id),
+            ],
+        )
+
+    async def _containing(self, mounts: Mounts, node_id: str):
+        return await mounts.containing(
+            NodeId(node_id), mirror=cast(MirrorStore, self.mirror)
+        )
+
+    async def test_mount_node_is_its_own_mount(self) -> None:
+        # when
+        mount = await self._containing(_ALL, _DOCS.id)
+        # then
+        self.assertIs(mount, _DOCS)
+        self.assertEqual(self.mirror.queried, [])
+
+    async def test_descendant_is_in_its_mount(self) -> None:
+        # then
+        self.assertIs(await self._containing(_ALL, "file"), _DOCS)
+        self.assertIs(await self._containing(_ALL, "photo"), _PICS)
+
+    async def test_nodes_of_other_mounts_are_outside_a_subset(self) -> None:
+        # given
+        docs_only = _ALL.subset(["docs"])
+        # then
+        self.assertIsNone(await self._containing(docs_only, "photo"))
+        self.assertIsNone(await self._containing(docs_only, _PICS.id))
+        self.assertIs(await self._containing(docs_only, "file"), _DOCS)
+
+    async def test_root_and_unknown_nodes_have_no_mount(self) -> None:
+        # then
+        self.assertIsNone(await self._containing(_ALL, _ALL.root_id))
+        self.assertIsNone(await self._containing(_ALL, "unknown"))
+
+
+class TestSourcePath(IsolatedAsyncioTestCase):
+    """A file's source path, from its mirrored parent; the file need not be mirrored."""
+
+    def setUp(self) -> None:
+        self.mirror = _Ancestors(
+            _ALL, [_dir("folder", _DOCS.id), _dir("sub", "folder")]
+        )
+
+    async def _source(self, parent_id: str | None) -> str | None:
+        record = replace(_dir("new.jpg", parent_id), is_directory=False)
+        return await _ALL.source_path(record, mirror=cast(MirrorStore, self.mirror))
+
+    async def test_file_directly_under_a_mount(self) -> None:
+        # then
+        self.assertEqual(await self._source(_DOCS.id), "/docs/new.jpg")
+        self.assertEqual(self.mirror.queried, [])
+
+    async def test_file_in_nested_folders(self) -> None:
+        # then
+        self.assertEqual(await self._source("sub"), "/docs/folder/sub/new.jpg")
+
+    async def test_file_outside_every_mount(self) -> None:
+        # then
+        self.assertIsNone(await self._source("unknown"))
+        self.assertIsNone(await self._source(None))
+
+
+class _Owners:
+    """``owner_of`` over fixed ID map rows."""
+
+    def __init__(self, owners: dict[str, str]) -> None:
+        self._owners = owners
+
+    async def owner_of(self, node_id: NodeId) -> str | None:
+        return self._owners.get(node_id)
+
+
+class TestBackendOf(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        mirror = _Owners({"folder": "disk", "photo": "nas", "old": "gone"})
+        self.disk = AsyncMock()
+        self.nas = AsyncMock()
+        self.router = BackendRouter(
+            mirror=cast(MirrorStore, mirror),
+            mounts=_ALL.subset(["docs", "pics"]),
+            mount_backends={"docs": "disk"},
+            operations={
+                "disk": cast(NodeOperations, self.disk),
+                "nas": cast(NodeOperations, self.nas),
+            },
+            uploaders={},
+            files={},
+            barrier=AsyncMock(),
+        )
+
+    async def test_mount_routes_to_its_backend(self) -> None:
+        self.assertEqual(await self.router.backend_of(_DOCS.id), "disk")
+
+    async def test_node_routes_to_the_backend_that_owns_it(self) -> None:
+        self.assertEqual(await self.router.backend_of(NodeId("folder")), "disk")
+        # by its own map row, even under a mount served by another backend
+        self.assertEqual(await self.router.backend_of(NodeId("photo")), "nas")
+
+    async def test_server_root_is_not_supported(self) -> None:
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.backend_of(_ALL.root_id)
+
+    async def test_create_under_root_is_not_supported(self) -> None:
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.create_folder(_ALL.root_id, "x")
+        self.disk.create_folder.assert_not_awaited()
+        self.nas.create_folder.assert_not_awaited()
+
+    async def test_upload_to_root_is_not_supported(self) -> None:
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.find_conflict(_ALL.root_id, "x")
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.open(
+                _ALL.root_id, "x", 1, mime_type=None, media_info=None
+            )
+
+    async def test_move_into_root_is_not_supported(self) -> None:
+        # given
+        record = _dir("folder", _DOCS.id)
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.update(record, name=None, parent_id=_ALL.root_id)
+        self.disk.update.assert_not_awaited()
+
+    async def test_move_between_backends_is_not_supported(self) -> None:
+        # given
+        record = _dir("folder", _DOCS.id)
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.update(record, name=None, parent_id=NodeId("photo"))
+        self.disk.update.assert_not_awaited()
+        self.nas.update.assert_not_awaited()
+
+    async def test_unserved_nodes_are_unavailable(self) -> None:
+        # a mount without a backend
+        with self.assertRaises(OperationUnavailableError):
+            await self.router.backend_of(_PICS.id)
+        # a node without a map row
+        with self.assertRaises(OperationUnavailableError):
+            await self.router.backend_of(NodeId("unknown"))
+        # a node of a backend that is not running
+        with self.assertRaises(OperationUnavailableError):
+            await self.router.backend_of(NodeId("old"))
+
+
+class TestMutationVisibility(IsolatedAsyncioTestCase):
+    """A mutation returns after a barrier, so its mirror writes have landed."""
+
+    def setUp(self) -> None:
+        self.calls: list[str] = []
+        made = _dir("made", _DOCS.id)
+        self.made = made
+
+        def step(name: str, result: object = None):
+            async def run(*args: object, **kwargs: object) -> object:
+                self.calls.append(name)
+                return result
+
+            return run
+
+        self.disk = AsyncMock()
+        self.disk.create_folder.side_effect = step("create", made)
+        self.disk.update.side_effect = step("update", made)
+        self.disk.delete.side_effect = step("delete")
+        self.uploader = AsyncMock()
+        self.uploader.upload.side_effect = step("upload", made)
+        self.file = AsyncMock()
+        self.file.write.side_effect = step("write", 1)
+        self.file.close.side_effect = step("close", made)
+        self.opener = AsyncMock()
+        self.opener.open.return_value = self.file
+        self.router = BackendRouter(
+            mirror=cast(MirrorStore, _Owners({"made": "disk"})),
+            mounts=_ALL.subset(["docs"]),
+            mount_backends={"docs": "disk"},
+            operations={"disk": cast(NodeOperations, self.disk)},
+            uploaders={"disk": cast(Uploader, self.uploader)},
+            files={"disk": cast(FileOpener, self.opener)},
+            barrier=step("barrier"),
+        )
+
+    async def test_mutations_wait_for_the_barrier(self) -> None:
+        # when
+        await self.router.create_folder(_DOCS.id, "x")
+        await self.router.update(self.made, name="y", parent_id=None)
+        await self.router.delete(self.made)
+        await self.router.upload(
+            _DOCS.id, "f", _no_bytes(), mime_type=None, media_info=None
+        )
+        # then
+        self.assertEqual(
+            self.calls,
+            ["create", "barrier", "update", "barrier"]
+            + ["delete", "barrier", "upload", "barrier"],
+        )
+
+    async def test_published_file_waits_for_the_barrier(self) -> None:
+        # given
+        file = await self.router.open(_DOCS.id, "f", 1, mime_type=None, media_info=None)
+        # when
+        await file.write(0, b"x")
+        record = await file.close()
+        # then: only publishing waits
+        self.assertEqual(record, self.made)
+        self.assertEqual(self.calls, ["write", "close", "barrier"])
+
+    async def test_conflicts_wait_for_the_barrier(self) -> None:
+        # given: the conflict's record may have just been observed
+        self.disk.create_folder.side_effect = OperationConflictError(
+            "taken", record=self.made
+        )
+        self.uploader.upload.side_effect = UploadConflictError(self.made)
+        # when / then
+        with self.assertRaises(OperationConflictError):
+            await self.router.create_folder(_DOCS.id, "x")
+        with self.assertRaises(UploadConflictError):
+            await self.router.upload(
+                _DOCS.id, "f", _no_bytes(), mime_type=None, media_info=None
+            )
+        self.assertEqual(self.calls, ["barrier", "barrier"])
+
+    async def test_failures_do_not_wait(self) -> None:
+        # given
+        self.disk.delete.side_effect = OperationUnavailableError("busy")
+        # when / then
+        with self.assertRaises(OperationUnavailableError):
+            await self.router.delete(self.made)
+        self.assertEqual(self.calls, [])
+
+
+async def _no_bytes():
+    return
+    yield b""
+
+
+class TestMountNodes(IsolatedAsyncioTestCase):
+    """Mount nodes are found by name and recognized by position, not by ID."""
+
+    async def asyncSetUp(self) -> None:
+        fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.pool = ThreadPoolExecutor(2)
+        self.mirror = MirrorStore(
+            self.db_path, off_main=OffMainService(pool=self.pool), schemas={}
+        )
+        await self.mirror.ensure_schema()
+        # An opaque mount ID, and a real node whose ID looks like the old grammar.
+        await self.mirror.bulk_upsert_nodes(
+            [
+                _dir(ROOT_ID, None),
+                replace(_dir("m1", ROOT_ID), name="docs"),
+                _dir("_folder", "m1"),
+                _dir("file", "_folder"),
+            ]
+        )
+
+    async def asyncTearDown(self) -> None:
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        for suffix in ("", "-wal", "-shm"):
+            with suppress(FileNotFoundError):
+                Path(self.db_path + suffix).unlink()
+
+    async def test_existing_mount_keeps_its_node_and_new_ones_get_ids(self) -> None:
+        # when
+        mounts = await load_mounts(
+            {"docs": "/docs", "new": "/new", "other": "/other"}, mirror=self.mirror
+        )
+        # then
+        self.assertEqual(mounts["docs"].id, "m1")
+        new_ids = {mounts["new"].id, mounts["other"].id}
+        self.assertEqual(len(new_ids), 2)
+        self.assertNotIn("m1", new_ids)
+        self.assertNotIn(ROOT_ID, new_ids)
+
+    async def test_ancestors_stop_below_the_mount_node(self) -> None:
+        # when
+        chain = await self.mirror.get_ancestors(NodeId("file"))
+        # then
+        self.assertEqual([r.id for r in chain], ["file", "_folder"])
+        mounts = await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+        self.assertIs(mounts.of_chain(chain), mounts["docs"])
+
+    async def test_removal_roots_exclude_nothing_by_id_prefix(self) -> None:
+        # when
+        roots = await self.mirror.deferred_removal_roots(set(), {NodeId("m1")})
+        # then
+        self.assertEqual(roots, ["_folder"])
+
+    async def test_duplicate_mount_nodes_are_rejected(self) -> None:
+        # given
+        await self.mirror.bulk_upsert_nodes([replace(_dir("m2", ROOT_ID), name="docs")])
+        # when / then
+        with self.assertRaisesRegex(ValueError, "docs"):
+            await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+
+    async def test_duplicates_of_unconfigured_names_are_ignored(self) -> None:
+        # given
+        await self.mirror.bulk_upsert_nodes(
+            [
+                replace(_dir("o1", ROOT_ID), name="old"),
+                replace(_dir("o2", ROOT_ID), name="old"),
+            ]
+        )
+        # when
+        mounts = await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+        # then
+        self.assertEqual(mounts["docs"].id, "m1")
+
+    async def test_root_is_found_by_position(self) -> None:
+        # when
+        root = await self.mirror.get_root()
+        mounts = await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+        # then
+        assert root is not None
+        self.assertEqual(root.id, ROOT_ID)
+        self.assertEqual(mounts.root_id, ROOT_ID)
+        self.assertEqual(await self.mirror.resolve_path_to_id([]), ROOT_ID)
+        self.assertEqual(await self.mirror.resolve_path_to_id(["docs"]), "m1")
+
+    async def test_second_root_is_rejected(self) -> None:
+        # when / then
+        with self.assertRaises(sqlite3.IntegrityError):
+            await self.mirror.bulk_upsert_nodes([_dir("other", None)])
+
+
+class TestMountRestart(IsolatedAsyncioTestCase):
+    """A new mount keeps its assigned ID once its node is written."""
+
+    async def asyncSetUp(self) -> None:
+        fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.pool = ThreadPoolExecutor(2)
+        self.mirror = MirrorStore(
+            self.db_path, off_main=OffMainService(pool=self.pool), schemas={}
+        )
+        await self.mirror.ensure_schema()
+        write_queue = create_write_queue()
+        self.node_sync = NodeSyncService(
+            mirror=self.mirror,
+            write_queue=write_queue,
+            probing=MediaProbing(runner=ProbeRunner()),
+            metadata_queue=create_metadata_queue(),
+        )
+        self.writer = asyncio.create_task(write_worker(write_queue))
+
+    async def asyncTearDown(self) -> None:
+        self.writer.cancel()
+        with suppress(asyncio.CancelledError):
+            await self.writer
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        for suffix in ("", "-wal", "-shm"):
+            with suppress(FileNotFoundError):
+                Path(self.db_path + suffix).unlink()
+
+    async def _start(self, sources: dict[str, str]) -> Mounts:
+        mounts = await load_mounts(sources, mirror=self.mirror)
+        await ensure_mount_nodes(mounts, mirror=self.mirror, node_sync=self.node_sync)
+        return mounts
+
+    async def test_restart_keeps_ids_and_publishes_nothing(self) -> None:
+        # given
+        first = await self._start({"docs": "/docs", "pics": "/pics"})
+        cursor = await self.mirror.get_cursor()
+        # when
+        second = await self._start({"docs": "/docs", "pics": "/pics"})
+        # then
+        self.assertEqual(second.root_id, first.root_id)
+        self.assertEqual(second["docs"].id, first["docs"].id)
+        self.assertEqual(second["pics"].id, first["pics"].id)
+        self.assertEqual(await self.mirror.get_cursor(), cursor)
+
+    async def test_loading_alone_writes_nothing(self) -> None:
+        # given
+        cursor = await self.mirror.get_cursor()
+        # when
+        unwritten = await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+        # then
+        self.assertIsNone(await self.mirror.get_node_by_id(unwritten["docs"].id))
+        self.assertEqual(await self.mirror.get_cursor(), cursor)
+
+        # when
+        started = await self._start({"docs": "/docs"})
+        # then
+        self.assertNotEqual(started["docs"].id, unwritten["docs"].id)

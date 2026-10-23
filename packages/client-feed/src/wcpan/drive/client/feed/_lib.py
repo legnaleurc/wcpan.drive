@@ -1,0 +1,59 @@
+from urllib.parse import quote
+
+from wcpan.drive.client.types import Node
+from wcpan.drive.protocol.lib import (
+    FOLDER_MIME_TYPE,
+    ChangeDict,
+    NodeRecordDict,
+    RemovedChangeDict,
+    UpsertChangeDict,
+    guess_mime_type,
+    node_record_from_dict,
+    node_record_to_dict,
+    utc_from_timestamp,
+    utc_now,
+)
+from wcpan.drive.protocol.types import NodeRecord
+
+
+__all__ = (
+    "node_url",
+    "node_from_record",
+    "RemovedChangeDict",
+    "UpsertChangeDict",
+    "guess_mime_type",
+    "ChangeDict",
+    "NodeRecordDict",
+    "FOLDER_MIME_TYPE",
+    "node_record_from_dict",
+    "node_record_to_dict",
+    "utc_from_timestamp",
+    "utc_now",
+)
+
+
+def node_url(server_url: str, node_id: str, *suffix: str) -> str:
+    """The URL of a node resource; node IDs may contain any character."""
+    return "/".join([f"{server_url}/api/v1/nodes", quote(node_id, safe=""), *suffix])
+
+
+def node_from_record(record: NodeRecord) -> Node:
+    return Node(
+        id=str(record.id),
+        parent_id=str(record.parent_id) if record.parent_id is not None else None,
+        name=record.name,
+        is_directory=record.is_directory,
+        is_trashed=False,
+        created_time=utc_from_timestamp(record.created_time),
+        modified_time=utc_from_timestamp(record.modified_time),
+        changed_time=utc_from_timestamp(record.changed_time),
+        mime_type=record.mime_type,
+        hash=record.hash,
+        hash_algorithm=record.hash_algorithm,
+        size=record.size,
+        is_image=record.is_image,
+        is_video=record.is_video,
+        width=record.width,
+        height=record.height,
+        private=None,
+    )

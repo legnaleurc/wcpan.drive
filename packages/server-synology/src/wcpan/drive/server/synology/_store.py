@@ -1,0 +1,185 @@
+"""Synology state in the mirror database: node locators and mount checkpoints.
+
+The tables are created and maintained through ``BackendSchema`` hooks on the
+core's connection, so locators commit together with their nodes. Instances
+share the tables; every query filters by the instance key, so a ``file_id``
+lookup never finds another NAS's node.
+"""
+
+import sqlite3
+from collections.abc import Sequence
+from contextlib import closing
+
+from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server.lib import row_to_record
+from wcpan.drive.server.types import (
+    BackendLocator,
+    BackendNamespace,
+    MirrorReader,
+    MirrorStore,
+)
+from wcpan.synology.types import SynologyPath
+
+from ._convert import SynologyLocator
+from ._schema import DDL, SCHEMA_NAME, SCHEMA_VERSION
+
+
+class SynologySchema:
+    """``BackendSchema`` hooks for the Synology tables."""
+
+    name = SCHEMA_NAME
+    version = SCHEMA_VERSION
+
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
+        con.executescript(DDL)
+
+    def bind_locator(
+        self,
+        con: sqlite3.Connection,
+        ns: BackendNamespace,
+        node_id: NodeId,
+        locator: BackendLocator,
+    ) -> None:
+        con.execute(
+            """
+            INSERT INTO synology_locators (node_id, instance, file_id)
+            VALUES (?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                instance = excluded.instance,
+                file_id = excluded.file_id
+            """,
+            (str(node_id), ns.key, locator),
+        )
+
+    def forget_nodes(
+        self, con: sqlite3.Connection, ns: BackendNamespace, node_ids: Sequence[str]
+    ) -> None:
+        placeholders = ",".join("?" * len(node_ids))
+        con.execute(
+            "DELETE FROM synology_locators"
+            f" WHERE instance = ? AND node_id IN ({placeholders})",
+            [ns.key, *node_ids],
+        )
+
+    def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
+        con.execute(
+            "DELETE FROM synology_locators"
+            " WHERE instance = ? AND node_id NOT IN (SELECT id FROM nodes)",
+            (ns.key,),
+        )
+
+
+SYNOLOGY_SCHEMA = SynologySchema()
+
+
+class SynologyStoreReader:
+    """Reads of one instance's Synology tables through the mirror connection."""
+
+    def __init__(self, *, mirror: MirrorReader, ns: BackendNamespace) -> None:
+        self._mirror = mirror
+        self._ns = ns
+
+    async def get_node_by_locator(self, locator: SynologyLocator) -> NodeRecord | None:
+        return await self._mirror.read(_get_node_by_locator, self._ns, locator)
+
+    async def get_locators(
+        self, node_ids: list[NodeId]
+    ) -> dict[NodeId, SynologyLocator]:
+        return await self._mirror.read(_get_locators, self._ns, node_ids)
+
+    async def get_mount_max_ids(
+        self, mounts: dict[str, SynologyPath]
+    ) -> dict[str, int]:
+        return await self._mirror.read(_get_mount_max_ids, self._ns, mounts)
+
+
+class SynologyStore(SynologyStoreReader):
+    """Reads and writes of one instance's Synology tables."""
+
+    def __init__(self, *, mirror: MirrorStore, ns: BackendNamespace) -> None:
+        super().__init__(mirror=mirror, ns=ns)
+        self._writer = mirror
+
+    async def set_mount_state(self, name: str, path: str, value: int) -> None:
+        await self._writer.write(_set_mount_state, self._ns, name, path, value)
+
+
+def _get_mount_max_ids(
+    con: sqlite3.Connection, ns: BackendNamespace, mounts: dict[str, SynologyPath]
+) -> dict[str, int]:
+    """Return per-mount last_max_id values, resetting when path changes."""
+    names = list(mounts.keys())
+    if not names:
+        return {}
+
+    placeholders = ",".join("?" * len(names))
+    with closing(
+        con.execute(
+            "SELECT name, max_id, path FROM synology_mounts"
+            f" WHERE instance = ? AND name IN ({placeholders})",
+            [ns.key, *names],
+        )
+    ) as cur:
+        by_name = {
+            row["name"]: (int(row["max_id"]), row["path"]) for row in cur.fetchall()
+        }
+
+    result: dict[str, int] = {}
+    for name, syno_path in mounts.items():
+        state = by_name.get(name)
+        if state is None:
+            result[name] = 0
+            continue
+        value, stored_path = state
+        result[name] = value if stored_path == syno_path.path else 0
+
+    return result
+
+
+def _set_mount_state(
+    con: sqlite3.Connection, ns: BackendNamespace, name: str, path: str, value: int
+) -> None:
+    """Save per-mount last_max_id and syno_path atomically."""
+    con.execute(
+        """
+        INSERT INTO synology_mounts (instance, name, max_id, path) VALUES (?, ?, ?, ?)
+        ON CONFLICT(instance, name) DO UPDATE SET
+            max_id = excluded.max_id,
+            path = excluded.path
+        """,
+        (ns.key, name, value, path),
+    )
+
+
+def _get_node_by_locator(
+    con: sqlite3.Connection, ns: BackendNamespace, locator: SynologyLocator
+) -> NodeRecord | None:
+    with closing(
+        con.execute(
+            """
+            SELECT n.* FROM synology_locators l
+            JOIN nodes n ON n.id = l.node_id
+            WHERE l.instance = ? AND l.file_id = ?
+            """,
+            (ns.key, locator),
+        )
+    ) as cur:
+        row = cur.fetchone()
+    return row_to_record(row) if row else None
+
+
+def _get_locators(
+    con: sqlite3.Connection, ns: BackendNamespace, node_ids: list[NodeId]
+) -> dict[NodeId, SynologyLocator]:
+    if not node_ids:
+        return {}
+    placeholders = ",".join("?" * len(node_ids))
+    with closing(
+        con.execute(
+            "SELECT node_id, file_id FROM synology_locators"
+            f" WHERE instance = ? AND node_id IN ({placeholders})",
+            [ns.key, *(str(_) for _ in node_ids)],
+        )
+    ) as cur:
+        rows = cur.fetchall()
+    return {NodeId(row["node_id"]): SynologyLocator(row["file_id"]) for row in rows}

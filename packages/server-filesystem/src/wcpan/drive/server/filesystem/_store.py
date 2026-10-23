@@ -1,0 +1,193 @@
+"""Filesystem backend state in the mirror database.
+
+``fs_entries`` binds each public node to the identity of the object it names and
+the stat signature its checksum was computed from. Hard links share an identity,
+so the identity column is indexed but not unique. Instances share the tables;
+every query filters by the instance key, so two instances over one host
+filesystem never match each other's entries by identity. ``fs_mounts`` records
+which
+filesystem each mount was scanned on, so an unmounted source is not mistaken for
+an empty directory.
+"""
+
+import sqlite3
+from collections.abc import Sequence
+from contextlib import closing
+from dataclasses import dataclass
+
+from wcpan.drive.protocol.types import NodeId
+from wcpan.drive.server.types import BackendLocator, BackendNamespace, MirrorStore
+
+from ._handles import FileIdentity
+from ._schema import DDL, SCHEMA_NAME, SCHEMA_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class EntryState:
+    """What a node's metadata was last observed from."""
+
+    identity: FileIdentity
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+    def to_locator(self) -> BackendLocator:
+        return BackendLocator(
+            f"{self.identity}|{self.size}|{self.mtime_ns}|{self.ctime_ns}"
+        )
+
+    @classmethod
+    def from_locator(cls, locator: BackendLocator) -> "EntryState":
+        identity, size, mtime_ns, ctime_ns = locator.rsplit("|", 3)
+        return cls(FileIdentity(identity), int(size), int(mtime_ns), int(ctime_ns))
+
+
+class FilesystemSchema:
+    """``BackendSchema`` hooks for the filesystem tables."""
+
+    name = SCHEMA_NAME
+    version = SCHEMA_VERSION
+
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
+        con.executescript(DDL)
+
+    def bind_locator(
+        self,
+        con: sqlite3.Connection,
+        ns: BackendNamespace,
+        node_id: NodeId,
+        locator: BackendLocator,
+    ) -> None:
+        state = EntryState.from_locator(locator)
+        con.execute(
+            """
+            INSERT INTO fs_entries
+                (node_id, instance, identity, size, mtime_ns, ctime_ns)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                instance = excluded.instance,
+                identity = excluded.identity,
+                size = excluded.size,
+                mtime_ns = excluded.mtime_ns,
+                ctime_ns = excluded.ctime_ns
+            """,
+            (
+                str(node_id),
+                ns.key,
+                state.identity,
+                state.size,
+                state.mtime_ns,
+                state.ctime_ns,
+            ),
+        )
+
+    def forget_nodes(
+        self, con: sqlite3.Connection, ns: BackendNamespace, node_ids: Sequence[str]
+    ) -> None:
+        placeholders = ",".join("?" * len(node_ids))
+        con.execute(
+            f"DELETE FROM fs_entries WHERE instance = ? AND node_id IN ({placeholders})",
+            [ns.key, *node_ids],
+        )
+
+    def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
+        con.execute(
+            "DELETE FROM fs_entries"
+            " WHERE instance = ? AND node_id NOT IN (SELECT id FROM nodes)",
+            (ns.key,),
+        )
+
+
+FILESYSTEM_SCHEMA = FilesystemSchema()
+
+
+class FilesystemStore:
+    """Queries over one instance's tables through the core mirror connection."""
+
+    def __init__(self, *, mirror: MirrorStore, ns: BackendNamespace) -> None:
+        self._mirror = mirror
+        self._ns = ns
+
+    async def get_entries(self, node_ids: list[NodeId]) -> dict[NodeId, EntryState]:
+        return await self._mirror.read(_get_entries, self._ns, node_ids)
+
+    async def nodes_by_identity(self, identity: FileIdentity) -> list[NodeId]:
+        return await self._mirror.read(_nodes_by_identity, self._ns, identity)
+
+    async def get_mount_fsid(self, name: str, path: str) -> str | None:
+        """The filesystem *name* was last scanned on, unless its path changed."""
+        return await self._mirror.read(_get_mount_fsid, self._ns, name, path)
+
+    async def set_mount_fsid(self, name: str, path: str, fsid: str) -> None:
+        await self._mirror.write(_set_mount_fsid, self._ns, name, path, fsid)
+
+
+def _get_entries(
+    con: sqlite3.Connection, ns: BackendNamespace, node_ids: list[NodeId]
+) -> dict[NodeId, EntryState]:
+    if not node_ids:
+        return {}
+    placeholders = ",".join("?" * len(node_ids))
+    with closing(
+        con.execute(
+            "SELECT node_id, identity, size, mtime_ns, ctime_ns"
+            f" FROM fs_entries WHERE instance = ? AND node_id IN ({placeholders})",
+            [ns.key, *(str(_) for _ in node_ids)],
+        )
+    ) as cur:
+        rows = cur.fetchall()
+    return {
+        NodeId(row["node_id"]): EntryState(
+            FileIdentity(row["identity"]),
+            row["size"],
+            row["mtime_ns"],
+            row["ctime_ns"],
+        )
+        for row in rows
+    }
+
+
+def _nodes_by_identity(
+    con: sqlite3.Connection, ns: BackendNamespace, identity: FileIdentity
+) -> list[NodeId]:
+    with closing(
+        con.execute(
+            """
+            SELECT e.node_id FROM fs_entries e
+            JOIN nodes n ON n.id = e.node_id
+            WHERE e.instance = ? AND e.identity = ?
+            ORDER BY e.node_id
+            """,
+            (ns.key, identity),
+        )
+    ) as cur:
+        return [NodeId(row["node_id"]) for row in cur.fetchall()]
+
+
+def _get_mount_fsid(
+    con: sqlite3.Connection, ns: BackendNamespace, name: str, path: str
+) -> str | None:
+    with closing(
+        con.execute(
+            "SELECT path, fsid FROM fs_mounts WHERE instance = ? AND name = ?",
+            (ns.key, name),
+        )
+    ) as cur:
+        row = cur.fetchone()
+    if row is None or row["path"] != path:
+        return None
+    return str(row["fsid"])
+
+
+def _set_mount_fsid(
+    con: sqlite3.Connection, ns: BackendNamespace, name: str, path: str, fsid: str
+) -> None:
+    con.execute(
+        """
+        INSERT INTO fs_mounts (instance, name, path, fsid) VALUES (?, ?, ?, ?)
+        ON CONFLICT(instance, name) DO UPDATE SET
+            path = excluded.path,
+            fsid = excluded.fsid
+        """,
+        (ns.key, name, path, fsid),
+    )

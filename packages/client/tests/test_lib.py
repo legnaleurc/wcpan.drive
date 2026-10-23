@@ -1,0 +1,565 @@
+from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from datetime import datetime, timezone
+from hashlib import md5
+from pathlib import Path, PurePath
+from tempfile import TemporaryDirectory
+from unittest import IsolatedAsyncioTestCase, TestCase
+from unittest.mock import AsyncMock, MagicMock
+
+from decoy import Decoy, matchers
+from wcpan.drive.client.exceptions import NodeExistsError, NodeNotFoundError
+from wcpan.drive.client.lib import (
+    dispatch_change,
+    download_file_to_local,
+    else_none,
+    find_duplicate_nodes,
+    get_file_hash,
+    is_remove,
+    is_update,
+    is_valid_name,
+    move_node,
+    normalize_path,
+)
+from wcpan.drive.client.types import (
+    Drive,
+    Hasher,
+    Node,
+    RemoveAction,
+    UpdateAction,
+)
+
+
+def make_node(
+    *,
+    node_id: str,
+    parent_id: str | None = None,
+    name: str = "",
+    is_directory: bool = False,
+    is_trashed: bool = False,
+) -> Node:
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return Node(
+        id=node_id,
+        parent_id=parent_id,
+        name=name,
+        is_directory=is_directory,
+        is_trashed=is_trashed,
+        created_time=epoch,
+        modified_time=epoch,
+        changed_time=epoch,
+        mime_type="",
+        hash="",
+        hash_algorithm="",
+        size=0,
+        is_image=False,
+        is_video=False,
+        width=0,
+        height=0,
+        private=None,
+    )
+
+
+class TestUtilities(TestCase):
+    def testIsValidName(self) -> None:
+        # when
+        ok = is_valid_name("name")
+        # then
+        self.assertTrue(ok)
+
+        # when
+        ok = is_valid_name("name/name")
+        # then
+        self.assertFalse(ok)
+
+        # when
+        ok = is_valid_name("./name")
+        # then
+        self.assertFalse(ok)
+
+        # when
+        ok = is_valid_name("name\\/name")
+        # then
+        self.assertFalse(ok)
+
+        # when
+        ok = is_valid_name("name\\name")
+        # then
+        self.assertFalse(ok)
+
+
+class TestNormalizePath(TestCase):
+    def testDot(self) -> None:
+        # when
+        result = normalize_path(PurePath("/a/./b"))
+        # then
+        self.assertEqual(result, PurePath("/a/b"))
+
+    def testDotDot(self) -> None:
+        # when
+        result = normalize_path(PurePath("/a/b/../c"))
+        # then
+        self.assertEqual(result, PurePath("/a/c"))
+
+    def testMixed(self) -> None:
+        # when
+        result = normalize_path(PurePath("/a/b/../../c/./d"))
+        # then
+        self.assertEqual(result, PurePath("/c/d"))
+
+    def testRelativeRaises(self) -> None:
+        # when / then
+        with self.assertRaises(ValueError):
+            normalize_path(PurePath("relative"))
+
+    def testRoot(self) -> None:
+        # when
+        result = normalize_path(PurePath("/"))
+        # then
+        self.assertEqual(result, PurePath("/"))
+
+
+class TestElseNone(IsolatedAsyncioTestCase):
+    async def testSuccess(self) -> None:
+        # given
+        mock = AsyncMock(return_value=42)
+        # when
+        result = await else_none(mock())
+        # then
+        self.assertEqual(result, 42)
+
+    async def testNodeNotFound(self) -> None:
+        # given
+        mock = AsyncMock(side_effect=NodeNotFoundError("missing"))
+        # when
+        result = await else_none(mock())
+        # then
+        self.assertIsNone(result)
+
+
+class TestTypeGuards(TestCase):
+    def testIsRemove(self) -> None:
+        # given
+        change: RemoveAction = (True, "some-id")
+        # when / then
+        self.assertTrue(is_remove(change))
+        self.assertFalse(is_update(change))
+
+    def testIsUpdate(self) -> None:
+        # given
+        node = make_node(node_id="abc")
+        change: UpdateAction = (False, node)
+        # when / then
+        self.assertTrue(is_update(change))
+        self.assertFalse(is_remove(change))
+
+
+class TestDispatchChange(TestCase):
+    def testDispatchRemove(self) -> None:
+        # given
+        on_remove = MagicMock(return_value="removed")
+        on_update = MagicMock(return_value="updated")
+        change: RemoveAction = (True, "node-id")
+
+        # when
+        result = dispatch_change(change, on_remove=on_remove, on_update=on_update)
+
+        # then
+        self.assertEqual(result, "removed")
+        on_remove.assert_called_once_with("node-id")
+        on_update.assert_not_called()
+
+    def testDispatchUpdate(self) -> None:
+        # given
+        node = make_node(node_id="abc")
+        on_remove = MagicMock(return_value="removed")
+        on_update = MagicMock(return_value="updated")
+        change: UpdateAction = (False, node)
+
+        # when
+        result = dispatch_change(change, on_remove=on_remove, on_update=on_update)
+
+        # then
+        self.assertEqual(result, "updated")
+        on_update.assert_called_once_with(node)
+        on_remove.assert_not_called()
+
+
+class TestMoveNode(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
+
+    async def _make_drive(self, mapping: dict[PurePath, Node | Exception]) -> Drive:
+        drive = self.decoy.mock(cls=Drive)
+        self.decoy.when(await drive.get_node_by_path(matchers.Anything())).then_do(
+            _path_map(mapping)
+        )
+        return drive
+
+    async def testRenameOnly(self) -> None:
+        # given
+        src_node = make_node(node_id="src", parent_id="par", name="old.txt")
+        renamed = make_node(node_id="src", parent_id="par", name="new.txt")
+        parent_node = make_node(node_id="par", name="a", is_directory=True)
+        drive = await self._make_drive(
+            {
+                PurePath("/a/old.txt"): src_node,
+                PurePath("/a/new.txt"): NodeNotFoundError("/a/new.txt"),
+                PurePath("/a"): parent_node,
+            }
+        )
+        self.decoy.when(
+            await drive.move(src_node, new_parent=parent_node, new_name="new.txt")
+        ).then_return(renamed)
+
+        # when
+        result = await move_node(drive, PurePath("/a/old.txt"), PurePath("new.txt"))
+
+        # then
+        self.assertEqual(result, renamed)
+
+    async def testNoop(self) -> None:
+        # given
+        src_node = make_node(node_id="src", parent_id="par", name="file.txt")
+        parent_node = make_node(node_id="par", name="a", is_directory=True)
+        drive = await self._make_drive(
+            {
+                PurePath("/a/file.txt"): src_node,
+                PurePath("/a"): parent_node,
+            }
+        )
+        self.decoy.when(
+            await drive.move(src_node, new_parent=parent_node, new_name=None)
+        ).then_return(src_node)
+
+        # when
+        result = await move_node(drive, PurePath("/a/file.txt"), PurePath("."))
+
+        # then
+        self.assertEqual(result, src_node)
+
+    async def testMoveToParent(self) -> None:
+        # given
+        src_node = make_node(node_id="src", parent_id="b", name="file.txt")
+        grandparent = make_node(node_id="a", name="a", is_directory=True)
+        moved = make_node(node_id="src", parent_id="a", name="file.txt")
+        drive = await self._make_drive(
+            {
+                PurePath("/a/b/file.txt"): src_node,
+                PurePath("/a"): grandparent,
+            }
+        )
+        self.decoy.when(
+            await drive.move(src_node, new_parent=grandparent, new_name=None)
+        ).then_return(moved)
+
+        # when
+        result = await move_node(drive, PurePath("/a/b/file.txt"), PurePath(".."))
+
+        # then
+        self.assertEqual(result, moved)
+
+    async def testMoveAbsoluteIntoDirectory(self) -> None:
+        # given
+        src_node = make_node(node_id="src", parent_id="a", name="file.txt")
+        dst_dir = make_node(node_id="dst", name="dir", is_directory=True)
+        moved = make_node(node_id="src", parent_id="dst", name="file.txt")
+        drive = await self._make_drive(
+            {
+                PurePath("/a/file.txt"): src_node,
+                PurePath("/b/dir"): dst_dir,
+            }
+        )
+        self.decoy.when(
+            await drive.move(src_node, new_parent=dst_dir, new_name=None)
+        ).then_return(moved)
+
+        # when
+        result = await move_node(drive, PurePath("/a/file.txt"), PurePath("/b/dir"))
+
+        # then
+        self.assertEqual(result, moved)
+
+    async def testMoveAbsoluteNewName(self) -> None:
+        # given
+        src_node = make_node(node_id="src", parent_id="a", name="file.txt")
+        new_parent = make_node(node_id="b", name="b", is_directory=True)
+        moved = make_node(node_id="src", parent_id="b", name="renamed.txt")
+        drive = await self._make_drive(
+            {
+                PurePath("/a/file.txt"): src_node,
+                PurePath("/b/renamed.txt"): NodeNotFoundError("/b/renamed.txt"),
+                PurePath("/b"): new_parent,
+            }
+        )
+        self.decoy.when(
+            await drive.move(src_node, new_parent=new_parent, new_name="renamed.txt")
+        ).then_return(moved)
+
+        # when
+        result = await move_node(
+            drive, PurePath("/a/file.txt"), PurePath("/b/renamed.txt")
+        )
+
+        # then
+        self.assertEqual(result, moved)
+
+    async def testMoveAbsoluteParentMissing(self) -> None:
+        # given
+        src_node = make_node(node_id="src", parent_id="a", name="file.txt")
+        drive = await self._make_drive(
+            {
+                PurePath("/a/file.txt"): src_node,
+                PurePath("/missing/new.txt"): NodeNotFoundError("/missing/new.txt"),
+                PurePath("/missing"): NodeNotFoundError("/missing"),
+            }
+        )
+
+        # when / then
+        with self.assertRaises(ValueError):
+            await move_node(
+                drive, PurePath("/a/file.txt"), PurePath("/missing/new.txt")
+            )
+
+    async def testMoveAbsoluteDestIsFile(self) -> None:
+        # given
+        src_node = make_node(node_id="src", parent_id="a", name="file.txt")
+        dst_file = make_node(
+            node_id="dst", parent_id="b", name="existing.txt", is_directory=False
+        )
+        drive = await self._make_drive(
+            {
+                PurePath("/a/file.txt"): src_node,
+                PurePath("/b/existing.txt"): dst_file,
+            }
+        )
+
+        # when / then
+        with self.assertRaises(NodeExistsError):
+            await move_node(drive, PurePath("/a/file.txt"), PurePath("/b/existing.txt"))
+
+
+class TestFindDuplicateNodes(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
+
+    async def testNoDuplicates(self) -> None:
+        # given
+        drive = self.decoy.mock(cls=Drive)
+        root = make_node(node_id="root", is_directory=True)
+        file1 = make_node(node_id="f1", parent_id="root", name="a.txt")
+        file2 = make_node(node_id="f2", parent_id="root", name="b.txt")
+        self.decoy.when(drive.walk(root)).then_return(
+            _async_walk_results([(root, [], [file1, file2])])
+        )
+
+        # when
+        result = await find_duplicate_nodes(drive, root)
+
+        # then
+        self.assertEqual(result, [])
+
+    async def testWithDuplicates(self) -> None:
+        # given
+        drive = self.decoy.mock(cls=Drive)
+        root = make_node(node_id="root", is_directory=True)
+        file1 = make_node(node_id="f1", parent_id="root", name="dup.txt")
+        file2 = make_node(node_id="f2", parent_id="root", name="dup.txt")
+        self.decoy.when(drive.walk(root)).then_return(
+            _async_walk_results([(root, [], [file1, file2])])
+        )
+
+        # when
+        result = await find_duplicate_nodes(drive, root)
+
+        # then
+        self.assertEqual(len(result), 1)
+        self.assertIn(file1, result[0])
+        self.assertIn(file2, result[0])
+
+    async def testDefaultRoot(self) -> None:
+        # given
+        drive = self.decoy.mock(cls=Drive)
+        root = make_node(node_id="root", is_directory=True)
+        self.decoy.when(await drive.get_root()).then_return(root)
+        self.decoy.when(drive.walk(root)).then_return(
+            _async_walk_results([(root, [], [])])
+        )
+
+        # when
+        result = await find_duplicate_nodes(drive)
+
+        # then
+        self.assertEqual(result, [])
+
+
+async def _async_walk_results(
+    items: list[tuple[Node, list[Node], list[Node]]],
+) -> AsyncIterator[tuple[Node, list[Node], list[Node]]]:
+    for item in items:
+        yield item
+
+
+def _path_map(
+    mapping: dict[PurePath, Node | Exception],
+) -> Callable[[PurePath], Node]:
+    def action(path: PurePath) -> Node:
+        value = mapping.get(path)
+        if isinstance(value, Exception):
+            raise value
+        if value is None:
+            raise NodeNotFoundError(str(path))
+        return value
+
+    return action
+
+
+class NodeHashInvariantTestCase(TestCase):
+    def testFileWithBothFields(self) -> None:
+        # when
+        node = replace(make_node(node_id="f"), hash="abc", hash_algorithm="md5")
+        # then
+        self.assertEqual(node.hash_algorithm, "md5")
+
+    def testFileWithoutChecksum(self) -> None:
+        # when
+        node = make_node(node_id="f")
+        # then
+        self.assertEqual(node.hash, "")
+
+    def testFileWithHashOnly(self) -> None:
+        # when / then
+        with self.assertRaises(ValueError):
+            replace(make_node(node_id="f"), hash="abc")
+
+    def testFileWithAlgorithmOnly(self) -> None:
+        # when / then
+        with self.assertRaises(ValueError):
+            replace(make_node(node_id="f"), hash_algorithm="md5")
+
+    def testDirectoryWithHash(self) -> None:
+        # when / then
+        with self.assertRaises(ValueError):
+            replace(
+                make_node(node_id="d", is_directory=True),
+                hash="abc",
+                hash_algorithm="md5",
+            )
+
+
+class _Md5Hasher(Hasher):
+    def __init__(self) -> None:
+        self._hasher = md5()
+
+    async def update(self, data: bytes) -> None:
+        self._hasher.update(data)
+
+    async def digest(self) -> bytes:
+        return self._hasher.digest()
+
+    async def hexdigest(self) -> str:
+        return self._hasher.hexdigest()
+
+    async def copy(self) -> "_Md5Hasher":
+        rv = _Md5Hasher()
+        rv._hasher = self._hasher.copy()
+        return rv
+
+
+async def _create_md5_hasher() -> Hasher:
+    return _Md5Hasher()
+
+
+class TestGetFileHash(IsolatedAsyncioTestCase):
+    async def testUsesNodeHasher(self) -> None:
+        # given
+        data = b"x" * (300 * 1024)
+        node = make_node(node_id="f1", name="a.bin")
+        decoy = Decoy()
+        self.addCleanup(decoy.reset)
+        drive = decoy.mock(cls=Drive)
+        decoy.when(await drive.get_hasher_factory(node)).then_return(_create_md5_hasher)
+
+        with TemporaryDirectory() as tmp, ThreadPoolExecutor() as pool:
+            path = Path(tmp) / "a.bin"
+            path.write_bytes(data)
+            # when
+            rv = await get_file_hash(path, pool=pool, drive=drive, node=node)
+
+        # then
+        self.assertEqual(rv, md5(data).hexdigest())
+
+
+class _ReadableBytes:
+    """A ``ReadableFile`` over *data* whose stream ends after *available* bytes."""
+
+    def __init__(self, data: bytes, *, available: int | None = None) -> None:
+        self._data = data
+        self._end = len(data) if available is None else available
+        self._offset = 0
+
+    async def read(self, length: int) -> bytes:
+        chunk = self._data[self._offset : min(self._offset + length, self._end)]
+        self._offset += len(chunk)
+        return chunk
+
+    async def seek(self, offset: int) -> int:
+        self._offset = offset
+        return offset
+
+
+class TestDownloadFileToLocal(IsolatedAsyncioTestCase):
+    _DATA = b"0123456789"
+
+    def setUp(self) -> None:
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._dir = Path(tmp.name)
+        self._node = replace(make_node(node_id="f1", name="f.bin"), size=10)
+
+    def _drive(self, *files: _ReadableBytes) -> Drive:
+        remaining = list(files)
+
+        @asynccontextmanager
+        async def download_file(node: Node):
+            yield remaining.pop(0)
+
+        drive = MagicMock(spec=Drive)
+        drive.download_file = download_file
+        return drive
+
+    async def testComplete(self) -> None:
+        # given
+        drive = self._drive(_ReadableBytes(self._DATA))
+        # when
+        rv = await download_file_to_local(drive, self._node, self._dir)
+        # then
+        self.assertEqual(rv, self._dir / "f.bin")
+        self.assertEqual(rv.read_bytes(), self._DATA)
+
+    async def testShortStreamIsNotTakenAsComplete(self) -> None:
+        # given
+        drive = self._drive(_ReadableBytes(self._DATA, available=4))
+        # when
+        with self.assertRaisesRegex(RuntimeError, "4 of 10 bytes"):
+            await download_file_to_local(drive, self._node, self._dir)
+        # then
+        self.assertFalse((self._dir / "f.bin").exists())
+        self.assertEqual((self._dir / "f.bin.__tmp__").read_bytes(), b"0123")
+
+    async def testRetryResumesThePartialFile(self) -> None:
+        # given
+        drive = self._drive(
+            _ReadableBytes(self._DATA, available=4), _ReadableBytes(self._DATA)
+        )
+        with self.assertRaises(RuntimeError):
+            await download_file_to_local(drive, self._node, self._dir)
+        # when
+        rv = await download_file_to_local(drive, self._node, self._dir)
+        # then
+        self.assertEqual(rv.read_bytes(), self._DATA)
+        self.assertFalse((self._dir / "f.bin.__tmp__").exists())

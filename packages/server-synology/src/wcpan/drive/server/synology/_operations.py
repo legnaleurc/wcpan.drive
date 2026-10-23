@@ -1,0 +1,241 @@
+"""Synology Drive implementation of ``NodeOperations``."""
+
+from collections.abc import AsyncGenerator, AsyncIterable
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from logging import getLogger
+
+from wcpan.drive.protocol.lib import guess_mime_type, parse_content_range, utc_now
+from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server.exceptions import (
+    OperationConflictError,
+    OperationUnavailableError,
+    UnknownNodeError,
+)
+from wcpan.drive.server.types import NodeObservation, NodeSyncService
+from wcpan.synology.exceptions import (
+    SynologyApiError,
+    SynologyNetworkError,
+    SynologyNotFoundError,
+    SynologyUploadConflictError,
+)
+from wcpan.synology.types import (
+    SynologyClient,
+    SynologyPermanentLink,
+)
+
+from ._convert import SYNOLOGY_HASH_ALGORITHM, SynologyLocator
+from ._errors import operation_error
+from ._lookup import find_file
+from ._paths import SynologyPathService
+
+
+_L = getLogger(__name__)
+
+
+class SynologyNodeOperations:
+    def __init__(
+        self,
+        *,
+        drive_api: SynologyClient,
+        syno_paths: SynologyPathService,
+        node_sync: NodeSyncService,
+    ) -> None:
+        self._drive_api = drive_api
+        self._syno_paths = syno_paths
+        self._node_sync = node_sync
+
+    async def _stable_node_ref(self, record: NodeRecord) -> SynologyPermanentLink:
+        try:
+            return await self._syno_paths.permanent_link(record.id)
+        except UnknownNodeError as e:
+            raise OperationUnavailableError(
+                f"{record.id} is not a Synology node"
+            ) from e
+
+    async def create_folder(self, parent_id: NodeId, name: str) -> NodeRecord:
+        async with self._node_sync.observe() as read:
+            parent_ref = await self._syno_paths.synology_parent_ref(parent_id)
+            try:
+                info = await self._drive_api.create_folder(parent_ref, name)
+            except SynologyUploadConflictError as e:
+                record = await self._upsert_existing_child(parent_id, name)
+                raise OperationConflictError(
+                    f"{name!r} already exists in this folder", record=record
+                ) from e
+            except SynologyNetworkError as e:
+                raise OperationUnavailableError(str(e)) from e
+            except SynologyApiError as e:
+                raise operation_error(e) from e
+
+            permanent_link = info.get("permanent_link")
+            if not permanent_link:
+                _L.warning(
+                    "create_folder response missing permanent_link for file_id=%s; aborting",
+                    info["file_id"],
+                )
+                raise OperationUnavailableError(
+                    "Synology did not return permanent_link for new folder"
+                )
+            (node_id,) = await self._syno_paths.ids.public([permanent_link])
+            record = NodeRecord(
+                id=node_id,
+                parent_id=parent_id,
+                name=info["name"],
+                is_directory=True,
+                created_time=info.get("created_time", 0),
+                modified_time=info.get("modified_time", 0),
+                changed_time=info.get("change_time", 0),
+                mime_type="application/x-directory",
+                hash="",
+                hash_algorithm="",
+                size=0,
+                is_image=False,
+                is_video=False,
+                width=0,
+                height=0,
+            )
+            return await self._node_sync.upsert(
+                NodeObservation(
+                    record=record, locator=SynologyLocator(info["file_id"])
+                ),
+                read=read,
+            )
+
+    async def update(
+        self,
+        record: NodeRecord,
+        *,
+        name: str | None,
+        parent_id: NodeId | None,
+    ) -> NodeRecord:
+        async with self._node_sync.observe() as read:
+            updated = record
+            locator: SynologyLocator | None = None
+
+            if name and name != record.name:
+                try:
+                    info = await self._drive_api.rename(
+                        await self._stable_node_ref(updated), name
+                    )
+                except SynologyUploadConflictError as e:
+                    raise OperationConflictError(
+                        f"{name!r} already exists in this folder"
+                    ) from e
+                except SynologyNetworkError as e:
+                    raise OperationUnavailableError(str(e)) from e
+                except SynologyApiError as e:
+                    raise operation_error(e) from e
+                hash_ = updated.hash
+                hash_algorithm = updated.hash_algorithm
+                if not updated.is_directory and "hash" in info:
+                    hash_ = info["hash"]
+                    hash_algorithm = SYNOLOGY_HASH_ALGORITHM if hash_ else ""
+                updated = replace(
+                    updated,
+                    name=info["name"],
+                    created_time=info.get("created_time", 0) or updated.created_time,
+                    modified_time=info.get("modified_time", 0) or updated.modified_time,
+                    changed_time=info.get("change_time", 0) or updated.changed_time,
+                    mime_type=guess_mime_type(
+                        info["name"], is_directory=updated.is_directory
+                    ),
+                    hash=hash_,
+                    hash_algorithm=hash_algorithm,
+                    size=info.get("size", updated.size),
+                )
+                if raw := info.get("file_id"):
+                    locator = SynologyLocator(raw)
+
+            if parent_id and parent_id != record.parent_id:
+                parent_ref = await self._syno_paths.synology_parent_ref(parent_id)
+                try:
+                    await self._drive_api.move(
+                        await self._stable_node_ref(updated), parent_ref
+                    )
+                except SynologyNetworkError as e:
+                    raise OperationUnavailableError(str(e)) from e
+                except SynologyApiError as e:
+                    raise operation_error(e) from e
+                actual = await self._resolve_after_move(updated, parent_id)
+                if actual is None:
+                    updated = replace(
+                        updated, parent_id=parent_id, changed_time=utc_now()
+                    )
+                else:
+                    updated = actual.record
+                    locator = actual.locator
+                    if updated.id != record.id:
+                        await self._node_sync.delete(record.id, read=read)
+
+            return await self._node_sync.upsert(
+                NodeObservation(record=updated, locator=locator), read=read
+            )
+
+    async def delete(self, record: NodeRecord) -> None:
+        async with self._node_sync.observe() as read:
+            try:
+                await self._drive_api.delete(await self._stable_node_ref(record))
+            except SynologyNotFoundError:
+                # Already gone: deleting is done, only the mirror lags.
+                pass
+            except SynologyNetworkError as e:
+                raise OperationUnavailableError(str(e)) from e
+            except SynologyApiError as e:
+                raise operation_error(e) from e
+            await self._node_sync.delete(record.id, read=read)
+
+    @asynccontextmanager
+    async def download(
+        self, record: NodeRecord, *, offset: int, length: int
+    ) -> AsyncGenerator[AsyncIterable[bytes], None]:
+        ref = await self._stable_node_ref(record)
+        end = offset + length
+        try:
+            async with self._drive_api.download(
+                ref, range_=slice(offset, end)
+            ) as response:
+                # A full response or a JSON error (an expired session) is not the
+                # range. The total may differ from the mirrored size if the file
+                # changed since; the positions are what was asked for.
+                content_range = response.headers.get("Content-Range", "")
+                parsed = parse_content_range(content_range)
+                if response.status != 206 or (
+                    parsed is None or parsed[:2] != (offset, end - 1)
+                ):
+                    raise OperationUnavailableError(
+                        f"expected 206 for bytes {offset}-{end - 1}, got "
+                        f"{response.status} with Content-Range {content_range!r}"
+                    )
+                yield response.content.iter_any()
+        except SynologyNetworkError as e:
+            raise OperationUnavailableError(str(e)) from e
+
+    async def _upsert_existing_child(self, parent_id: NodeId, name: str) -> NodeRecord:
+        """Mirror the node that holds *name* under *parent_id* (conflict recovery)."""
+        async with self._node_sync.observe() as read:
+            info = await self._syno_paths.find_child_by_name(
+                self._drive_api, parent_id, name
+            )
+            if info is None:
+                raise OperationConflictError(
+                    f"Name conflict for {name!r} but existing node could not be resolved"
+                )
+            observation = await self._syno_paths.convert_one(info, parent_id)
+            if observation is None:
+                raise OperationUnavailableError(
+                    "Synology API response missing permanent_link"
+                )
+            return await self._node_sync.upsert(observation, read=read)
+
+    async def _resolve_after_move(
+        self, record: NodeRecord, parent_id: NodeId
+    ) -> NodeObservation | None:
+        info = await find_file(self._drive_api, await self._stable_node_ref(record))
+        if info is None:
+            info = await self._syno_paths.find_child_by_name(
+                self._drive_api, parent_id, record.name
+            )
+        if info is None:
+            return None
+        return await self._syno_paths.convert_one(info, parent_id)

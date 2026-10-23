@@ -1,0 +1,118 @@
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import asynccontextmanager
+from multiprocessing import get_all_start_methods, get_context
+from pathlib import PurePath
+
+from ..exceptions import NodeNotFoundError
+from ..types import ChangeAction, Node, NodeQuery, NodeSummary
+from .lib import OffMainProcess
+from .outer import (
+    apply_changes,
+    get_child_by_name,
+    get_children_by_id,
+    get_current_cursor,
+    get_node_by_id,
+    get_node_by_path,
+    get_node_ids,
+    get_root,
+    get_trashed_nodes,
+    initialize,
+    query_nodes,
+    reset,
+    resolve_path_by_id,
+    set_root,
+    summarize_nodes,
+)
+
+
+@asynccontextmanager
+async def create_cache(path: str, /):
+    """Open the SQLite metadata cache stored at *path*."""
+    if not path:
+        raise ValueError("cache path is empty")
+    # Python 3.13 still forks by default on Linux, which can deadlock a worker
+    # of a multi-threaded process; Windows has no forkserver and spawns.
+    method = "forkserver" if "forkserver" in get_all_start_methods() else None
+    with ProcessPoolExecutor(mp_context=get_context(method)) as pool:
+        bg = OffMainProcess(dsn=path, pool=pool)
+        await bg(initialize)
+        yield SqliteCache(bg)
+
+
+class SqliteCache:
+    """Local mirror of one source's metadata, kept in a SQLite file."""
+
+    def __init__(self, bg: OffMainProcess) -> None:
+        self._bg = bg
+
+    async def get_current_cursor(self) -> str:
+        cursor = await self._bg(get_current_cursor)
+        return "" if not cursor else cursor
+
+    async def get_node_ids(self) -> list[str]:
+        """IDs of every cached node, the root included."""
+        return await self._bg(get_node_ids)
+
+    async def reset(self) -> None:
+        """Forget every node, the root, and the cursor."""
+        await self._bg(reset)
+
+    async def get_root(self) -> Node:
+        root = await self._bg(get_root)
+        if not root:
+            raise NodeNotFoundError("root")
+        return root
+
+    async def set_root(self, node: Node) -> None:
+        await self._bg(set_root, node)
+
+    async def get_node_by_id(self, node_id: str) -> Node:
+        node = await self._bg(get_node_by_id, node_id)
+        if not node:
+            raise NodeNotFoundError(node_id)
+        return node
+
+    async def get_node_by_path(self, path: PurePath) -> Node:
+        if not path.is_absolute():
+            raise ValueError("path must be an absolute path")
+        node = await self._bg(get_node_by_path, path)
+        if not node:
+            raise NodeNotFoundError(str(path))
+        return node
+
+    async def resolve_path_by_id(self, node_id: str) -> PurePath:
+        path = await self._bg(resolve_path_by_id, node_id)
+        if not path:
+            raise NodeNotFoundError(node_id)
+        return path
+
+    async def get_child_by_name(self, name: str, parent_id: str) -> Node:
+        node = await self._bg(get_child_by_name, name, parent_id)
+        if not node:
+            raise NodeNotFoundError(name)
+        return node
+
+    async def get_children_by_id(self, parent_id: str) -> list[Node]:
+        return await self._bg(get_children_by_id, parent_id)
+
+    async def get_trashed_nodes(self) -> list[Node]:
+        return await self._bg(get_trashed_nodes)
+
+    async def apply_changes(
+        self,
+        changes: list[ChangeAction],
+        cursor: str,
+    ) -> None:
+        return await self._bg(apply_changes, changes, cursor)
+
+    async def query_nodes(self, query: NodeQuery) -> list[Node]:
+        nodes = await self._bg(query_nodes, query)
+        if nodes is None:
+            raise NodeNotFoundError(query.ancestor_id or "")
+        return nodes
+
+    async def summarize_nodes(self, query: NodeQuery) -> NodeSummary:
+        summary = await self._bg(summarize_nodes, query)
+        if summary is None:
+            raise NodeNotFoundError(query.ancestor_id or "")
+        return summary

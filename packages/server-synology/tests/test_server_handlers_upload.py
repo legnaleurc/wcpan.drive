@@ -1,0 +1,772 @@
+"""Tests for the four resumable upload session handlers."""
+
+import asyncio
+import json
+import tempfile
+import unicodedata
+from pathlib import Path
+from typing import cast
+from unittest.mock import AsyncMock, patch
+
+from aiohttp import web
+from aiohttp.base_protocol import BaseProtocol
+from aiohttp.streams import StreamReader
+from aiohttp.test_utils import make_mocked_request
+from decoy import matchers
+from wcpan.drive.protocol.types import NodeId
+from wcpan.drive.server._handlers.upload import (
+    create_upload_session,
+    delete_upload_session,
+    head_upload_session,
+    patch_upload_chunk,
+)
+from wcpan.drive.server._keys import (
+    MIRROR_KEY,
+    OFF_MAIN_KEY,
+    READY_KEY,
+    UPLOAD_SERVICE_KEY,
+    WRITE_QUEUE_KEY,
+)
+from wcpan.drive.server._services.media.enricher import MediaEnrichmentError
+from wcpan.drive.server._services.media.probe.runner import ProbeRunner
+from wcpan.drive.server._services.media.probe.source import ProbeFailure
+from wcpan.drive.server._services.media.probing import MediaProbing
+from wcpan.drive.server._services.mirror.store import (
+    MirrorStore,
+)
+from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.upload.service import (
+    _L,
+    SessionState,
+    UploadService,
+    UploadSession,
+    UploadSessionStore,
+)
+from wcpan.drive.server._services.upload.spool import _L as _SPOOL_L
+from wcpan.drive.server._services.upload.spool import (
+    SpooledFile,
+    SpooledFiles,
+    create_spool_area,
+)
+from wcpan.drive.server.synology._convert import SynologyLocator
+from wcpan.drive.server.synology._mounts import MountRegistry
+from wcpan.drive.server.synology._paths import SynologyPathService
+from wcpan.drive.server.synology._store import SynologyStore
+from wcpan.drive.server.synology._upload import SynologyUploader
+from wcpan.synology.exceptions import (
+    SynologyDirectoryNotFoundError,
+    SynologyNetworkError,
+    SynologyUploadError,
+    SynologyUploadNameTooLongError,
+)
+from wcpan.synology.types import (
+    SynologyChildRef,
+    SynologyClient,
+    SynologyFileId,
+    SynologyFileInfo,
+    SynologyPermanentLink,
+)
+
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts, make_request
+
+
+_P1 = SynologyFileId(file_id="p1")
+
+
+class _MockOffMain:
+    """Executes functions synchronously for testing."""
+
+    async def __call__(self, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    async def untimed(self, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+
+class _UploadTestCase(DecoyTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
+        self._spool = self.enterContext(create_spool_area(tmp_dir=Path(self._tmp.name)))
+        self._store = UploadSessionStore()
+        self._app: web.Application | None = None
+        self.drive_api = self.decoy.mock(cls=SynologyClient)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def asyncSetUp(self) -> None:
+        self.decoy.when(
+            await self.drive_api.list_folder(
+                matchers.Anything(), offset=matchers.Anything()
+            )
+        ).then_return(([], 0))
+
+    async def asyncTearDown(self) -> None:
+        # Close the spool files of sessions a test leaves behind.
+        if self._app is not None:
+            await self._service.close()
+
+    async def _make_app(self) -> web.Application:
+        if self._app is not None:
+            return self._app
+        app = web.Application()
+        off_main = _MockOffMain()
+        wq: asyncio.Queue = asyncio.Queue()
+        mirror = self.decoy.mock(cls=MirrorStore)
+        store = self.decoy.mock(cls=SynologyStore)
+        self.decoy.when(await store.get_locators(matchers.Anything())).then_return({})
+        self.decoy.when(await store.get_locators([NodeId("p1")])).then_return(
+            {NodeId("p1"): SynologyLocator("p1")}
+        )
+        syno_paths = SynologyPathService(
+            ids=IdentityIds(),
+            registry=MountRegistry(
+                mounts=make_mounts({"tmp": "/team-folders/download"}),
+                root_ids={},
+            ),
+            store=store,
+        )
+        node_sync = NodeSyncService(
+            mirror=mirror,
+            write_queue=wq,
+            probing=MediaProbing(runner=ProbeRunner()),
+            metadata_queue=asyncio.Queue(),
+        )  # type: ignore[arg-type]
+        ready = asyncio.Event()
+        ready.set()
+        app[READY_KEY] = ready
+        app[OFF_MAIN_KEY] = off_main  # type: ignore[assignment]
+        app[MIRROR_KEY] = mirror
+        app[WRITE_QUEUE_KEY] = wq
+        uploader = SynologyUploader(
+            drive_api=self.drive_api,
+            syno_paths=syno_paths,
+            node_sync=node_sync,
+        )
+        self._files = SpooledFiles(
+            uploader=uploader,
+            area=self._spool,
+            media=MediaProbing(runner=ProbeRunner()),
+        )
+        self._service = UploadService(
+            store=self._store, uploader=uploader, files=self._files
+        )
+        app[UPLOAD_SERVICE_KEY] = self._service
+        self._app = app
+        return app
+
+    async def _session(self, total: int, name: str = "f.bin") -> UploadSession:
+        """A registered session spooling to a real temporary file."""
+        await self._make_app()
+        file = await self._files.open(
+            NodeId("p1"), name, total, mime_type=None, media_info=None
+        )
+        session = UploadSession(
+            session_id=f"session-{name}",
+            parent_id=NodeId("p1"),
+            name=name,
+            total_size=total,
+            mime_type=None,
+            media_info=None,
+            file=file,
+        )
+        self._store.add(session)
+        return session
+
+    async def _rehearse_upload(self, name: str = matchers.Anything()):
+        return await self.drive_api.upload(
+            parent_path=_P1,
+            name=name,
+            data=matchers.Anything(),
+            mime_type=matchers.AnythingOrNone(),
+        )
+
+
+# ---------- create_upload_session ----------
+
+
+class TestCreateUploadSession(_UploadTestCase):
+    async def test_success_returns_201_with_location_and_upload_length(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"parent_id": "p1"},
+            json_body={"name": "file.bin", "size": 1024},
+        )
+        # when
+        resp = await create_upload_session(req)
+        # then
+        self.assertEqual(resp.status, 201)
+        self.assertIn("/api/v1/uploads/", resp.headers["Location"])
+        self.assertEqual(resp.headers["Upload-Length"], "1024")
+
+    async def test_name_is_normalized_to_nfc(self):
+        # given
+        raw_name = "かなは\u3099.txt"
+        normalized_name = unicodedata.normalize("NFC", raw_name)
+        app = await self._make_app()
+        req = make_request(
+            app=app,
+            match_info={"parent_id": "p1"},
+            json_body={"name": raw_name, "size": 1024},
+        )
+        # when
+        resp = await create_upload_session(req)
+        # then
+        session_id = resp.headers["Location"].split("/")[-1]
+        session = self._store.get(session_id)
+        self.assertIsNotNone(session)
+        assert session is not None
+        self.assertEqual(session.name, normalized_name)
+        self.decoy.verify(
+            await self.drive_api.get_file(
+                SynologyChildRef(parent_ref=_P1, name=normalized_name)
+            ),
+            times=1,
+        )
+
+    async def test_missing_name_raises_400(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"parent_id": "p1"},
+            json_body={"size": 1024},
+        )
+        # when / then
+        with self.assertRaises(web.HTTPBadRequest):
+            await create_upload_session(req)
+
+    async def test_missing_size_raises_400(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"parent_id": "p1"},
+            json_body={"name": "file.bin"},
+        )
+        # when / then
+        with self.assertRaises(web.HTTPBadRequest):
+            await create_upload_session(req)
+
+    async def test_invalid_size_raises_400(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"parent_id": "p1"},
+            json_body={"name": "file.bin", "size": "abc"},
+        )
+        # when / then
+        with self.assertRaises(web.HTTPBadRequest):
+            await create_upload_session(req)
+
+    async def test_zero_size_raises_400(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"parent_id": "p1"},
+            json_body={"name": "file.bin", "size": 0},
+        )
+        # when / then
+        with self.assertRaises(web.HTTPBadRequest):
+            await create_upload_session(req)
+
+    async def test_media_params_stored_in_media_info(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"parent_id": "p1"},
+            json_body={"name": "img.jpg", "size": 500, "width": 800, "height": 600},
+        )
+        # when
+        resp = await create_upload_session(req)
+        # then
+        location = resp.headers["Location"]
+        session_id = location.split("/")[-1]
+        session = self._store.get(session_id)
+        self.assertIsNotNone(session)
+        assert session is not None
+        self.assertIsNotNone(session.media_info)
+        assert session.media_info is not None
+        self.assertEqual(session.media_info.width, 800)
+        self.assertEqual(session.media_info.height, 600)
+
+    async def test_conflict_returns_409_with_existing_node(self):
+        # given
+        app = await self._make_app()
+        self.decoy.when(
+            await self.drive_api.get_file(
+                SynologyChildRef(parent_ref=_P1, name="file.bin")
+            )
+        ).then_return(
+            {
+                "file_id": "existing-1",
+                "permanent_link": "existing-1",
+                "parent_id": "p1",
+                "display_path": "/volume1/p1/file.bin",
+                "name": "file.bin",
+                "type": "file",
+                "content_type": "file",
+                "size": 512,
+                "created_time": 0,
+                "modified_time": 0,
+                "change_time": 0,
+                "sync_id": 1,
+            }
+        )
+        req = make_request(
+            app=app,
+            match_info={"parent_id": "p1"},
+            json_body={"name": "file.bin", "size": 1024},
+        )
+        # when
+        resp = await create_upload_session(req)
+        # then
+        self.assertEqual(resp.status, 409)
+        self.assertIsNone(self._store.get("file.bin"))
+
+    async def test_missing_parent_on_lookup_raises_410(self):
+        # given
+        app = await self._make_app()
+        self.decoy.when(
+            await self.drive_api.get_file(
+                SynologyChildRef(parent_ref=_P1, name="file.bin")
+            )
+        ).then_raise(SynologyDirectoryNotFoundError("gone", error_code=1008))
+        req = make_request(
+            app=app,
+            match_info={"parent_id": "p1"},
+            json_body={"name": "file.bin", "size": 1024},
+        )
+        # when / then
+        with self.assertRaises(web.HTTPGone):
+            await create_upload_session(req)
+
+
+# ---------- head_upload_session ----------
+
+
+class TestHeadUploadSession(_UploadTestCase):
+    async def test_returns_200_with_upload_offset_and_length(self):
+        # given
+        session = await self._session(2048)
+        session.received = 512
+
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+        )
+        # when
+        resp = await head_upload_session(req)
+        # then
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Upload-Offset"], "512")
+        self.assertEqual(resp.headers["Upload-Length"], "2048")
+
+    async def test_nothing_received_returns_200_with_zero_offset(self):
+        # given
+        session = await self._session(2048)
+
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+        )
+        # when
+        resp = await head_upload_session(req)
+        # then
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Upload-Offset"], "0")
+        self.assertEqual(resp.headers["Upload-Length"], "2048")
+
+    async def test_unknown_session_raises_404(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": "nonexistent"},
+        )
+        # when / then
+        with self.assertRaises(web.HTTPNotFound):
+            await head_upload_session(req)
+
+    async def test_head_refreshes_session_activity(self):
+        # given
+        session = await self._session(2048)
+        session.last_activity = 10.0
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+        )
+
+        # when
+        with patch(
+            "wcpan.drive.server._services.upload.service.time.monotonic",
+            return_value=20.0,
+        ):
+            await head_upload_session(req)
+
+        # then
+        self.assertEqual(session.last_activity, 20.0)
+
+    async def test_expired_session_is_removed_with_temp_file(self):
+        # given
+        session = await self._session(2048)
+        path = cast(SpooledFile, session.file).path
+        session.last_activity = 10.0
+
+        # when
+        removed = await self._service.remove_expired(now=3610.0, ttl=3600.0)
+
+        # then
+        self.assertEqual(removed, 1)
+        self.assertIsNone(self._store.get(session.session_id))
+        self.assertFalse(path.exists())
+
+    async def test_active_session_is_not_expired(self):
+        # given
+        session = await self._session(2048)
+        session.last_activity = 10.0
+        session.state = SessionState.WRITING
+
+        # when
+        removed = await self._service.remove_expired(now=10_000.0, ttl=3600.0)
+
+        # then
+        self.assertEqual(removed, 0)
+        self.assertIsNotNone(self._store.get(session.session_id))
+        # No writer exists to abort it, so let teardown do so.
+        session.state = SessionState.IDLE
+
+
+# ---------- delete_upload_session ----------
+
+
+class TestDeleteUploadSession(_UploadTestCase):
+    async def test_returns_204_and_removes_session(self):
+        # given
+        session = await self._session(100)
+        session_id = session.session_id
+
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session_id},
+        )
+        # when
+        resp = await delete_upload_session(req)
+        # then
+        self.assertEqual(resp.status, 204)
+        self.assertIsNone(self._store.get(session_id))
+
+    async def test_unknown_session_raises_404(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": "nonexistent"},
+        )
+        # when / then
+        with self.assertRaises(web.HTTPNotFound):
+            await delete_upload_session(req)
+
+
+# ---------- patch_upload_chunk ----------
+
+
+class TestPatchUploadChunk(_UploadTestCase):
+    async def _make_session(self, total: int = 100) -> UploadSession:
+        return await self._session(total)
+
+    async def test_partial_upload_returns_204_with_upload_offset(self):
+        # given
+        session = await self._make_session(total=200)
+        chunk = b"x" * 100  # only half the file
+
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+            headers={"Upload-Offset": "0"},
+            body=chunk,
+        )
+        # when
+        resp = await patch_upload_chunk(req)
+        # then
+        self.assertEqual(resp.status, 204)
+        self.assertEqual(resp.headers["Upload-Offset"], "100")
+
+    async def test_wrong_offset_returns_409_with_upload_offset(self):
+        # given
+        session = await self._make_session(total=200)
+        session.received = 50  # server has 50 bytes
+
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+            headers={"Upload-Offset": "0"},
+            body=b"x" * 100,
+        )
+        # when
+        resp = await patch_upload_chunk(req)
+        # then
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(resp.headers["Upload-Offset"], "50")
+
+    async def test_missing_upload_offset_raises_400(self):
+        # given
+        session = await self._make_session()
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+            headers={},
+            body=b"x" * 50,
+        )
+        # when / then
+        with self.assertRaises(web.HTTPBadRequest):
+            await patch_upload_chunk(req)
+
+    async def test_non_integer_upload_offset_raises_400(self):
+        # given
+        session = await self._make_session()
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+            headers={"Upload-Offset": "abc"},
+            body=b"x" * 50,
+        )
+        # when / then
+        with self.assertRaises(web.HTTPBadRequest):
+            await patch_upload_chunk(req)
+
+    async def test_negative_upload_offset_raises_400(self):
+        # given
+        session = await self._make_session()
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+            headers={"Upload-Offset": "-1"},
+            body=b"x" * 50,
+        )
+        # when / then
+        with self.assertRaises(web.HTTPBadRequest):
+            await patch_upload_chunk(req)
+
+    async def test_body_exceeding_total_size_raises_400(self):
+        # given
+        session = await self._make_session(total=50)
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": session.session_id},
+            headers={"Upload-Offset": "0"},
+            body=b"x" * 100,  # twice the declared size
+        )
+        # when / then
+        with self.assertRaises(web.HTTPBadRequest):
+            await patch_upload_chunk(req)
+
+    async def test_unknown_session_raises_404(self):
+        # given
+        req = make_request(
+            app=await self._make_app(),
+            match_info={"session_id": "nonexistent"},
+            headers={"Upload-Offset": "0"},
+            body=b"x" * 10,
+        )
+        # when / then
+        with self.assertRaises(web.HTTPNotFound):
+            await patch_upload_chunk(req)
+
+    async def test_final_chunk_triggers_synology_upload(self):
+        # given
+        session = await self._make_session(total=50)
+        chunk = b"y" * 50
+
+        app = await self._make_app()
+        uploaded: SynologyFileInfo = {
+            "file_id": "new-node-1",
+            "permanent_link": "new-node-1",
+            "parent_id": "p1",
+            "name": "f.bin",
+            "type": "file",
+            "content_type": "file",
+            "size": 50,
+            "created_time": 0,
+            "modified_time": 0,
+            "change_time": 0,
+            "sync_id": 1,
+        }
+        self.decoy.when(await self._rehearse_upload("f.bin")).then_return(uploaded)
+        with patch.object(_L, "debug") as debug_log:
+            req = make_request(
+                app=app,
+                match_info={"session_id": session.session_id},
+                headers={"Upload-Offset": "0"},
+                body=chunk,
+            )
+            # when
+            resp = await patch_upload_chunk(req)
+
+        # then
+        self.assertEqual(resp.status, 201)
+        # Session should be removed after successful upload.
+        self.assertIsNone(self._store.get(session.session_id))
+        debug_messages = [it.args[0] for it in debug_log.call_args_list]
+        self.assertIn(
+            "begin finalising upload session session_id=%r name=%r parent_id=%r",
+            debug_messages,
+        )
+        self.assertIn(
+            "finalised upload session session_id=%r name=%r parent_id=%r id=%r",
+            debug_messages,
+        )
+
+    async def test_finalise_failure_logs_warning_and_keeps_session(self):
+        # given
+        session = await self._make_session(total=50)
+        app = await self._make_app()
+
+        self.decoy.when(await self._rehearse_upload()).then_raise(
+            SynologyUploadError("upload failed", file_name="f.bin")
+        )
+        with patch.object(_L, "warning") as warning_log:
+            req = make_request(
+                app=app,
+                match_info={"session_id": session.session_id},
+                headers={"Upload-Offset": "0"},
+                body=b"y" * 50,
+            )
+            # when / then
+            with self.assertRaises(web.HTTPInsufficientStorage):
+                await patch_upload_chunk(req)
+
+        # then
+        self.assertIsNotNone(self._store.get(session.session_id))
+        warning_log.assert_called_once()
+        self.assertEqual(
+            warning_log.call_args.args[0],
+            "upload session permanently failed during finalisation session_id=%r name=%r parent_id=%r error=%s",
+        )
+
+    async def test_name_too_long_returns_typed_422(self):
+        # given
+        session = await self._make_session(total=50)
+        app = await self._make_app()
+        self.decoy.when(await self._rehearse_upload()).then_raise(
+            SynologyUploadNameTooLongError(
+                "File name is too long", file_name="f.bin", error_code=1035
+            )
+        )
+        req = make_request(
+            app=app,
+            match_info={"session_id": session.session_id},
+            headers={"Upload-Offset": "0"},
+            body=b"y" * 50,
+        )
+
+        # when
+        resp = await patch_upload_chunk(req)
+
+        # then
+        self.assertEqual(resp.status, 422)
+        self.assertEqual(json.loads(resp.body)["error"], "name_too_long")
+
+    async def test_unreadable_media_is_deleted_and_returns_typed_422(self):
+        # given: an image uploaded without media info, which cannot be probed
+        session = await self._make_session(total=50)
+        app = await self._make_app()
+        uploaded: SynologyFileInfo = {
+            "file_id": "new-node-1",
+            "permanent_link": "new-link-1",
+            "parent_id": "p1",
+            "name": "f.bin",
+            "type": "file",
+            "content_type": "image",
+            "size": 50,
+            "created_time": 0,
+            "modified_time": 0,
+            "change_time": 0,
+            "sync_id": 1,
+        }
+        self.decoy.when(await self._rehearse_upload("f.bin")).then_return(uploaded)
+        req = make_request(
+            app=app,
+            match_info={"session_id": session.session_id},
+            headers={"Upload-Offset": "0"},
+            body=b"y" * 50,
+        )
+
+        # when
+        def unreadable(observation, **_):
+            raise MediaEnrichmentError(
+                observation.record, ProbeFailure.INVALID, "unreadable"
+            )
+
+        with patch(
+            "wcpan.drive.server._services.media.enricher.MediaEnrichService.enrich",
+            new_callable=AsyncMock,
+            side_effect=unreadable,
+        ):
+            resp = await patch_upload_chunk(req)
+
+        # then
+        self.assertEqual(resp.status, 422)
+        self.assertEqual(json.loads(resp.body)["error"], "invalid_media")
+        self.decoy.verify(
+            await self.drive_api.delete(
+                SynologyPermanentLink(permanent_link="new-link-1")
+            )
+        )
+        self.assertIsNone(self._store.get(session.session_id))
+
+    async def test_finalise_network_failure_logs_warning_and_keeps_session(self):
+        # given
+        session = await self._make_session(total=50)
+        app = await self._make_app()
+
+        self.decoy.when(await self._rehearse_upload()).then_raise(
+            SynologyNetworkError("connection reset")
+        )
+        with patch.object(_L, "warning") as warning_log:
+            req = make_request(
+                app=app,
+                match_info={"session_id": session.session_id},
+                headers={"Upload-Offset": "0"},
+                body=b"y" * 50,
+            )
+            # when / then
+            with self.assertRaises(web.HTTPServiceUnavailable):
+                await patch_upload_chunk(req)
+
+        # then
+        self.assertIsNotNone(self._store.get(session.session_id))
+        warning_log.assert_called_once()
+        self.assertEqual(
+            warning_log.call_args.args[0],
+            "upload session failed during finalisation session_id=%r name=%r parent_id=%r error=%s",
+        )
+
+    async def test_finalise_size_mismatch_logs_warning_and_keeps_session(self):
+        # given
+        session = await self._make_session(total=50)
+        app = await self._make_app()
+
+        with (
+            patch(
+                "wcpan.drive.server._services.upload.spool._flushed_size",
+                return_value=49,
+            ),
+            patch.object(_SPOOL_L, "warning") as warning_log,
+        ):
+            req = make_request(
+                app=app,
+                match_info={"session_id": session.session_id},
+                headers={"Upload-Offset": "0"},
+                body=b"y" * 50,
+            )
+            # when / then
+            with self.assertRaises(web.HTTPInsufficientStorage) as ctx:
+                await patch_upload_chunk(req)
+
+        # then
+        self.assertEqual(ctx.exception.reason, "Upload session size mismatch")
+        self.assertIsNotNone(self._store.get(session.session_id))
+        warning_log.assert_called_once()
+        self.assertEqual(
+            warning_log.call_args.args[0],
+            "upload spool size mismatch before finalisation name=%r parent_id=%r file_size=%d total_size=%d",
+        )
