@@ -236,7 +236,8 @@ Required invariants:
 6. Derived metadata applies only while its source observation remains current.
    Stale enrichment must not resurrect a removed node.
 7. Backfill and scoped repair cannot bypass concurrency control through a second
-   process. They run inside the server, triggered through an internal endpoint
+   process. Scoped repair runs inside the server; backfill, `gc`, and `squash`
+   are offline maintenance commands that run only while the server is stopped
    (see Observation ordering).
 8. Confirm the configured source is present before declaring its root covered.
    An unmounted filesystem exposing an empty mount-point directory must not erase
@@ -276,10 +277,12 @@ This replaces the stage 1 acceptance-order claims, which are the special case of
 ordering by when a write was accepted. It also lets notifications be processed
 during the startup scan instead of after it.
 
-Because the ordering lives in one process, startup scan, backfill, and scoped
-repair all run inside the server as one reconciliation mechanism. The `backfill`
-command becomes a client of an internal server endpoint rather than a second
-writer.
+The ordering lives in one process, so only one process may write the mirror at
+a time. Startup scan, webhooks, API writes, and scoped repair run inside the
+server. Backfill, `gc`, and `squash` stay offline maintenance commands that run
+only while the server is stopped; backfill shares the reconciliation semantics
+but not the server process. Startup scan already reconciles the whole mirror, so
+backfill is a targeted offline repair, not something run against a live server.
 
 ## Discovery progress and public cursors
 
@@ -506,10 +509,11 @@ Known remaining gaps, deferred to stage 3:
 - A node moved during the startup scan, after its new parent was listed and
   before its old parent was, is removed at the end of the scan. The queued
   webhook recreates it, so the feed shows removal and creation rather than a move.
-- Backfill runs in a separate process. Its stale upserts can still revert a
+- Backfill runs in a separate process. Its stale upserts could revert a
   concurrent webhook update. Claims are in-memory per process; only the
   conditional removal and the parent check protect across processes. Resolved
-  by observation ordering with backfill running inside the server.
+  by running backfill only while the server is stopped (see Observation
+  ordering).
 
 ### 2. Separate normalized records and backend state
 
@@ -538,10 +542,10 @@ name and invalidated when the source path changes.
 ### 3. Introduce operations and reconciliation boundaries
 
 First, replace the stage 1 claims with observation ordering, applied to scan,
-webhook, API, and backfill writes and to listing-derived removals. Move backfill
-behind an internal server endpoint and make the `backfill` command its client.
-Cover the stage 1 known gaps: a node moved during the scan is not removed, and
-backfill cannot revert a newer webhook update.
+webhook, API, and backfill writes and to listing-derived removals. Cover the
+stage 1 known gaps: a node moved during the scan is not removed, and backfill
+cannot revert a newer webhook update (backfill runs only while the server is
+stopped).
 
 Status: observation ordering is implemented (`services/ordering.py`); every
 `NodeSyncService` write takes the `ReadSeq` of the read it came from. Webhooks
@@ -550,8 +554,8 @@ that moved during the scan; instead, each end-of-scan removal root is first
 fetched by permanent link. If it still exists under a known parent, the move is
 recorded instead of the removal. Only a network failure preserves the node; API
 errors fall back to removal, so the check never removes more than before.
-Backfill ordering holds within one process; it still runs as a separate process
-until the internal endpoint exists (open decision 4).
+Backfill, `gc`, and `squash` remain offline commands that run only while the
+server is stopped, so no internal maintenance endpoint is needed.
 
 Move native API calls and exception handling out of generic handlers. Route scan,
 backfill, and scoped repair through common reconciliation semantics. Separate
@@ -617,12 +621,7 @@ Tests should verify behavioral guarantees rather than mirror implementation deta
    ambiguous entry renames.
 3. Choose the first supported filesystem/deployment requirements, including whether
    handle-based reopening privileges are required or optional.
-4. Protect the internal maintenance endpoint: the server has no authentication.
-   Options are a separate localhost-only listener or Unix socket, a configured
-   shared token, or relying on a trusted network. Also decide whether `gc` and
-   `squash`, which also write from a separate process, move behind the endpoint
-   or keep requiring a stopped server.
-5. Choose release automation and independent versus coordinated version policy
+4. Choose release automation and independent versus coordinated version policy
    after the initial `0.1.0` releases.
 
 ## References

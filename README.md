@@ -136,6 +136,10 @@ At startup, the server:
 `backfill PATH` operates on the server's virtual mirror paths. `/` is the
 server root; mounted Synology paths appear underneath it by mount label.
 
+`gc`, `backfill`, and `squash` are offline maintenance commands. Run them only
+while the server is stopped; they write the same database and are not
+coordinated with a running server.
+
 #### Config file
 
 ```yaml
