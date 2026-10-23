@@ -41,6 +41,7 @@ def _make_record(
         changed_time=_EPOCH,
         mime_type="text/plain",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=is_image,
         is_video=is_video,

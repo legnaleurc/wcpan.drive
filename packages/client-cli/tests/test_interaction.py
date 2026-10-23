@@ -316,7 +316,9 @@ class TestShellContextHash(IsolatedAsyncioTestCase):
     async def test_prints_hash_and_arg(self):
         drive = create_amock(Drive)
         home = make_node(is_directory=True)
-        target = replace(make_node(name="file.txt"), hash="abc123")
+        target = replace(
+            make_node(name="file.txt"), hash="abc123", hash_algorithm="md5"
+        )
         aexpect(drive.resolve_path).return_value = PurePath("/home")
         aexpect(drive.get_node_by_id).side_effect = NodeNotFoundError("not found")
         aexpect(drive.get_node_by_path).return_value = target

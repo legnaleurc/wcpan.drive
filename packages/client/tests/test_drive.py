@@ -50,6 +50,7 @@ def make_node(
         changed_time=epoch,
         mime_type="",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,
@@ -63,14 +64,14 @@ def make_node(
 class CreateDriveTestCase(IsolatedAsyncioTestCase):
     async def testCreate(self) -> None:
         file_service = Mock(spec=FileService)
-        file_service.api_version = 5
+        file_service.api_version = 6
         create_file_service = create_mocked_acm(file_service)
 
         create_file_service_middleware_1 = create_mocked_acm(file_service)
         create_file_service_middleware_2 = create_mocked_acm(file_service)
 
         snapshot_service = Mock(spec=SnapshotService)
-        snapshot_service.api_version = 5
+        snapshot_service.api_version = 6
         create_snapshot_service = create_mocked_acm(snapshot_service)
 
         create_snapshot_service_middleware_1 = create_mocked_acm(snapshot_service)
@@ -101,14 +102,14 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
 
     async def testMultiMode(self) -> None:
         file_service_1 = Mock(spec=FileService)
-        file_service_1.api_version = 5
+        file_service_1.api_version = 6
         file_service_2 = Mock(spec=FileService)
-        file_service_2.api_version = 5
+        file_service_2.api_version = 6
 
         snapshot_service_1 = Mock(spec=SnapshotService)
-        snapshot_service_1.api_version = 5
+        snapshot_service_1.api_version = 6
         snapshot_service_2 = Mock(spec=SnapshotService)
-        snapshot_service_2.api_version = 5
+        snapshot_service_2.api_version = 6
 
         async with create_multi_drive(
             sources=[
@@ -160,6 +161,7 @@ class GetHasherTestCase(IsolatedAsyncioTestCase):
         rv = await self._drive.get_hasher_factory(node)
 
         self.assertEqual(rv, 42)
+        aexpect(self._fs.get_hasher_factory).assert_awaited_once_with(node)
 
 
 class SnapshotTestCase(IsolatedAsyncioTestCase):
@@ -1114,6 +1116,11 @@ class MultiDriveGetHasherTestCase(IsolatedAsyncioTestCase):
         rv = await self._drive.get_hasher_factory(node)
 
         self.assertEqual(rv, 99)
+        unscoped = aexpect(
+            self._sources["local"].file_service.get_hasher_factory
+        ).await_args.args[0]
+        self.assertEqual(unscoped.id, "file1")
+        self.assertEqual(unscoped.parent_id, "root")
         aexpect(
             self._sources["google"].file_service.get_hasher_factory
         ).assert_not_awaited()
@@ -1183,11 +1190,11 @@ async def create_mocked_drive() -> AsyncIterator[
     tuple[Any, FileService, SnapshotService]
 ]:
     file_service = MagicMock(spec=FileService)
-    file_service.api_version = 5
+    file_service.api_version = 6
     create_file_service = create_mocked_acm(file_service)
 
     snapshot_service = MagicMock(spec=SnapshotService)
-    snapshot_service.api_version = 5
+    snapshot_service.api_version = 6
     create_snapshot_service = create_mocked_acm(snapshot_service)
 
     async with create_drive(
@@ -1210,12 +1217,12 @@ async def create_mocked_multi_drive(source_names: list[str]) -> AsyncIterator[An
 
     for name in source_names:
         fs = MagicMock(spec=FileService)
-        fs.api_version = 5
+        fs.api_version = 6
         # Default: authenticated
         fs.is_authenticated = AsyncMock(return_value=True)
 
         ss = MagicMock(spec=SnapshotService)
-        ss.api_version = 5
+        ss.api_version = 6
 
         source_configs.append(
             SourceConfig(

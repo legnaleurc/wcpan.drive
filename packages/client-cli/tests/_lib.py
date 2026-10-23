@@ -34,6 +34,7 @@ def make_node(
         changed_time=datetime(2024, 1, 2, tzinfo=UTC),
         mime_type=mime_type,
         hash="",
+        hash_algorithm="",
         size=size,
         is_image=False,
         is_video=False,

@@ -88,7 +88,10 @@ class Node:
         modified_time: Content modification timestamp.
         changed_time: Last backend-observable node record change timestamp.
         mime_type: MIME type string (e.g., "image/jpeg", "video/mp4").
-        hash: Content hash for files, empty string for directories.
+        hash: Content digest for files, empty string for directories.
+        hash_algorithm: Identifier of the algorithm that produced ``hash``
+            (e.g., "md5"). Empty string for directories. A file has either
+            both ``hash`` and ``hash_algorithm`` or neither.
         size: File size in bytes, 0 for directories.
         is_image: True if this is an image file with media metadata.
         is_video: True if this is a video file with media metadata.
@@ -125,6 +128,7 @@ class Node:
     changed_time: datetime
     mime_type: str
     hash: str
+    hash_algorithm: str
     size: int
     is_image: bool
     is_video: bool
@@ -132,6 +136,15 @@ class Node:
     height: int
     ms_duration: int
     private: PrivateDict | None
+
+    def __post_init__(self) -> None:
+        if self.is_directory:
+            if self.hash or self.hash_algorithm:
+                raise ValueError(f"directory {self.id} must not have a hash")
+        elif bool(self.hash) != bool(self.hash_algorithm):
+            raise ValueError(
+                f"file {self.id} must have both hash and hash_algorithm, or neither"
+            )
 
 
 type RemoveAction = tuple[Literal[True], str]
@@ -424,7 +437,7 @@ class Hasher(metaclass=ABCMeta):
     Example:
         Computing file hash::
 
-            >>> hasher_factory = await drive.get_hasher_factory()
+            >>> hasher_factory = await drive.get_hasher_factory(node)
             >>> hasher = await hasher_factory()
             >>> with open("file.txt", "rb") as f:
             ...     while chunk := f.read(8192):
@@ -518,12 +531,12 @@ type CreateHasher = Callable[[], Awaitable[Hasher]]
 """Factory function type for creating Hasher instances.
 
 Returns an awaitable that produces a new Hasher. Obtained from
-Drive.get_hasher_factory() or FileService.get_hasher_factory().
+Drive.get_hasher_factory(node) or FileService.get_hasher_factory(node).
 
 Example:
     Using hasher factory::
 
-        >>> hasher_factory = await drive.get_hasher_factory()
+        >>> hasher_factory = await drive.get_hasher_factory(node)
         >>> hasher = await hasher_factory()
         >>> await hasher.update(data)
 """
@@ -702,7 +715,7 @@ class Service(metaclass=ABCMeta):
                 >>> class MyFileService(FileService):
                 ...     @property
                 ...     def api_version(self) -> int:
-                ...         return 5
+                ...         return 6
         """
 
 
@@ -763,7 +776,7 @@ class FileService(Service, metaclass=ABCMeta):
 
     Implementations must:
         - Provide all abstract methods
-        - Return api_version = 5
+        - Return api_version = 6
         - Handle authentication appropriately
         - Support async context manager protocol
         - Raise appropriate exceptions on errors
@@ -780,7 +793,7 @@ class FileService(Service, metaclass=ABCMeta):
             >>> class MyCloudService(FileService):
             ...     @property
             ...     def api_version(self) -> int:
-            ...         return 5
+            ...         return 6
             ...
             ...     async def get_root(self) -> Node:
             ...         # Fetch root from API
@@ -1106,22 +1119,34 @@ class FileService(Service, metaclass=ABCMeta):
         """
 
     @abstractmethod
-    async def get_hasher_factory(self) -> CreateHasher:
-        """Get a factory for creating hash calculators.
+    async def get_hasher_factory(self, node: Node) -> CreateHasher:
+        """Get a factory for creating hash calculators for a file node.
 
-        Returns a factory function that creates Hasher instances compatible
-        with this service's hash algorithm (e.g., MD5, SHA-1, SHA-256).
+        Returns a factory function that creates Hasher instances matching
+        ``node.hash_algorithm`` (e.g., MD5, SHA-1, SHA-256). Algorithms may
+        differ between files of the same service.
+
+        The returned factory may be sent to a process pool, so it must be
+        picklable (a module-level function or a ``functools.partial`` of one).
+
+        Args:
+            node: The file node whose checksum will be verified.
 
         Returns:
             Factory function for creating Hasher instances.
 
+        Raises:
+            UnsupportedHashAlgorithmError: If the service cannot compute
+                ``node.hash_algorithm``. Services must not fall back to
+                another algorithm.
+
         Example:
             Implementation pattern::
 
-                >>> async def get_hasher_factory(self) -> CreateHasher:
-                ...     async def create_hasher() -> Hasher:
-                ...         return MD5Hasher()
-                ...     return create_hasher
+                >>> async def get_hasher_factory(self, node: Node) -> CreateHasher:
+                ...     if node.hash_algorithm != "md5":
+                ...         raise UnsupportedHashAlgorithmError(node)
+                ...     return create_md5_hasher
         """
 
     @abstractmethod
@@ -1210,7 +1235,7 @@ class SnapshotService(Service, metaclass=ABCMeta):
             >>> class SQLiteSnapshot(SnapshotService):
             ...     @property
             ...     def api_version(self) -> int:
-            ...         return 5
+            ...         return 6
             ...
             ...     async def get_root(self) -> Node:
             ...         # Query from database
@@ -2045,14 +2070,18 @@ class Drive(metaclass=ABCMeta):
     async def get_hasher_factory(self, node: Node) -> CreateHasher:
         """Get a factory for creating hash calculators for a given node.
 
-        Returns a factory function compatible with the hash algorithm used
-        by the backend that owns the node.
+        Returns a factory function compatible with ``node.hash_algorithm``,
+        as computed by the backend that owns the node.
 
         Args:
-            node: The node whose backend's hasher factory is returned.
+            node: The file node whose checksum will be verified.
 
         Returns:
             Factory function for creating Hasher instances.
+
+        Raises:
+            UnsupportedHashAlgorithmError: If the owning backend cannot
+                compute the node's hash algorithm.
 
         Example:
             Computing file hash::

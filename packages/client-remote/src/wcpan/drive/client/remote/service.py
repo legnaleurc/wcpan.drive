@@ -26,7 +26,7 @@ from ._lib import (
     node_record_from_dict,
 )
 from .exceptions import SynologyAccessError, SynologyServerError
-from .hasher import create_hasher
+from .hasher import get_hasher_factory
 from .http409 import node_from_409
 from .readable import ClientReadableFile
 from .writable import create_writable
@@ -40,7 +40,7 @@ class ClientFileService(FileService):
     @property
     @override
     def api_version(self) -> int:
-        return 5
+        return 6
 
     @override
     async def get_initial_cursor(self) -> str:
@@ -186,8 +186,8 @@ class ClientFileService(FileService):
             yield fout
 
     @override
-    async def get_hasher_factory(self) -> CreateHasher:
-        return create_hasher
+    async def get_hasher_factory(self, node: Node) -> CreateHasher:
+        return get_hasher_factory(node)
 
     @override
     async def is_authenticated(self) -> bool:

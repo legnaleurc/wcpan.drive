@@ -504,6 +504,7 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
             changed_time=now,
             mime_type="application/octet-stream",
             hash="abc",
+            hash_algorithm="md4",
             size=50,
             is_image=False,
             is_video=False,

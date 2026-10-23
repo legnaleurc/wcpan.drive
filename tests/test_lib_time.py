@@ -56,6 +56,7 @@ class TestNodeRecordFromDictTimestamp(TestCase):
             "changed_time": 1_588_507_200,
             "mime_type": "text/plain",
             "hash": "",
+            "hash_algorithm": "",
             "size": 0,
             "is_image": False,
             "is_video": False,

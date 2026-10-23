@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import PurePath
 from typing import Any
@@ -39,6 +40,7 @@ def make_node(
         changed_time=epoch,
         mime_type="",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,
@@ -337,3 +339,29 @@ def aexpect(unknown: object) -> AsyncMock:
     from typing import cast
 
     return cast(AsyncMock, unknown)
+
+
+class NodeHashInvariantTestCase(TestCase):
+    def testFileWithBothFields(self) -> None:
+        node = replace(make_node(node_id="f"), hash="abc", hash_algorithm="md5")
+        self.assertEqual(node.hash_algorithm, "md5")
+
+    def testFileWithoutChecksum(self) -> None:
+        node = make_node(node_id="f")
+        self.assertEqual(node.hash, "")
+
+    def testFileWithHashOnly(self) -> None:
+        with self.assertRaises(ValueError):
+            replace(make_node(node_id="f"), hash="abc")
+
+    def testFileWithAlgorithmOnly(self) -> None:
+        with self.assertRaises(ValueError):
+            replace(make_node(node_id="f"), hash_algorithm="md5")
+
+    def testDirectoryWithHash(self) -> None:
+        with self.assertRaises(ValueError):
+            replace(
+                make_node(node_id="d", is_directory=True),
+                hash="abc",
+                hash_algorithm="md5",
+            )

@@ -111,6 +111,7 @@ def _node(
         changed_time=t,
         mime_type=FOLDER_MIME_TYPE if is_directory else "text/plain",
         hash="",
+        hash_algorithm="",
         size=size,
         is_image=False,
         is_video=False,

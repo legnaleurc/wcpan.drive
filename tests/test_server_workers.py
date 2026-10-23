@@ -32,6 +32,7 @@ def _make_record(node_id: str = "n1") -> NodeRecord:
         changed_time=_EPOCH,
         mime_type="text/plain",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,

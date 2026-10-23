@@ -3,6 +3,7 @@
 Each test uses given-when-then sections and unittest assertions.
 """
 
+from dataclasses import replace
 from unittest import TestCase
 
 from wcpan.drive.client.remote._lib import (
@@ -34,6 +35,7 @@ def _make_record(
         changed_time=_NOW,
         mime_type=FOLDER_MIME_TYPE if is_directory else "text/plain",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,
@@ -154,3 +156,55 @@ class TestNodeRecordRoundtrip(TestCase):
         restored = node_record_from_dict(d)
         # then
         self.assertEqual(restored.name, "照片.jpg")
+
+
+class TestNodeHashFields(TestCase):
+    def test_round_trip_preserves_hash_algorithm(self):
+        # given
+        record = replace(_make_record(), hash="abc", hash_algorithm="md4")
+        # when
+        restored = node_record_from_dict(node_record_to_dict(record))
+        node = node_from_record(restored)
+        # then
+        self.assertEqual(node.hash, "abc")
+        self.assertEqual(node.hash_algorithm, "md4")
+
+    def test_pending_file_has_neither_field(self):
+        # given
+        record = _make_record()
+        # when
+        node = node_from_record(record)
+        # then
+        self.assertEqual(node.hash, "")
+        self.assertEqual(node.hash_algorithm, "")
+
+    def test_hash_without_algorithm_is_rejected(self):
+        # given
+        record = replace(_make_record(), hash="abc")
+        # then
+        with self.assertRaises(ValueError):
+            node_from_record(record)
+
+    def test_algorithm_without_hash_is_rejected(self):
+        # given
+        record = replace(_make_record(), hash_algorithm="md4")
+        # then
+        with self.assertRaises(ValueError):
+            node_from_record(record)
+
+    def test_unknown_algorithm_is_passed_through(self):
+        # given
+        record = replace(_make_record(), hash="abc", hash_algorithm="crc32")
+        # when
+        node = node_from_record(record)
+        # then
+        self.assertEqual(node.hash_algorithm, "crc32")
+
+    def test_directory_with_hash_is_rejected(self):
+        # given
+        record = replace(
+            _make_record(is_directory=True), hash="abc", hash_algorithm="md4"
+        )
+        # then
+        with self.assertRaises(ValueError):
+            node_from_record(record)

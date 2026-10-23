@@ -73,6 +73,7 @@ class TestConvertSynologyFileInfo(TestCase):
         self.assertTrue(record.is_image)
         self.assertFalse(record.is_video)
         self.assertEqual(record.hash, "abc")
+        self.assertEqual(record.hash_algorithm, "md4")
         self.assertEqual(record.size, 1024)
 
     def test_file_with_video_content_type(self):

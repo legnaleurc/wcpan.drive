@@ -9,8 +9,10 @@ class JoinedDict(TypedDict):
     modified_time: int
     changed_time: int
     parent_id: str | None
+    file_id: str | None
     size: int | None
     hash: str | None
+    hash_algorithm: str | None
     mime_type: str | None
     width: int | None
     height: int | None
@@ -18,7 +20,7 @@ class JoinedDict(TypedDict):
     extra: str | None
 
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 SQL_CREATE_TABLES = [
     """
@@ -49,6 +51,7 @@ SQL_CREATE_TABLES = [
         id TEXT NOT NULL,
         mime_type TEXT,
         hash TEXT,
+        hash_algorithm TEXT,
         size INTEGER,
         PRIMARY KEY (id),
         FOREIGN KEY (id) REFERENCES nodes (id)
@@ -103,8 +106,10 @@ SELECT
     nodes.modified_time AS modified_time,
     nodes.changed_time AS changed_time,
     parents.parent_id AS parent_id,
+    files.id AS file_id,
     files.mime_type AS mime_type,
     files.hash AS hash,
+    files.hash_algorithm AS hash_algorithm,
     files.size AS size,
     images.width AS width,
     images.height AS height,

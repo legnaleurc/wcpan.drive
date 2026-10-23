@@ -28,6 +28,7 @@ def _node(
         changed_time=t,
         mime_type="application/octet-stream",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,

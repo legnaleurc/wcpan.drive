@@ -49,6 +49,7 @@ def _make_node(
         changed_time=_EPOCH,
         mime_type="text/plain",
         hash="abc",
+        hash_algorithm="md4",
         size=100,
         is_image=False,
         is_video=False,

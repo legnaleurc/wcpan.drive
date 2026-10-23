@@ -12,6 +12,8 @@ class NodeRecord:
 
     ``id`` / ``parent_id`` are the public mirror IDs.
     ``mutable_id`` is the mutable Synology locator used for API calls.
+    ``hash`` is the content digest and ``hash_algorithm`` names how it was
+    computed; the backend defines the identifier and clients interpret it.
     """
 
     id: MirrorStableId
@@ -24,6 +26,7 @@ class NodeRecord:
     changed_time: int
     mime_type: str
     hash: str
+    hash_algorithm: str
     size: int
     is_image: bool
     is_video: bool

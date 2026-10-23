@@ -6,7 +6,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from wcpan.drive.protocol.lib import guess_mime_type, utc_now
 from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
-from wcpan.drive.server.synology import convert_file_info
+from wcpan.drive.server.synology import SYNOLOGY_HASH_ALGORITHM, convert_file_info
 from wcpan.synology import (
     SynologyClient,
     SynologyNetworkError,
@@ -158,6 +158,7 @@ async def create_node(request: web.Request) -> web.Response:
         changed_time=info.get("change_time", 0),
         mime_type="application/x-directory",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,
@@ -204,6 +205,11 @@ async def update_node(request: web.Request) -> web.Response:
             )
         except SynologyUploadConflictError:
             raise web.HTTPConflict(reason=f"{new_name!r} already exists in this folder")
+        hash_ = updated_record.hash
+        hash_algorithm = updated_record.hash_algorithm
+        if not updated_record.is_directory and "hash" in info:
+            hash_ = info["hash"]
+            hash_algorithm = SYNOLOGY_HASH_ALGORITHM if hash_ else ""
         updated_record = NodeRecord(
             id=updated_record.id,
             parent_id=updated_record.parent_id,
@@ -215,7 +221,8 @@ async def update_node(request: web.Request) -> web.Response:
             mime_type=guess_mime_type(
                 info["name"], is_directory=updated_record.is_directory
             ),
-            hash=info.get("hash", updated_record.hash),
+            hash=hash_,
+            hash_algorithm=hash_algorithm,
             size=info.get("size", updated_record.size),
             is_image=updated_record.is_image,
             is_video=updated_record.is_video,
@@ -254,6 +261,7 @@ async def update_node(request: web.Request) -> web.Response:
                 changed_time=utc_now(),
                 mime_type=updated_record.mime_type,
                 hash=updated_record.hash,
+                hash_algorithm=updated_record.hash_algorithm,
                 size=updated_record.size,
                 is_image=updated_record.is_image,
                 is_video=updated_record.is_video,

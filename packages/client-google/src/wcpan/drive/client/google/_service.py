@@ -4,7 +4,10 @@ from logging import getLogger
 from pathlib import Path
 from typing import override
 
-from wcpan.drive.client.exceptions import NodeExistsError
+from wcpan.drive.client.exceptions import (
+    NodeExistsError,
+    UnsupportedHashAlgorithmError,
+)
 from wcpan.drive.client.types import (
     ChangeAction,
     CreateHasher,
@@ -16,7 +19,7 @@ from wcpan.drive.client.types import (
     WritableFile,
 )
 
-from ._hasher import create_hasher
+from ._hasher import HASH_ALGORITHM, create_hasher
 from ._lib import CHANGE_FIELDS, FILE_FIELDS, node_from_api, normalize_changes
 from ._network import Network, create_network
 from ._oauth import OAuth2Manager, OAuth2Storage
@@ -46,7 +49,7 @@ class GoogleDriveFileService(FileService):
     @property
     @override
     def api_version(self) -> int:
-        return 5
+        return 6
 
     @override
     async def get_initial_cursor(self) -> str:
@@ -230,7 +233,9 @@ class GoogleDriveFileService(FileService):
         return new_node
 
     @override
-    async def get_hasher_factory(self) -> CreateHasher:
+    async def get_hasher_factory(self, node: Node) -> CreateHasher:
+        if node.is_directory or node.hash_algorithm != HASH_ALGORITHM:
+            raise UnsupportedHashAlgorithmError(node)
         return create_hasher
 
     @override

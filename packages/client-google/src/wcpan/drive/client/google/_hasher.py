@@ -5,6 +5,10 @@ from typing import Protocol, Self, override
 from wcpan.drive.client.types import Hasher
 
 
+HASH_ALGORITHM = "md5"
+"""Google Drive ``md5Checksum``: whole-file MD5, lowercase hex digest."""
+
+
 class BuiltinHasher(Protocol):
     def update(self, data: Buffer, /) -> None: ...
 

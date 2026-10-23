@@ -39,7 +39,7 @@ class CryptFileService(FileService):
     @property
     @override
     def api_version(self) -> int:
-        return 5
+        return 6
 
     @override
     async def get_initial_cursor(self) -> str:
@@ -181,8 +181,8 @@ class CryptFileService(FileService):
             raise NodeExistsError(decrypt_node(e.node)) from e
 
     @override
-    async def get_hasher_factory(self) -> CreateHasher:
-        factory = await self._fs.get_hasher_factory()
+    async def get_hasher_factory(self, node: Node) -> CreateHasher:
+        factory = await self._fs.get_hasher_factory(node)
         return partial(create_hasher, factory)
 
     @override

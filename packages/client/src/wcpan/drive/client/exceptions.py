@@ -9,7 +9,8 @@ Exception Hierarchy:
     ├── NodeExistsError
     ├── NodeNotFoundError
     ├── NodeIsADirectoryError
-    └── AuthenticationError
+    ├── AuthenticationError
+    └── UnsupportedHashAlgorithmError
 
 Common usage patterns:
     - Catch DriveError to handle all drive-related errors
@@ -30,6 +31,7 @@ __all__ = (
     "NodeNotFoundError",
     "NodeIsADirectoryError",
     "AuthenticationError",
+    "UnsupportedHashAlgorithmError",
 )
 
 
@@ -200,3 +202,31 @@ class AuthenticationError(DriveError):
     """
 
     pass
+
+
+class UnsupportedHashAlgorithmError(DriveError):
+    """Raised when no hasher is available for a node's hash algorithm.
+
+    This exception occurs when requesting a hasher factory for a node whose
+    ``hash_algorithm`` the service cannot compute, including directories and
+    files without a checksum. Services never fall back to another algorithm.
+
+    Attributes:
+        node: The node whose algorithm is unsupported.
+        algorithm: The unsupported algorithm identifier, possibly empty.
+
+    Example:
+        Handling unsupported algorithms::
+
+            >>> try:
+            ...     factory = await drive.get_hasher_factory(node)
+            ... except UnsupportedHashAlgorithmError as e:
+            ...     print(f"Cannot verify {e.node.name}: {e.algorithm!r}")
+    """
+
+    def __init__(self, node: Node) -> None:
+        super().__init__(
+            f"unsupported hash algorithm {node.hash_algorithm!r} for node {node.id}"
+        )
+        self.node = node
+        self.algorithm = node.hash_algorithm

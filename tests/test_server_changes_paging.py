@@ -31,6 +31,7 @@ def _make_node(
         changed_time=_NOW,
         mime_type=FOLDER_MIME_TYPE if is_directory else "text/plain",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,

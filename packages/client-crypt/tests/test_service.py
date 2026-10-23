@@ -310,9 +310,10 @@ class SimpleTestCase(IsolatedAsyncioTestCase):
         # upstream should be pickleable
         aexpect(upstream.get_hasher_factory).return_value = fake_create_hasher
 
-        # should just create the encrypted hasher
-        fn = await fs.get_hasher_factory()
-        aexpect(upstream.get_hasher_factory).assert_awaited_once_with()
+        # should forward the node and create the encrypted hasher
+        node = create_node("file", {"crypt": "1"})
+        fn = await fs.get_hasher_factory(node)
+        aexpect(upstream.get_hasher_factory).assert_awaited_once_with(node)
 
         # should be pickleable
         jar = pickle.dumps(fn)

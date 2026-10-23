@@ -37,6 +37,8 @@ def _reconcile_api_fields_differ(db: NodeRecord, merged: NodeRecord) -> bool:
         return True
     if _norm_hash(db.hash) != _norm_hash(merged.hash):
         return True
+    if db.hash_algorithm != merged.hash_algorithm:
+        return True
     if db.is_image != merged.is_image:
         return True
     if db.is_video != merged.is_video:

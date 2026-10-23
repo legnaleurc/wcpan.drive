@@ -134,7 +134,49 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         version = con.execute("PRAGMA user_version").fetchone()[0]
         con.close()
 
-        self.assertEqual(version, 3)
+        self.assertEqual(version, 4)
+
+    async def test_version_3_db_is_migrated(self) -> None:
+        con = sqlite3.connect(self.db_path)
+        con.executescript(
+            """
+            CREATE TABLE nodes (
+                id TEXT PRIMARY KEY, mutable_id TEXT NOT NULL, parent_id TEXT,
+                name TEXT NOT NULL, is_directory INTEGER NOT NULL DEFAULT 0,
+                created_time INTEGER NOT NULL, modified_time INTEGER NOT NULL,
+                changed_time INTEGER NOT NULL,
+                mime_type TEXT NOT NULL DEFAULT '', hash TEXT NOT NULL DEFAULT '',
+                size INTEGER NOT NULL DEFAULT 0,
+                is_image INTEGER NOT NULL DEFAULT 0,
+                is_video INTEGER NOT NULL DEFAULT 0,
+                width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0,
+                ms_duration INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO nodes (id, mutable_id, name, is_directory, created_time,
+                               modified_time, changed_time, hash)
+            VALUES ('f1', 'm1', 'a.txt', 0, 0, 0, 0, 'abc'),
+                   ('f2', 'm2', 'b.txt', 0, 0, 0, 0, ''),
+                   ('d1', 'm3', 'dir', 1, 0, 0, 0, 'xyz');
+            PRAGMA user_version = 3;
+            """
+        )
+        con.commit()
+        con.close()
+
+        await StorageService(self.db_path, off_main=self.off_main).ensure_schema()
+
+        con = sqlite3.connect(self.db_path)
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+        rows = {
+            row[0]: (row[1], row[2])
+            for row in con.execute("SELECT id, hash, hash_algorithm FROM nodes")
+        }
+        con.close()
+
+        self.assertEqual(version, 4)
+        self.assertEqual(rows["f1"], ("abc", "md4"))
+        self.assertEqual(rows["f2"], ("", ""))
+        self.assertEqual(rows["d1"], ("", ""))
 
     async def test_existing_db_with_matching_version_is_accepted(self) -> None:
         storage = StorageService(self.db_path, off_main=self.off_main)

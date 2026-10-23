@@ -19,6 +19,7 @@ class NodeRecordDict(TypedDict):
     changed_time: int
     mime_type: str
     hash: str
+    hash_algorithm: str
     size: int
     is_image: bool
     is_video: bool
@@ -52,6 +53,7 @@ def node_record_to_dict(record: NodeRecord) -> NodeRecordDict:
         "changed_time": record.changed_time,
         "mime_type": record.mime_type,
         "hash": record.hash,
+        "hash_algorithm": record.hash_algorithm,
         "size": record.size,
         "is_image": record.is_image,
         "is_video": record.is_video,
@@ -74,6 +76,7 @@ def node_record_from_dict(data: NodeRecordDict) -> NodeRecord:
         changed_time=data["changed_time"],
         mime_type=data["mime_type"],
         hash=data["hash"],
+        hash_algorithm=data["hash_algorithm"],
         size=data["size"],
         is_image=data["is_image"],
         is_video=data["is_video"],

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     changed_time INTEGER NOT NULL,
     mime_type    TEXT    NOT NULL DEFAULT '',
     hash         TEXT    NOT NULL DEFAULT '',
+    hash_algorithm TEXT  NOT NULL DEFAULT '',
     size         INTEGER NOT NULL DEFAULT 0,
     is_image     INTEGER NOT NULL DEFAULT 0,
     is_video     INTEGER NOT NULL DEFAULT 0,
@@ -58,14 +59,22 @@ CREATE TABLE IF NOT EXISTS mounts (
 );
 """
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
+
+# Before version 4 every stored digest came from Synology Drive.
+_MIGRATE_3_TO_4 = """
+ALTER TABLE nodes ADD COLUMN hash_algorithm TEXT NOT NULL DEFAULT '';
+UPDATE nodes SET hash = '' WHERE is_directory = 1;
+UPDATE nodes SET hash_algorithm = 'md4' WHERE is_directory = 0 AND hash != '';
+"""
 _MAX_CHANGES_PER_PAGE = 1000
 
 _UPSERT_NODE_SQL = """
             INSERT INTO nodes
                 (id, mutable_id, parent_id, name, is_directory, created_time, modified_time, changed_time,
-                 mime_type, hash, size, is_image, is_video, width, height, ms_duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 mime_type, hash, hash_algorithm, size, is_image, is_video, width, height,
+                 ms_duration)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 mutable_id=excluded.mutable_id,
                 parent_id=excluded.parent_id,
@@ -76,6 +85,7 @@ _UPSERT_NODE_SQL = """
                 changed_time=excluded.changed_time,
                 mime_type=excluded.mime_type,
                 hash=excluded.hash,
+                hash_algorithm=excluded.hash_algorithm,
                 size=excluded.size,
                 is_image=excluded.is_image,
                 is_video=excluded.is_video,
@@ -89,8 +99,9 @@ _UPSERT_NODE_SQL = """
 _PRESERVE_MEDIA_UPSERT_SQL = """
             INSERT INTO nodes
                 (id, mutable_id, parent_id, name, is_directory, created_time, modified_time, changed_time,
-                 mime_type, hash, size, is_image, is_video, width, height, ms_duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 mime_type, hash, hash_algorithm, size, is_image, is_video, width, height,
+                 ms_duration)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 mutable_id=excluded.mutable_id,
                 parent_id=excluded.parent_id,
@@ -101,6 +112,7 @@ _PRESERVE_MEDIA_UPSERT_SQL = """
                 changed_time=excluded.changed_time,
                 mime_type=excluded.mime_type,
                 hash=excluded.hash,
+                hash_algorithm=excluded.hash_algorithm,
                 size=excluded.size,
                 is_image=excluded.is_image,
                 is_video=excluded.is_video,
@@ -123,6 +135,7 @@ def _node_row_values(
     int,
     str,
     str,
+    str,
     int,
     int,
     int,
@@ -141,6 +154,7 @@ def _node_row_values(
         record.changed_time,
         record.mime_type,
         record.hash,
+        record.hash_algorithm,
         record.size,
         1 if record.is_image else 0,
         1 if record.is_video else 0,
@@ -194,6 +208,10 @@ def _ensure_schema(dsn: str) -> None:
             raise SchemaVersionError(
                 f"database schema version mismatch: expected {_SCHEMA_VERSION}, got 0"
             )
+        if version == 3:
+            con.executescript(_MIGRATE_3_TO_4)
+            con.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            version = _SCHEMA_VERSION
         if version not in (0, _SCHEMA_VERSION):
             raise SchemaVersionError(
                 "database schema version mismatch: "
@@ -487,7 +505,7 @@ def _get_changes_since(
             SELECT c.change_id, c.node_id, c.is_removed,
                    n.id,
                    n.mutable_id, n.parent_id, n.name, n.is_directory, n.created_time, n.modified_time, n.changed_time,
-                   n.mime_type, n.hash, n.size, n.is_image, n.is_video,
+                   n.mime_type, n.hash, n.hash_algorithm, n.size, n.is_image, n.is_video,
                    n.width, n.height, n.ms_duration
             FROM changes c
             LEFT JOIN nodes n ON c.node_id = n.id
@@ -540,6 +558,7 @@ def _row_to_record(row: sqlite3.Row) -> NodeRecord:
         changed_time=row["changed_time"],
         mime_type=row["mime_type"],
         hash=row["hash"],
+        hash_algorithm=row["hash_algorithm"],
         size=row["size"],
         is_image=bool(row["is_image"]),
         is_video=bool(row["is_video"]),

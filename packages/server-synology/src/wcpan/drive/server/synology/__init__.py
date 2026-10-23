@@ -11,6 +11,9 @@ from wcpan.synology import SynologyClient, SynologyFileInfo, create_client
 
 _L = getLogger(__name__)
 
+SYNOLOGY_HASH_ALGORITHM = "md4"
+"""Synology Drive reports a whole-file MD4 hex digest."""
+
 
 def create_synology_client(
     config: ServerConfig,
@@ -36,6 +39,7 @@ def convert_file_info(
             info["file_id"],
         )
         return None
+    hash_ = "" if is_dir else info.get("hash", "")
     return NodeRecord(
         id=MirrorStableId(permanent_link),
         parent_id=parent_id,
@@ -45,7 +49,8 @@ def convert_file_info(
         modified_time=info.get("modified_time", 0),
         changed_time=info.get("change_time", 0),
         mime_type=guess_mime_type(name, is_directory=is_dir),
-        hash=info.get("hash", ""),
+        hash=hash_,
+        hash_algorithm=SYNOLOGY_HASH_ALGORITHM if hash_ else "",
         size=info.get("size", 0),
         is_image=info.get("content_type") == "image",
         is_video=info.get("content_type") == "video",

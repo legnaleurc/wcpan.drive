@@ -50,10 +50,10 @@ def inner_insert_node(query: Cursor, node: Node) -> None:
     if not node.is_directory:
         query.execute(
             "INSERT OR REPLACE INTO files "
-            "(id, mime_type, hash, size) "
+            "(id, mime_type, hash, hash_algorithm, size) "
             "VALUES "
-            "(?, ?, ?, ?);",
-            (node.id, node.mime_type, node.hash, node.size),
+            "(?, ?, ?, ?, ?);",
+            (node.id, node.mime_type, node.hash, node.hash_algorithm, node.size),
         )
 
     # remove old parentage
@@ -111,13 +111,14 @@ def inner_delete_node_by_id(query: Cursor, node_id: str) -> None:
 def node_from_query(row: JoinedDict) -> Node:
     mime_type = row["mime_type"]
     hash_ = row["hash"]
+    hash_algorithm = row["hash_algorithm"]
     size = row["size"]
     width = row["width"]
     height = row["height"]
     ms_duration = row["ms_duration"]
     extra = row["extra"]
 
-    is_directory = any(_ is None for _ in (mime_type, hash_, size))
+    is_directory = row["file_id"] is None
     has_image = all(_ is not None for _ in (width, height))
     has_audio = ms_duration is not None
     private = json.loads(extra) if extra else None
@@ -131,6 +132,7 @@ def node_from_query(row: JoinedDict) -> Node:
         parent_id=row["parent_id"],
         mime_type=mime_type or "",
         hash=hash_ or "",
+        hash_algorithm=hash_algorithm or "",
         size=size or 0,
         width=width or 0,
         height=height or 0,

@@ -31,6 +31,7 @@ def create_node(name: str, private: PrivateDict | None) -> Node:
         changed_time=get_utc_now(),
         mime_type="",
         hash="",
+        hash_algorithm="",
         size=0,
         is_trashed=False,
         is_directory=True,

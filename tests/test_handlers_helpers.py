@@ -21,6 +21,7 @@ def _sample_record() -> NodeRecord:
         changed_time=now,
         mime_type="text/plain",
         hash="",
+        hash_algorithm="",
         size=1,
         is_image=False,
         is_video=False,

@@ -20,6 +20,7 @@ class TestNodeFrom409(IsolatedAsyncioTestCase):
             "changed_time": now,
             "mime_type": "application/x-directory",
             "hash": "",
+            "hash_algorithm": "",
             "size": 0,
             "is_image": False,
             "is_video": False,

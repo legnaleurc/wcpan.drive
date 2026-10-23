@@ -41,6 +41,7 @@ def node_from_record(record: NodeRecord) -> Node:
         changed_time=utc_from_timestamp(record.changed_time),
         mime_type=record.mime_type,
         hash=record.hash,
+        hash_algorithm=record.hash_algorithm,
         size=record.size,
         is_image=record.is_image,
         is_video=record.is_video,

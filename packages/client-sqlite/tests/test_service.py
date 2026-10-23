@@ -13,6 +13,7 @@ from wcpan.drive.client.sqlite._outer import (
     inner_set_metadata,
 )
 from wcpan.drive.client.sqlite._service import create_service
+from wcpan.drive.client.sqlite.exceptions import SqliteSnapshotError
 from wcpan.drive.client.types import ChangeAction, Node
 
 
@@ -280,6 +281,68 @@ class ApplyChangesTestCase(IsolatedAsyncioTestCase):
         self.assertEqual(rv.id, "4")
 
 
+class HashAlgorithmTestCase(IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        tmp = self.enterContext(NamedTemporaryFile())
+        self._dsn = tmp.name
+
+    async def testAlgorithmPersists(self):
+        async with create_service(dsn=self._dsn) as ss:
+            await ss.set_root(_make_root("1"))
+            await ss.apply_changes(
+                [
+                    (False, _make_file("2", "1", "a")),
+                    (False, replace(_make_file("3", "1", "b"), hash_algorithm="md4")),
+                ],
+                "1",
+            )
+        async with create_service(dsn=self._dsn) as ss:
+            a = await ss.get_node_by_id("2")
+            b = await ss.get_node_by_id("3")
+
+        self.assertEqual(a.hash_algorithm, "md5")
+        self.assertEqual(b.hash_algorithm, "md4")
+
+    async def testFileWithoutChecksumStaysFile(self):
+        pending = replace(_make_file("2", "1", "a"), hash="", hash_algorithm="")
+        async with create_service(dsn=self._dsn) as ss:
+            await ss.set_root(_make_root("1"))
+            await ss.apply_changes([(False, pending)], "1")
+            rv = await ss.get_node_by_id("2")
+
+        self.assertFalse(rv.is_directory)
+        self.assertEqual(rv.hash, "")
+        self.assertEqual(rv.hash_algorithm, "")
+
+    async def testVersion6RequiresRebuild(self):
+        self._create_version_6()
+
+        with self.assertRaises(SqliteSnapshotError):
+            async with create_service(dsn=self._dsn):
+                pass
+
+    def _create_version_6(self) -> None:
+        with read_write(self._dsn) as query:
+            query.execute(
+                "CREATE TABLE nodes (id TEXT NOT NULL, name TEXT, trashed BOOLEAN, "
+                "created_time INTEGER, modified_time INTEGER, changed_time INTEGER, "
+                "PRIMARY KEY (id));"
+            )
+            query.execute(
+                "CREATE TABLE files (id TEXT NOT NULL, mime_type TEXT, hash TEXT, "
+                "size INTEGER, PRIMARY KEY (id));"
+            )
+            query.executemany(
+                "INSERT INTO nodes VALUES (?, ?, 0, 0, 0, 0);",
+                [("2", "a"), ("3", "b"), ("4", "c")],
+            )
+            query.executemany(
+                "INSERT INTO files VALUES (?, 'text/plain', ?, 1);",
+                [("2", "abc"), ("3", "")],
+            )
+            query.execute("PRAGMA user_version = 6;")
+
+
 def _make_root(id: str) -> Node:
     now = datetime.now(UTC)
     return Node(
@@ -293,6 +356,7 @@ def _make_root(id: str) -> Node:
         changed_time=now,
         mime_type="",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,
@@ -316,6 +380,7 @@ def _make_dir(id: str, parent_id: str, name: str) -> Node:
         changed_time=now,
         mime_type="",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,
@@ -339,6 +404,7 @@ def _make_file(id: str, parent_id: str, name: str) -> Node:
         changed_time=now,
         mime_type="application/octet-stream",
         hash="__hash__",
+        hash_algorithm="md5",
         size=42,
         is_image=False,
         is_video=False,

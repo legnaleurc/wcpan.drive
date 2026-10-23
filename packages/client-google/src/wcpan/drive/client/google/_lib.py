@@ -4,6 +4,8 @@ from typing import Literal, NotRequired, TypedDict
 
 from wcpan.drive.client.types import ChangeAction, Node
 
+from ._hasher import HASH_ALGORITHM
+
 
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 FILE_FIELDS = ",".join(
@@ -138,6 +140,7 @@ def node_from_api(data: GoogleFileDict) -> Node:
         is_directory=is_folder,
         mime_type="" if is_folder else data["mimeType"],
         hash=hash_,
+        hash_algorithm=HASH_ALGORITHM if hash_ else "",
         size=size,
         is_image=is_image,
         is_video=is_video,

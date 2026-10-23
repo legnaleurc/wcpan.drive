@@ -38,7 +38,7 @@ from .types import (
 )
 
 
-_API_VERSION = 5
+_API_VERSION = 6
 
 _VIRTUAL_ROOT_ID = "__virtual_root__"
 
@@ -383,7 +383,7 @@ class _SingleDrive(Drive):
 
     @override
     async def get_hasher_factory(self, node: Node) -> CreateHasher:
-        return await self._fs.get_hasher_factory()
+        return await self._fs.get_hasher_factory(node)
 
     @override
     async def is_authenticated(self) -> bool:
@@ -766,7 +766,8 @@ class _MultiDrive(Drive):
         if source_name not in self._sources:
             raise NodeNotFoundError(node.id)
         state = self._sources[source_name]
-        return await state.file_service.get_hasher_factory()
+        unscoped_node = _unscope_node(source_name, node)
+        return await state.file_service.get_hasher_factory(unscoped_node)
 
     @override
     async def is_authenticated(self) -> bool:
@@ -900,6 +901,7 @@ def _make_virtual_root() -> Node:
         changed_time=epoch,
         mime_type="",
         hash="",
+        hash_algorithm="",
         size=0,
         is_image=False,
         is_video=False,

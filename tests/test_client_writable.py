@@ -77,6 +77,7 @@ def _node_dict() -> dict:
         "changed_time": 1_704_067_200,
         "mime_type": "application/octet-stream",
         "hash": "abc123",
+        "hash_algorithm": "md4",
         "size": 100,
         "is_image": False,
         "is_video": False,
