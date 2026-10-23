@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import TestCase
 
 
-_SERVER_SRC = Path(__file__).parents[1] / "packages/server/src/wcpan/drive/server"
+_SERVER_SRC = Path(__file__).parents[1] / "src/wcpan/drive/server"
 _FORBIDDEN = ("wcpan.synology", "wcpan.drive.server.synology", "wcpan.drive.client")
 
 

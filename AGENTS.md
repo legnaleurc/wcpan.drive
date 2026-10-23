@@ -9,7 +9,7 @@ This repository is a uv workspace for `wcpan.drive` client and server packages.
 - Members live under `packages/*`, each with its own `pyproject.toml` and `src/`.
 - Client code uses `wcpan.drive.client.*`; server code uses `wcpan.drive.server.*`.
 - Shared HTTP wire types and helpers live in `packages/protocol`.
-- Member tests live in their `tests/`; root `tests/` contains cross-package regressions.
+- Member tests live in their `tests/`; root `tests/` contains only cross-package tests (client against server). A member's tests import only that member and its declared dependencies.
 
 Treat `README.md` and `server.example.yaml` as the source of truth for
 user-facing usage, configuration examples, and documented backend
@@ -24,22 +24,25 @@ make format     # ruff format & fix in place
 make coverage   # run tests with coverage report
 ```
 
+Every `tests/` directory is a package named `tests`, so run tests from the
+directory that holds it (`packages/<member>` or the repo root).
+
 Run a single test file:
 
 ```bash
-uv run --all-packages python -m unittest tests/test_<module>.py
+cd packages/<member> && uv run --all-packages python -m unittest tests/test_<module>.py
 ```
 
 Run a specific test case:
 
 ```bash
-uv run --all-packages python -m unittest tests.test_<module>.TestClass.test_method
+cd packages/<member> && uv run --all-packages python -m unittest tests.test_<module>.TestClass.test_method
 ```
 
 ## Repo-specific conventions
 
 - Use `unittest`, not `pytest`.
-- Tests live in `tests/test_*.py`.
+- Tests live in `<member>/tests/test_*.py`.
 - Prefer `rg` for code search.
 - Keep changes narrow and consistent with existing async `aiohttp` patterns.
 - Follow the local signature style from `README.md`:
@@ -55,7 +58,7 @@ Keep these as high-level orientation only:
 - Path handling is split between Synology paths, client-facing virtual paths, and stored node identity.
 - SQLite writes are serialized through background workers.
 - Synology API access (client, types, errors) comes from the external `wcpan-synology` library (`../wcpan.synology` locally); `packages/server-synology/src/wcpan/drive/server/synology/` is the Synology backend. Change API behavior in that library, not here.
-- `packages/server` must not import `wcpan.synology`, the Synology adapter, or client packages (`tests/test_server_boundaries.py`).
+- `packages/server` must not import `wcpan.synology`, the Synology adapter, or client packages (`packages/server/tests/test_server_boundaries.py`).
 
 If you need detailed implementation behavior, read the relevant module instead of extending this file with subsystem internals.
 

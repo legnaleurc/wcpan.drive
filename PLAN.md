@@ -488,7 +488,7 @@ confirmed issues within the current package.
 
 Deliverable: documented invariants supported by regression tests.
 
-Status: done. `tests/test_server_races.py` reproduced and now guards these:
+Status: done. `packages/server-synology/tests/test_server_races.py` reproduced and now guards these:
 
 - Enrichment that was queued or still running (metadata queue, inline `upsert`)
   overwrote a newer upsert, resurrected a deleted node, or recreated a child of
@@ -530,7 +530,7 @@ Status: done. `NodeRecord` no longer has `mutable_id`. The server passes
 transaction. A change row is emitted only when the public node row changes, so
 locator-only updates are silent. Bindings are deleted with their subtree and by
 dangling-node GC. Schema 5 migrates existing locators and preserves node IDs and
-the change feed (`tests/test_server_mount_max_ids.py`). The protocol decoder
+the change feed (`packages/server-synology/tests/test_server_mount_max_ids.py`). The protocol decoder
 tolerates an absent `mutable_id`; the encoder still emits it as an empty
 placeholder until old decoders are retired.
 
@@ -604,7 +604,7 @@ Deliverable: generic HTTP and mirror modules import neither `wcpan.synology` nor
 The Synology adapter lives only in its own distribution.
 
 Status: done. `wcpan-drive-server` no longer depends on `wcpan-synology`, and
-`tests/test_server_boundaries.py` rejects backend or client imports in it. The
+`packages/server/tests/test_server_boundaries.py` rejects backend or client imports in it. The
 generic app takes a `Backend` (`backend.py`): its `BackendSchema` hooks run on
 the core's connection inside core transactions (create tables, bind a locator,
 forget locators of removed nodes), its routes are added to the app, and its

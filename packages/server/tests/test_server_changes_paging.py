@@ -5,7 +5,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from unittest import IsolatedAsyncioTestCase
 
-from wcpan.drive.client.remote._lib import FOLDER_MIME_TYPE
+from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID

@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 
+from wcpan.drive.protocol.types import MediaInfo
 from wcpan.drive.server.services.upload import UploadSessionStore
 
 
@@ -11,8 +12,6 @@ class TestUploadSessionStore(TestCase):
     def test_create_returns_session_with_correct_fields(self):
         with tempfile.TemporaryDirectory() as td:
             service = UploadSessionStore(tmp_dir=Path(td))
-            from wcpan.drive.client.types import MediaInfo
-
             media = MediaInfo(
                 width=100, height=0, ms_duration=0, is_image=True, is_video=False
             )

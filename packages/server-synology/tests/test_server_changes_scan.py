@@ -9,7 +9,7 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import wcpan.drive.server.synology.scan as startup_scan_mod
-from wcpan.drive.client.remote._lib import FOLDER_MIME_TYPE
+from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,

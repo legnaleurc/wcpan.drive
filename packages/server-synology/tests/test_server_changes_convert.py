@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from wcpan.drive.client.remote._lib import FOLDER_MIME_TYPE
+from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.server.services.enricher import (
     MediaEnrichmentError,
     MediaEnrichService,

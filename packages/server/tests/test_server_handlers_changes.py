@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from wcpan.drive.client.remote._lib import node_record_from_dict
+from wcpan.drive.protocol.lib import node_record_from_dict
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.changes import (
     get_changes,
@@ -22,7 +22,6 @@ from wcpan.drive.server.keys import (
 )
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology.convert import SynologyLocator
 from wcpan.drive.server.types import NodeObservation
 from wcpan.drive.server.workers import create_write_queue
 
@@ -62,7 +61,6 @@ class _FakeOffMain:
 class _FakeStorage:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
-        self._locators: dict[str, SynologyLocator] = {}
         self._cursor: int = 42
         self._changes: list[tuple[str, bool, NodeRecord | None]] = []
 
@@ -83,17 +81,7 @@ class _FakeStorage:
     async def apply_observations(self, observations: list[NodeObservation]) -> set[str]:
         for o in observations:
             self._nodes[o.record.id] = o.record
-            if o.locator is not None:
-                self._locators[o.record.id] = o.locator
         return {o.record.id for o in observations}
-
-    async def get_locators(self, node_ids: list[str]) -> dict[str, SynologyLocator]:
-        # Fixture nodes use their own ID as the Synology file_id unless rebound.
-        return {
-            i: self._locators.get(i, SynologyLocator(i))
-            for i in node_ids
-            if i in self._nodes
-        }
 
 
 def _make_app(storage: _FakeStorage) -> web.Application:

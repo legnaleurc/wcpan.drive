@@ -61,7 +61,7 @@ class TestMainConfigVersion(unittest.TestCase):
             config_path.write_text("database_url: sqlite:////tmp/test.db\n")
             stderr = io.StringIO()
             argv = [
-                "wcpan.drive.client.remote",
+                "wcpan.drive.server",
                 "--config",
                 str(config_path),
                 "gc",

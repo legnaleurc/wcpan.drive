@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from wcpan.drive.client.remote._lib import node_record_from_dict
+from wcpan.drive.protocol.lib import node_record_from_dict
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.nodes import create_node, upload_node
 from wcpan.drive.server.handlers.upload import (
