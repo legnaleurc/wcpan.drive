@@ -31,22 +31,24 @@ from wcpan.drive.server.keys import (
     OFF_MAIN_KEY,
     READY_KEY,
     STORAGE_KEY,
-    SYNOLOGY_DRIVE_API_KEY,
-    SYNOLOGY_PATH_KEY,
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
-from wcpan.drive.server.lib.mounts import MountRegistry
-from wcpan.drive.server.services.paths import (
-    SERVER_ROOT_ID,
-    SynologyPathService,
-)
+from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     UploadService,
     UploadSessionStore,
 )
-from wcpan.drive.server.types import NodeObservation, SynologyLocator
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.synology.keys import (
+    SYNOLOGY_DRIVE_API_KEY,
+    SYNOLOGY_PATH_KEY,
+)
+from wcpan.drive.server.synology.mounts import MountRegistry
+from wcpan.drive.server.synology.paths import SynologyPathService
+from wcpan.drive.server.synology.upload import SynologyUploader
+from wcpan.drive.server.types import NodeObservation
 from wcpan.drive.server.workers import create_write_queue
 
 
@@ -134,7 +136,7 @@ def _make_app(
     )
     syno_paths = SynologyPathService(
         registry=MountRegistry(mounts={}, root_ids={}),
-        storage=storage,  # type: ignore[arg-type]
+        store=storage,  # type: ignore[arg-type]
     )
     node_sync = NodeSyncService(
         storage=storage,
@@ -156,9 +158,11 @@ def _make_app(
     app[SYNOLOGY_DRIVE_API_KEY] = drive_api
     app[UPLOAD_SERVICE_KEY] = UploadService(
         store=session_store,
-        node_sync=node_sync,
-        drive_api=drive_api,
-        syno_paths=syno_paths,
+        uploader=SynologyUploader(
+            drive_api=drive_api,
+            syno_paths=syno_paths,
+            node_sync=node_sync,
+        ),
     )
 
     app.router.add_get("/api/v1/root", get_root)

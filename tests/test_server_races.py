@@ -14,16 +14,25 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, MountRegistry, mount_id
-from wcpan.drive.server.services.backfill import BackfillService
+from wcpan.drive.server.lib.mounts import (
+    SERVER_ROOT_ID,
+    mount_id,
+)
 from wcpan.drive.server.services.enricher import MediaEnrichmentError
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.operations import LocateUndecidedError
-from wcpan.drive.server.services.paths import SynologyPathService
 from wcpan.drive.server.services.reconcile import reconcile_session
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.types import NodeObservation, ReadSeq, SynologyLocator
+from wcpan.drive.server.synology.backfill import BackfillService
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.synology.mounts import MountRegistry
+from wcpan.drive.server.synology.paths import SynologyPathService
+from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.types import (
+    NodeObservation,
+    ReadSeq,
+)
 from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
@@ -110,7 +119,9 @@ class _RaceTestCase(IsolatedAsyncioTestCase):
         os.close(fd)
         self.pool = ThreadPoolExecutor(2)
         off_main = OffMainService(pool=self.pool)
-        self.storage = StorageService(self.db_path, off_main=off_main)
+        self.storage = StorageService(
+            self.db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+        )
         await self.storage.ensure_schema()
         await self.storage.bulk_upsert_nodes(
             [
@@ -265,11 +276,12 @@ class TestBackfillOrdering(_RaceTestCase):
     def backfill(self) -> tuple[BackfillService, SynologyPathService]:
         syno_paths = SynologyPathService(
             registry=MountRegistry(mounts=self.mounts, root_ids={}),
-            storage=self.storage,
+            store=SynologyStore(storage=self.storage),
         )
         backfill = BackfillService(
             drive_api=object(),  # type: ignore[arg-type]
             storage=self.storage,
+            store=SynologyStore(storage=self.storage),
             syno_paths=syno_paths,
             node_sync=self.node_sync,
         )
@@ -345,7 +357,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         self.drive_api = MagicMock()
         self.syno_paths = SynologyPathService(
             registry=MountRegistry(mounts=self.mounts, root_ids={}),
-            storage=self.storage,
+            store=SynologyStore(storage=self.storage),
         )
 
     async def commit(self) -> list[MirrorStableId]:
@@ -430,7 +442,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         await self.storage.apply_observations([_obs(a), _obs(b), _obs(x)])
         syno_paths = SynologyPathService(
             registry=MountRegistry(mounts=self.mounts, root_ids={}),
-            storage=self.storage,
+            store=SynologyStore(storage=self.storage),
         )
         drive_api = MagicMock()
         # x moved from a to b after b was listed and before a was.
@@ -440,6 +452,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         backfill = BackfillService(
             drive_api=drive_api,
             storage=self.storage,
+            store=SynologyStore(storage=self.storage),
             syno_paths=syno_paths,
             node_sync=self.node_sync,
         )

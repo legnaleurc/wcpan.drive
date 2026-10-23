@@ -3,8 +3,6 @@ import os
 from collections.abc import Awaitable, Callable
 from logging import getLogger
 
-from wcpan.synology import SynologyWebhookEvent
-
 from .lib.debounce import Debouncer
 from .services.storage import StorageService
 from .types import MetadataQueue, MetadataWorkItem, WriteQueue
@@ -13,7 +11,6 @@ from .types import MetadataQueue, MetadataWorkItem, WriteQueue
 _L = getLogger(__name__)
 
 _WAL_CHECKPOINT_DELAY = 30.0  # seconds
-type WebhookQueue = asyncio.Queue[SynologyWebhookEvent]
 
 METADATA_WORKER_COUNT = max(2, os.process_cpu_count() or 1)
 
@@ -25,10 +22,6 @@ def noop_after_write() -> None:
 def create_write_queue() -> WriteQueue:
     n = os.process_cpu_count() or 1
     return asyncio.Queue(maxsize=max(8, n * 2))
-
-
-def create_webhook_queue() -> WebhookQueue:
-    return asyncio.Queue()
 
 
 _METADATA_QUEUE_MAXSIZE = max(16, (os.process_cpu_count() or 1) * 2)

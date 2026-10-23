@@ -7,7 +7,6 @@ from pathlib import PurePosixPath
 from typing import NewType
 
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.synology import SynologyPath
 
 
 # ---------------------------------------------------------------------------
@@ -21,8 +20,8 @@ VirtualPath = NewType("VirtualPath", PurePosixPath)
 ReadSeq = NewType("ReadSeq", int)
 """Sequence number taken when a backend read starts (see ``services.ordering``)."""
 
-SynologyLocator = NewType("SynologyLocator", str)
-"""Synology ``file_id``; mutable across some operations, unlike the public node ID."""
+BackendLocator = NewType("BackendLocator", str)
+"""Backend-private reference to a node, opaque to the core (see ``BackendSchema``)."""
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +38,7 @@ class NodeObservation:
     """
 
     record: NodeRecord
-    locator: SynologyLocator | None
+    locator: BackendLocator | None
 
 
 # ---------------------------------------------------------------------------
@@ -64,16 +63,13 @@ type MetadataQueue = asyncio.Queue[MetadataWorkItem]
 
 @dataclass(frozen=True, kw_only=True)
 class ServerConfig:
+    """Backend-neutral server settings; the backend parses its own section."""
+
     host: str
     port: int
     database_url: str
-    synology_url: str
-    username: str
-    password: str
-    mounts: dict[str, SynologyPath]
-    public_url: str
-    webhook_app_id: str
+    # Mount label to backend source path, interpreted by the backend.
+    mounts: dict[str, str]
     local_paths: dict[str, str]
-    otp_code: str | None = None
     log_path: str | None = None
     upload_tmp_dir: str | None = None

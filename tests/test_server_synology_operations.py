@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.services.operations import OperationUnavailableError
-from wcpan.drive.server.services.synology_operations import SynologyNodeOperations
+from wcpan.drive.server.synology.operations import SynologyNodeOperations
 from wcpan.synology import SynologyNetworkError
 
 

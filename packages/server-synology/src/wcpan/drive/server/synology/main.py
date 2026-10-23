@@ -9,23 +9,17 @@ from logging.config import dictConfig
 from pathlib import Path
 
 from aiohttp import web
-from wcpan.drive.server.synology import create_synology_client
-from wcpan.logging import ConfigBuilder
-
-from .app import create_app, managed_off_main
-from .config import ConfigVersionError, load_config
-from .lib.mounts import create_mount_registry
-from .services.backfill import BackfillService
-from .services.paths import SynologyPathService
-from .services.storage import (
+from wcpan.drive.server.app import create_app, managed_off_main
+from wcpan.drive.server.config import ConfigVersionError
+from wcpan.drive.server.services.storage import (
     SchemaVersionError,
     cleanup_dangling_nodes,
     create_storage_service,
     reset_change_history,
 )
-from .services.sync import NodeSyncService
-from .types import ServerConfig
-from .workers import (
+from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.types import ServerConfig
+from wcpan.drive.server.workers import (
     METADATA_WORKER_COUNT,
     create_metadata_queue,
     create_write_queue,
@@ -33,6 +27,19 @@ from .workers import (
     noop_after_write,
     write_worker,
 )
+from wcpan.logging import ConfigBuilder
+
+from .backend import SynologyBackend
+from .backfill import BackfillService
+from .config import (
+    SynologyConfig,
+    create_synology_client,
+    load_config,
+    synology_mounts,
+)
+from .mounts import create_mount_registry
+from .paths import SynologyPathService
+from .store import SYNOLOGY_SCHEMA, SynologyStore
 
 
 _L = logging.getLogger(__name__)
@@ -81,16 +88,16 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        config = load_config(config_path)
+        config, synology = load_config(config_path)
 
         if args.command == "gc":
-            count = cleanup_dangling_nodes(config.database_url)
+            count = cleanup_dangling_nodes(config.database_url, backend=SYNOLOGY_SCHEMA)
             print(f"Removed {count} dangling node(s).")
             return
 
         if args.command == "squash":
             print("WARNING: squash resets all consumer cursors.", file=sys.stderr)
-            count = reset_change_history(config.database_url)
+            count = reset_change_history(config.database_url, backend=SYNOLOGY_SCHEMA)
             print(f"Reset change history: {count} update record(s) written.")
             return
 
@@ -106,6 +113,7 @@ def main() -> None:
                 stats = asyncio.run(
                     run_backfill(
                         config,
+                        synology,
                         args.path.strip(),
                         dry_run=args.dry_run,
                     )
@@ -122,7 +130,10 @@ def main() -> None:
             )
             return
 
-        app = create_app(config)
+        app = create_app(
+            config,
+            backend=SynologyBackend(config=synology, mounts=synology_mounts(config)),
+        )
         _L.info("listening on %s:%s", config.host, config.port)
         web.run_app(app, host=config.host, port=config.port, print=None)
     except (ConfigVersionError, SchemaVersionError, ValueError) as e:
@@ -132,15 +143,19 @@ def main() -> None:
 
 async def run_backfill(
     config: ServerConfig,
+    synology: SynologyConfig,
     virtual_path: str,
     *,
     dry_run: bool = False,
 ) -> dict[str, int]:
     """Build ``BackfillService`` with the same stack as server startup (no HTTP/webhook)."""
     async with AsyncExitStack() as stack:
-        drive_api = await stack.enter_async_context(create_synology_client(config))
+        drive_api = await stack.enter_async_context(create_synology_client(synology))
         off_main = await stack.enter_async_context(managed_off_main())
-        storage = await create_storage_service(config.database_url, off_main=off_main)
+        storage = await create_storage_service(
+            config.database_url, off_main=off_main, backend=SYNOLOGY_SCHEMA
+        )
+        store = SynologyStore(storage=storage)
         write_queue = create_write_queue()
         metadata_queue = create_metadata_queue()
         node_sync = NodeSyncService(
@@ -152,16 +167,14 @@ async def run_backfill(
             metadata_queue=metadata_queue,
         )
         mount_registry = await create_mount_registry(
-            config.mounts,
+            synology_mounts(config),
             drive_api=drive_api,
         )
-        syno_paths = SynologyPathService(
-            registry=mount_registry,
-            storage=storage,
-        )
+        syno_paths = SynologyPathService(registry=mount_registry, store=store)
         backfill = BackfillService(
             drive_api=drive_api,
             storage=storage,
+            store=store,
             syno_paths=syno_paths,
             node_sync=node_sync,
         )

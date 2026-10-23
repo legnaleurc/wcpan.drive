@@ -22,7 +22,8 @@ from wcpan.drive.server.keys import (
 )
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.types import NodeObservation, SynologyLocator
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.types import NodeObservation
 from wcpan.drive.server.workers import create_write_queue
 
 

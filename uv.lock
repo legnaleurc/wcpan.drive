@@ -876,8 +876,6 @@ dependencies = [
     { name = "pymediainfo" },
     { name = "pyyaml" },
     { name = "wcpan-drive-protocol" },
-    { name = "wcpan-logging" },
-    { name = "wcpan-synology" },
 ]
 
 [package.metadata]
@@ -889,8 +887,6 @@ requires-dist = [
     { name = "pymediainfo", specifier = ">=7.0.1,<8.0.0" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "wcpan-drive-protocol", editable = "packages/protocol" },
-    { name = "wcpan-logging", specifier = ">=2.1.0,<3.0.0" },
-    { name = "wcpan-synology", specifier = ">=0.2.0,<0.3.0" },
 ]
 
 [[package]]
@@ -898,13 +894,21 @@ name = "wcpan-drive-server-synology"
 version = "0.1.0"
 source = { editable = "packages/server-synology" }
 dependencies = [
+    { name = "aiohttp" },
+    { name = "dacite" },
+    { name = "wcpan-drive-protocol" },
     { name = "wcpan-drive-server" },
+    { name = "wcpan-logging" },
     { name = "wcpan-synology" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.13.0,<4.0.0" },
+    { name = "dacite", specifier = ">=1.9.2,<2.0.0" },
+    { name = "wcpan-drive-protocol", editable = "packages/protocol" },
     { name = "wcpan-drive-server", editable = "packages/server" },
+    { name = "wcpan-logging", specifier = ">=2.1.0,<3.0.0" },
     { name = "wcpan-synology", specifier = ">=0.2.0,<0.3.0" },
 ]
 

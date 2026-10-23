@@ -6,7 +6,6 @@ from typing import Any
 
 import yaml
 from dacite import Config, DaciteError, MissingValueError, WrongTypeError, from_dict
-from wcpan.synology import SynologyPath
 
 from .types import ServerConfig
 
@@ -19,26 +18,12 @@ class ConfigVersionError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class RawWebhookConfig:
-    callback_url: str
-    app_id: str = "wcpan-drive-server-synology"
-
-
-@dataclass(frozen=True, slots=True)
-class RawSynologyConfig:
-    url: str
-    username: str
-    password: str
-    webhook: RawWebhookConfig
-    otp_code: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class RawServerConfig:
+    """Generic settings; backend sections are parsed by the backend."""
+
     version: int
     database_url: str
     mounts: dict[str, str]
-    synology: RawSynologyConfig
     local_paths: dict[str, str]
     host: str = "127.0.0.1"
     port: int = 8080
@@ -46,10 +31,13 @@ class RawServerConfig:
     upload_tmp_dir: str | None = None
 
 
-def load_config(config_path: Path) -> ServerConfig:
+def load_raw_config(config_path: Path) -> Any:
     with open(config_path) as f:
-        raw: Any = yaml.safe_load(f)
-    return parse_config(raw)
+        return yaml.safe_load(f)
+
+
+def load_config(config_path: Path) -> ServerConfig:
+    return parse_config(load_raw_config(config_path))
 
 
 def parse_config(raw: Any) -> ServerConfig:
@@ -95,14 +83,8 @@ def _server_config_from_raw(raw: RawServerConfig) -> ServerConfig:
         host=raw.host,
         port=raw.port,
         database_url=raw.database_url,
-        synology_url=raw.synology.url,
-        username=raw.synology.username,
-        password=raw.synology.password,
-        mounts={k: SynologyPath(v) for k, v in raw.mounts.items()},
-        public_url=raw.synology.webhook.callback_url,
-        webhook_app_id=raw.synology.webhook.app_id,
+        mounts=dict(raw.mounts),
         local_paths=raw.local_paths,
-        otp_code=raw.synology.otp_code,
         log_path=raw.log_path,
         upload_tmp_dir=raw.upload_tmp_dir,
     )
@@ -113,5 +95,6 @@ __all__ = [
     "ConfigVersionError",
     "RawServerConfig",
     "load_config",
+    "load_raw_config",
     "parse_config",
 ]

@@ -13,7 +13,9 @@ from wcpan.drive.server.services.storage import (
     StorageService,
     cleanup_dangling_nodes,
 )
-from wcpan.drive.server.types import NodeObservation, SynologyLocator
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.types import NodeObservation
 
 
 _MOUNT = mount_id("docs")
@@ -53,8 +55,11 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         os.close(fd)
         self.pool = ThreadPoolExecutor(2)
         self.storage = StorageService(
-            self.db_path, off_main=OffMainService(pool=self.pool)
+            self.db_path,
+            off_main=OffMainService(pool=self.pool),
+            backend=SYNOLOGY_SCHEMA,
         )
+        self.store = SynologyStore(storage=self.storage)
         await self.storage.ensure_schema()
         await self.storage.bulk_upsert_nodes(
             [_node(SERVER_ROOT_ID, None), _node(_MOUNT, SERVER_ROOT_ID)]
@@ -72,9 +77,9 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         await self.storage.apply_observations([_obs(_node("d", _MOUNT), "101")])
 
         self.assertEqual(
-            await self.storage.get_locators([MirrorStableId("d")]), {"d": "101"}
+            await self.store.get_locators([MirrorStableId("d")]), {"d": "101"}
         )
-        found = await self.storage.get_node_by_locator(SynologyLocator("101"))
+        found = await self.store.get_node_by_locator(SynologyLocator("101"))
         assert found is not None
         self.assertEqual(found.id, "d")
         self.assertEqual(await self._change_ids(), ["d"])
@@ -86,10 +91,8 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
 
         await self.storage.apply_observations([_obs(d, "202")])
 
-        self.assertEqual(await self.storage.get_locators([d.id]), {"d": "202"})
-        self.assertIsNone(
-            await self.storage.get_node_by_locator(SynologyLocator("101"))
-        )
+        self.assertEqual(await self.store.get_locators([d.id]), {"d": "202"})
+        self.assertIsNone(await self.store.get_node_by_locator(SynologyLocator("101")))
         changes, _, _ = await self.storage.get_changes_since(cursor, 1000)
         self.assertEqual(changes, [])
 
@@ -109,7 +112,7 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
 
         await self.storage.apply_observations([_obs(replace(d, name="renamed"), None)])
 
-        self.assertEqual(await self.storage.get_locators([d.id]), {"d": "101"})
+        self.assertEqual(await self.store.get_locators([d.id]), {"d": "101"})
 
     async def test_subtree_delete_removes_bindings(self) -> None:
         await self.storage.apply_observations(
@@ -119,18 +122,18 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         await self.storage.delete_subtree_and_emit_changes(MirrorStableId("d"))
 
         self.assertEqual(
-            await self.storage.get_locators([MirrorStableId("d"), MirrorStableId("e")]),
+            await self.store.get_locators([MirrorStableId("d"), MirrorStableId("e")]),
             {},
         )
-        self.assertIsNone(
-            await self.storage.get_node_by_locator(SynologyLocator("102"))
-        )
+        self.assertIsNone(await self.store.get_node_by_locator(SynologyLocator("102")))
 
     async def test_dangling_cleanup_removes_bindings(self) -> None:
         await self.storage.apply_observations([_obs(_node("d", _MOUNT), "101")])
         # Detach "d" from the tree so the reachability GC treats it as dangling.
         await self.storage.bulk_upsert_nodes([_node("d", "missing-parent")])
 
-        self.assertEqual(cleanup_dangling_nodes(self.db_path), 1)
+        self.assertEqual(
+            cleanup_dangling_nodes(self.db_path, backend=SYNOLOGY_SCHEMA), 1
+        )
 
-        self.assertEqual(await self.storage.get_locators([MirrorStableId("d")]), {})
+        self.assertEqual(await self.store.get_locators([MirrorStableId("d")]), {})

@@ -20,20 +20,23 @@ from wcpan.drive.server.keys import (
     OFF_MAIN_KEY,
     READY_KEY,
     STORAGE_KEY,
-    SYNOLOGY_DRIVE_API_KEY,
-    SYNOLOGY_PATH_KEY,
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
-from wcpan.drive.server.lib.mounts import MountRegistry
-from wcpan.drive.server.services.paths import SynologyPathService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     _L,
     UploadService,
     UploadSessionStore,
 )
-from wcpan.drive.server.types import SynologyLocator
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.synology.keys import (
+    SYNOLOGY_DRIVE_API_KEY,
+    SYNOLOGY_PATH_KEY,
+)
+from wcpan.drive.server.synology.mounts import MountRegistry
+from wcpan.drive.server.synology.paths import SynologyPathService
+from wcpan.drive.server.synology.upload import SynologyUploader
 from wcpan.synology import (
     SynologyNameTooLongError,
     SynologyNetworkError,
@@ -63,7 +66,7 @@ def _make_app(store: UploadSessionStore) -> dict:
     storage.get_locators = AsyncMock(side_effect=_get_locators)
     syno_paths = SynologyPathService(
         registry=MountRegistry(mounts={"tmp": "/team-folders/download"}, root_ids={}),
-        storage=storage,
+        store=storage,
     )
     node_sync = NodeSyncService(
         storage=storage,
@@ -85,9 +88,11 @@ def _make_app(store: UploadSessionStore) -> dict:
     app[CHANGE_SERVICE_KEY] = node_sync
     app[UPLOAD_SERVICE_KEY] = UploadService(
         store=store,
-        node_sync=node_sync,
-        drive_api=drive_api,
-        syno_paths=syno_paths,
+        uploader=SynologyUploader(
+            drive_api=drive_api,
+            syno_paths=syno_paths,
+            node_sync=node_sync,
+        ),
     )
     return app
 

@@ -54,13 +54,14 @@ Keep these as high-level orientation only:
 - Startup scan, webhook processing, and explicit backfill all reconcile remote state into the local mirror.
 - Path handling is split between Synology paths, client-facing virtual paths, and stored node identity.
 - SQLite writes are serialized through background workers.
-- Synology API access (client, types, errors) comes from the external `wcpan-synology` library (`../wcpan.synology` locally); `packages/server-synology/src/wcpan/drive/server/synology/` adapts it to the mirror. Change API behavior in that library, not here.
+- Synology API access (client, types, errors) comes from the external `wcpan-synology` library (`../wcpan.synology` locally); `packages/server-synology/src/wcpan/drive/server/synology/` is the Synology backend. Change API behavior in that library, not here.
+- `packages/server` must not import `wcpan.synology`, the Synology adapter, or client packages (`tests/test_server_boundaries.py`).
 
 If you need detailed implementation behavior, read the relevant module instead of extending this file with subsystem internals.
 
 ## Configuration Notes
 
-The YAML config schema is defined in `packages/server/src/wcpan/drive/server/config.py` (parsed into `ServerConfig` in `server/types.py`), and the example config is `server.example.yaml`.
+The YAML config schema is split: generic settings in `packages/server/src/wcpan/drive/server/config.py` (parsed into `ServerConfig` in `server/types.py`) and the `synology` section in `packages/server-synology/src/wcpan/drive/server/synology/config.py`. The example config is `server.example.yaml`.
 
 Do not duplicate config fields or semantics here; update `README.md`, `server.example.yaml`, and tests when behavior
 changes.

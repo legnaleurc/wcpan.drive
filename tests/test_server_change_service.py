@@ -102,7 +102,6 @@ class _FakeStorage:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
         self._bulk: list[NodeRecord] = []
-        self._mount_states: list = []
         self._observations: list[list[NodeRecord]] = []
         self._pending: set[str] = set()
 
@@ -130,9 +129,6 @@ class _FakeStorage:
 
     async def bulk_upsert_nodes(self, records: list[NodeRecord]) -> None:
         self._bulk.extend(records)
-
-    async def set_mount_state(self, name: str, path: str, checkpoint: int) -> None:
-        self._mount_states.append((name, path, checkpoint))
 
     async def get_ancestors(self, node_id: str) -> list[NodeRecord]:
         return []
@@ -380,15 +376,13 @@ class TestNodeSyncServiceReconcile(IsolatedAsyncioTestCase):
 
 
 class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
-    async def test_set_mount_watermark(self):
-        from wcpan.synology import SynologyPath
-
-        cs, storage, wq = _make_service()
-        await cs.set_mount_watermark("docs", SynologyPath("/team-folders/docs"), 42)
+    async def test_enqueue_runs_backend_write_in_queue_order(self):
+        cs, _, wq = _make_service()
+        job = AsyncMock()
+        await cs.enqueue(job)
         self.assertEqual(wq.qsize(), 1)
-        op = wq.get_nowait()
-        await op()
-        self.assertEqual(storage._mount_states, [("docs", "/team-folders/docs", 42)])
+        await wq.get_nowait()()
+        job.assert_awaited_once_with()
 
     async def test_wait_enrichment_drained_noop_without_metadata(self):
         cs, _, _ = _make_service()

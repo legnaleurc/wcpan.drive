@@ -11,7 +11,8 @@ from wcpan.drive.server.services.storage import (
     SchemaVersionError,
     StorageService,
 )
-from wcpan.drive.server.types import SynologyLocator
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.synology import SynologyPath
 
 
@@ -21,8 +22,11 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
         os.close(fd)
         self.pool = ThreadPoolExecutor()
         self.storage = StorageService(
-            self.db_path, off_main=OffMainService(pool=self.pool)
+            self.db_path,
+            off_main=OffMainService(pool=self.pool),
+            backend=SYNOLOGY_SCHEMA,
         )
+        self.store = SynologyStore(storage=self.storage)
         await self.storage.ensure_schema()
 
     async def asyncTearDown(self) -> None:
@@ -46,7 +50,7 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
             "LV": SynologyPath("/team-folders/video/L"),
             "LG": SynologyPath("/team-folders/gallery/L"),
         }
-        result = await self.storage.get_mount_max_ids(mounts)
+        result = await self.store.get_mount_max_ids(mounts)
         self.assertEqual(result, {"LV": 0, "LG": 0})
 
     async def test_unknown_mount_gets_zero(self) -> None:
@@ -55,19 +59,19 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
             "LV": SynologyPath("/team-folders/video/L"),
             "LG": SynologyPath("/team-folders/gallery/L"),
         }
-        result = await self.storage.get_mount_max_ids(mounts)
+        result = await self.store.get_mount_max_ids(mounts)
         self.assertEqual(result, {"LV": 35000, "LG": 0})
 
     async def test_path_change_resets_to_zero(self) -> None:
         self._write_mount("LV", 35000, "/old/path")
         mounts = {"LV": SynologyPath("/new/path")}
-        result = await self.storage.get_mount_max_ids(mounts)
+        result = await self.store.get_mount_max_ids(mounts)
         self.assertEqual(result["LV"], 0)
 
     async def test_matching_path_preserves_value(self) -> None:
         self._write_mount("LV", 35000, "/team-folders/video/L")
         mounts = {"LV": SynologyPath("/team-folders/video/L")}
-        result = await self.storage.get_mount_max_ids(mounts)
+        result = await self.store.get_mount_max_ids(mounts)
         self.assertEqual(result["LV"], 35000)
 
 
@@ -77,8 +81,11 @@ class TestSetMountState(IsolatedAsyncioTestCase):
         os.close(fd)
         self.pool = ThreadPoolExecutor()
         self.storage = StorageService(
-            self.db_path, off_main=OffMainService(pool=self.pool)
+            self.db_path,
+            off_main=OffMainService(pool=self.pool),
+            backend=SYNOLOGY_SCHEMA,
         )
+        self.store = SynologyStore(storage=self.storage)
         await self.storage.ensure_schema()
 
     async def asyncTearDown(self) -> None:
@@ -96,15 +103,15 @@ class TestSetMountState(IsolatedAsyncioTestCase):
         return int(row[0]), str(row[1])
 
     async def test_writes_mount_row(self) -> None:
-        await self.storage.set_mount_state("LV", "/team-folders/video/L", 35000)
+        await self.store.set_mount_state("LV", "/team-folders/video/L", 35000)
         self.assertEqual(
             self._read_mount("LV"),
             (35000, "/team-folders/video/L"),
         )
 
     async def test_overwrites_existing_values(self) -> None:
-        await self.storage.set_mount_state("LV", "/old/path", 1000)
-        await self.storage.set_mount_state("LV", "/team-folders/video/L", 35000)
+        await self.store.set_mount_state("LV", "/old/path", 1000)
+        await self.store.set_mount_state("LV", "/team-folders/video/L", 35000)
         self.assertEqual(
             self._read_mount("LV"),
             (35000, "/team-folders/video/L"),
@@ -112,8 +119,8 @@ class TestSetMountState(IsolatedAsyncioTestCase):
 
     async def test_roundtrip_via_get_mount_max_ids(self) -> None:
         mounts = {"LV": SynologyPath("/team-folders/video/L")}
-        await self.storage.set_mount_state("LV", "/team-folders/video/L", 35000)
-        result = await self.storage.get_mount_max_ids(mounts)
+        await self.store.set_mount_state("LV", "/team-folders/video/L", 35000)
+        result = await self.store.get_mount_max_ids(mounts)
         self.assertEqual(result, {"LV": 35000})
 
 
@@ -129,7 +136,9 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         os.unlink(self.db_path)
 
     async def test_new_db_sets_user_version(self) -> None:
-        await StorageService(self.db_path, off_main=self.off_main).ensure_schema()
+        await StorageService(
+            self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+        ).ensure_schema()
 
         con = sqlite3.connect(self.db_path)
         version = con.execute("PRAGMA user_version").fetchone()[0]
@@ -164,7 +173,9 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.commit()
         con.close()
 
-        await StorageService(self.db_path, off_main=self.off_main).ensure_schema()
+        await StorageService(
+            self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+        ).ensure_schema()
 
         con = sqlite3.connect(self.db_path)
         version = con.execute("PRAGMA user_version").fetchone()[0]
@@ -219,7 +230,9 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.commit()
         con.close()
 
-        storage = StorageService(self.db_path, off_main=self.off_main)
+        storage = StorageService(
+            self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+        )
         await storage.ensure_schema()
 
         con = sqlite3.connect(self.db_path)
@@ -231,10 +244,14 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
 
         # Public IDs and the change feed survive; virtual nodes get no locator.
         self.assertEqual(
-            await storage.get_locators(["_", "_docs", "perm-d", "perm-f"]),
+            await SynologyStore(storage=storage).get_locators(
+                ["_", "_docs", "perm-d", "perm-f"]
+            ),
             {"perm-d": "101", "perm-f": "102"},
         )
-        found = await storage.get_node_by_locator(SynologyLocator("102"))
+        found = await SynologyStore(storage=storage).get_node_by_locator(
+            SynologyLocator("102")
+        )
         assert found is not None
         self.assertEqual((found.id, found.parent_id), ("perm-f", "perm-d"))
         changes, cursor, _ = await storage.get_changes_since(0, 100)
@@ -242,7 +259,9 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         self.assertEqual(cursor, 4)
 
     async def test_existing_db_with_matching_version_is_accepted(self) -> None:
-        storage = StorageService(self.db_path, off_main=self.off_main)
+        storage = StorageService(
+            self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+        )
         await storage.ensure_schema()
         await storage.ensure_schema()
 
@@ -253,7 +272,9 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.close()
 
         with self.assertRaises(SchemaVersionError):
-            await StorageService(self.db_path, off_main=self.off_main).ensure_schema()
+            await StorageService(
+                self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+            ).ensure_schema()
 
     async def test_existing_db_with_wrong_version_is_rejected(self) -> None:
         con = sqlite3.connect(self.db_path)
@@ -262,4 +283,6 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.close()
 
         with self.assertRaises(SchemaVersionError):
-            await StorageService(self.db_path, off_main=self.off_main).ensure_schema()
+            await StorageService(
+                self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+            ).ensure_schema()

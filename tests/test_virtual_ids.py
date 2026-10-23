@@ -7,15 +7,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from wcpan.drive.protocol.types import MirrorStableId
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
-    MountRegistry,
-    create_mount_registry,
     is_mount_node_id,
     is_virtual,
     mount_id,
     mount_name,
 )
-from wcpan.drive.server.services.paths import SynologyPathService
-from wcpan.drive.server.types import SynologyLocator
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.synology.mounts import (
+    MountRegistry,
+    create_mount_registry,
+)
+from wcpan.drive.server.synology.paths import SynologyPathService
 from wcpan.synology import (
     SynologyApiError,
     SynologyChildRef,
@@ -112,7 +114,7 @@ class TestSynologyParentRef(IsolatedAsyncioTestCase):
                 mounts={"photos": "/volume1/photos"},
                 root_ids={},
             ),
-            storage=MagicMock(),
+            store=MagicMock(),
         )
         # when
         result = await svc.synology_parent_ref(MirrorStableId("_photos"))
@@ -125,7 +127,7 @@ class TestSynologyParentRef(IsolatedAsyncioTestCase):
         storage.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
-            storage=storage,
+            store=storage,
         )
         # when / then
         with self.assertRaises(ValueError):
@@ -137,7 +139,7 @@ class TestSynologyParentRef(IsolatedAsyncioTestCase):
         storage.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
-            storage=storage,
+            store=storage,
         )
         # when / then
         with self.assertRaises(ValueError):
@@ -159,7 +161,7 @@ class TestCreateMountRegistry(IsolatedAsyncioTestCase):
         }
         drive_api = MagicMock()
         with patch(
-            "wcpan.drive.server.lib.mounts.get_file_metadata_by_path",
+            "wcpan.drive.server.synology.mounts.get_file_metadata_by_path",
             new_callable=AsyncMock,
             side_effect=[
                 {"file_id": "id-1"},
@@ -184,7 +186,7 @@ class TestCreateMountRegistry(IsolatedAsyncioTestCase):
             "photos_2024": SynologyPath("/volume1/photos/2024"),
         }
         with patch(
-            "wcpan.drive.server.lib.mounts.get_file_metadata_by_path",
+            "wcpan.drive.server.synology.mounts.get_file_metadata_by_path",
             new_callable=AsyncMock,
         ) as mock_get:
             with self.assertRaises(ValueError):
@@ -205,7 +207,7 @@ class TestCreateMountRegistry(IsolatedAsyncioTestCase):
             "photos_archive": SynologyPath("/volume1/photos_archive"),
         }
         with patch(
-            "wcpan.drive.server.lib.mounts.get_file_metadata_by_path",
+            "wcpan.drive.server.synology.mounts.get_file_metadata_by_path",
             new_callable=AsyncMock,
             side_effect=[
                 {"file_id": "id-1"},
@@ -237,7 +239,7 @@ class TestFindChildByName(IsolatedAsyncioTestCase):
         mount_path = SynologyPath("/volume1/photos")
         svc = SynologyPathService(
             registry=MountRegistry(mounts={"photos": mount_path}, root_ids={}),
-            storage=MagicMock(),
+            store=MagicMock(),
         )
         drive_api = MagicMock()
         expected = {"name": "2024"}
@@ -258,7 +260,7 @@ class TestFindChildByName(IsolatedAsyncioTestCase):
         storage.get_locators = AsyncMock(return_value={"42": SynologyLocator("42")})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
-            storage=storage,
+            store=storage,
         )
         drive_api = MagicMock()
         expected = {"name": "img.jpg"}
@@ -282,7 +284,7 @@ class TestFindChildByName(IsolatedAsyncioTestCase):
         storage.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
-            storage=storage,
+            store=storage,
         )
         drive_api = MagicMock()
         drive_api.get_file = AsyncMock(return_value=None)
@@ -294,7 +296,7 @@ class TestFindChildByName(IsolatedAsyncioTestCase):
         mount_path = SynologyPath("/volume1/photos")
         svc = SynologyPathService(
             registry=MountRegistry(mounts={"photos": mount_path}, root_ids={}),
-            storage=MagicMock(),
+            store=MagicMock(),
         )
         error = SynologyApiError("permission denied", error_code=105)
         drive_api = MagicMock()

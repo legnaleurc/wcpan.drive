@@ -1,13 +1,12 @@
 """Central service for persisting node changes from scan, webhook, and API sources."""
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from functools import partial
 from logging import getLogger
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.synology import SynologyPath
 
 from ..types import (
     MetadataQueue,
@@ -58,7 +57,7 @@ class NodeSyncService:
         storage: StorageService,
         write_queue: WriteQueue,
         off_main: OffMainService,
-        mounts: dict[str, SynologyPath],
+        mounts: dict[str, str],
         local_paths: dict[str, str],
         metadata_queue: MetadataQueue,
     ) -> None:
@@ -335,15 +334,13 @@ class NodeSyncService:
             MetadataWorkItem(observation=from_api, force_refresh=True, read=read)
         )
 
-    # --- Scan-specific lifecycle operations ---
+    async def enqueue(self, job: Callable[[], Awaitable[None]]) -> None:
+        """Run a backend write in order with queued mirror writes.
 
-    async def set_mount_watermark(
-        self, name: str, path: SynologyPath, checkpoint: int
-    ) -> None:
-        """Enqueue set_mount_state. Used by scanner to persist sync_id checkpoints."""
-        await self._write_queue.put(
-            partial(self._storage.set_mount_state, name, path.path, checkpoint)
-        )
+        Used by: backends, to persist discovery checkpoints after the mirror
+        writes they cover.
+        """
+        await self._write_queue.put(job)
 
     async def touched_after(self, read: ReadSeq) -> set[MirrorStableId]:
         """Nodes observed by reads that started after *read*, once queued writes land.

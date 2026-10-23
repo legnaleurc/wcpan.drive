@@ -5,8 +5,8 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
-from wcpan.drive.server.handlers.webhook import handle_synology_webhook
-from wcpan.drive.server.keys import WEBHOOK_QUEUE_KEY
+from wcpan.drive.server.synology.handlers import handle_synology_webhook
+from wcpan.drive.server.synology.keys import WEBHOOK_QUEUE_KEY
 
 
 class TestWebhookHttpHandler(IsolatedAsyncioTestCase):

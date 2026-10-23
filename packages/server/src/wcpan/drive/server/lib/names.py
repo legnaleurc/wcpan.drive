@@ -1,8 +1,8 @@
-"""Name handling for Synology Drive API calls."""
+"""Name normalization for stored path components."""
 
 import unicodedata
 
 
 def normalize_name(name: str) -> str:
-    """Return the form Synology Drive uses for stored path components."""
+    """Return the normalized (NFC) form used for stored path components."""
     return unicodedata.normalize("NFC", name)

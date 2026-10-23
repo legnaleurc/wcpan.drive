@@ -8,21 +8,26 @@ from contextlib import ExitStack, suppress
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import wcpan.drive.server.services.scan as startup_scan_mod
+import wcpan.drive.server.synology.scan as startup_scan_mod
 from wcpan.drive.client.remote._lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
-    MountRegistry,
     mount_id,
     mount_name,
 )
 from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.services.paths import SynologyPathService
-from wcpan.drive.server.services.scan import StartupScanService
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.types import NodeObservation, SynologyLocator, WriteQueue
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.synology.mounts import MountRegistry
+from wcpan.drive.server.synology.paths import SynologyPathService
+from wcpan.drive.server.synology.scan import StartupScanService
+from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.types import (
+    NodeObservation,
+    WriteQueue,
+)
 from wcpan.drive.server.workers import create_write_queue, metadata_worker
 
 
@@ -133,7 +138,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -171,11 +178,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=MagicMock(),
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )
@@ -207,7 +215,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -261,11 +271,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=drive_api,
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )
@@ -292,7 +303,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -335,11 +348,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=MagicMock(),
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )
@@ -366,7 +380,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -409,11 +425,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=MagicMock(),
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )
@@ -441,7 +458,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -485,11 +504,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=MagicMock(),
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )
@@ -515,7 +535,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -565,11 +587,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=MagicMock(),
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )
@@ -596,7 +619,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -675,11 +700,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=drive_api,
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )
@@ -706,7 +732,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -745,11 +773,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=MagicMock(),
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )
@@ -777,7 +806,9 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(db_path, off_main=off_main)
+                storage = StorageService(
+                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
                     [
@@ -839,11 +870,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         svc = StartupScanService(
                             drive_api=drive_api,
                             storage=storage,
+                            store=SynologyStore(storage=storage),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
                                 ),
-                                storage=storage,
+                                store=SynologyStore(storage=storage),
                             ),
                             node_sync=cs,
                         )

@@ -8,7 +8,12 @@ from logging import getLogger
 from aiohttp.client_exceptions import ClientConnectionResetError
 from wcpan.drive.protocol.lib import guess_mime_type, utc_now
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.drive.server.synology import SYNOLOGY_HASH_ALGORITHM, convert_file_info
+from wcpan.drive.server.services.operations import (
+    OperationConflictError,
+    OperationUnavailableError,
+)
+from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.types import NodeObservation
 from wcpan.synology import (
     SynologyClient,
     SynologyNetworkError,
@@ -16,10 +21,8 @@ from wcpan.synology import (
     SynologyUploadConflictError,
 )
 
-from ..types import NodeObservation, SynologyLocator
-from .operations import OperationConflictError, OperationUnavailableError
+from .convert import SYNOLOGY_HASH_ALGORITHM, SynologyLocator, convert_file_info
 from .paths import SynologyPathService
-from .sync import NodeSyncService
 
 
 _L = getLogger(__name__)

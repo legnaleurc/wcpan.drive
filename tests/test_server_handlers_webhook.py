@@ -6,10 +6,10 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.drive.server.lib.mounts import MountRegistry
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.services.webhook import WebhookService
-from wcpan.drive.server.types import SynologyLocator
+from wcpan.drive.server.synology.convert import SynologyLocator
+from wcpan.drive.server.synology.mounts import MountRegistry
+from wcpan.drive.server.synology.webhook import WebhookService
 from wcpan.synology import (
     SynologyFileId,
     SynologyPermanentLink,
@@ -65,15 +65,14 @@ def _make_service(
     storage: object | None = None,
     node_sync: object | None = None,
     syno_paths: object | None = None,
-    write_queue: asyncio.Queue | None = None,
     mount_registry: MountRegistry | None = None,
 ) -> WebhookService:
     return WebhookService(
         drive_api=drive_api or MagicMock(),
         storage=storage or MagicMock(),
+        store=storage or MagicMock(),
         node_sync=node_sync or MagicMock(spec=NodeSyncService),
         syno_paths=syno_paths or MagicMock(),
-        write_queue=write_queue or asyncio.Queue(),
         mount_registry=mount_registry or MountRegistry(mounts={}, root_ids={}),
     )
 
@@ -352,7 +351,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
     async def test_fetches_then_waits_for_created_dir(self):
         service = _make_service()
         pending = MagicMock()
-        service._write_queue.join = AsyncMock()
+        service._node_sync.flush = AsyncMock()
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_created",
@@ -376,7 +375,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
             plan.parent_file_ref,
             plan.event_type,
         )
-        service._write_queue.join.assert_awaited_once()
+        service._node_sync.flush.assert_awaited_once()
         pending.schedule.assert_not_called()
 
     async def test_deletes_when_plan_requests_removal(self):
@@ -437,7 +436,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_video"))
         registry = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
         service = _make_service(storage=storage, mount_registry=registry)
-        service._write_queue.join = AsyncMock()
+        service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
             {
@@ -469,7 +468,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
             plan.parent_file_ref,
             plan.event_type,
         )
-        service._write_queue.join.assert_awaited_once()
+        service._node_sync.flush.assert_awaited_once()
         mock_scan.assert_not_awaited()
 
     async def test_mirrored_directory_move_to_mount_root_skips_scanning(self):
@@ -483,7 +482,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
             },
         )
         service = _make_service(storage=storage, mount_registry=registry)
-        service._write_queue.join = AsyncMock()
+        service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
             {
@@ -510,7 +509,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
             await service._execute_webhook_plan(plan, pending=pending)
 
         mock_fetch.assert_awaited_once()
-        service._write_queue.join.assert_awaited_once()
+        service._node_sync.flush.assert_awaited_once()
         mock_scan.assert_not_awaited()
 
     async def test_moved_directory_source_not_under_current_mount_scans(self):
@@ -519,7 +518,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_video"))
         registry = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
         service = _make_service(storage=storage, mount_registry=registry)
-        service._write_queue.join = AsyncMock()
+        service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
             {
@@ -555,7 +554,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_old"))
         registry = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
         service = _make_service(storage=storage, mount_registry=registry)
-        service._write_queue.join = AsyncMock()
+        service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
             {
@@ -590,7 +589,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         storage.get_node_by_id = AsyncMock(return_value=None)
         storage.get_node_by_locator = AsyncMock(return_value=None)
         service = _make_service(storage=storage)
-        service._write_queue.join = AsyncMock()
+        service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
             {
@@ -626,7 +625,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         storage.get_node_by_locator = AsyncMock(return_value=None)
         registry = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
         service = _make_service(storage=storage, mount_registry=registry)
-        service._write_queue.join = AsyncMock()
+        service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
             {
@@ -745,14 +744,13 @@ class TestWebhookServiceMovedDir(IsolatedAsyncioTestCase):
         node_sync.upsert = AsyncMock(return_value=_make_node())
         node_sync.delete = AsyncMock()
         syno_paths = MagicMock()
-        write_queue = asyncio.Queue()
         mount_registry = MountRegistry(mounts={}, root_ids={})
         service = WebhookService(
             drive_api=drive_api,
             storage=storage,
+            store=storage,
             node_sync=node_sync,
             syno_paths=syno_paths,
-            write_queue=write_queue,
             mount_registry=mount_registry,
         )
         queue = asyncio.Queue()

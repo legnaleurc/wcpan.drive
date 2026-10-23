@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from logging import getLogger
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.drive.server.synology import convert_file_info
+from wcpan.drive.server.lib.bfs import parallel_bfs
+from wcpan.drive.server.lib.debounce import TaskIdDebouncer
+from wcpan.drive.server.lib.mounts import mount_name
+from wcpan.drive.server.services.storage import StorageService
+from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.types import NodeObservation, ReadSeq
 from wcpan.synology import (
     SynologyClient,
     SynologyFileId,
@@ -13,17 +18,20 @@ from wcpan.synology import (
     SynologyWebhookEvent,
 )
 
-from ..lib.bfs import parallel_bfs
-from ..lib.debounce import TaskIdDebouncer
-from ..lib.mounts import MountRegistry, mount_name
-from ..types import NodeObservation, ReadSeq, SynologyLocator, WriteQueue
-from ..workers import WebhookQueue
+from .convert import SynologyLocator, convert_file_info
+from .mounts import MountRegistry
 from .paths import SynologyPathService
-from .storage import StorageService
-from .sync import NodeSyncService
+from .store import SynologyStore
 
 
 _L = getLogger(__name__)
+
+type WebhookQueue = asyncio.Queue[SynologyWebhookEvent]
+
+
+def create_webhook_queue() -> WebhookQueue:
+    return asyncio.Queue()
+
 
 _PENDING_FILE_DELAY = 10.0
 
@@ -50,16 +58,16 @@ class WebhookService:
         *,
         drive_api: SynologyClient,
         storage: StorageService,
+        store: SynologyStore,
         node_sync: NodeSyncService,
         syno_paths: SynologyPathService,
-        write_queue: WriteQueue,
         mount_registry: MountRegistry,
     ) -> None:
         self._drive_api = drive_api
         self._storage = storage
+        self._store = store
         self._node_sync = node_sync
         self._syno_paths = syno_paths
-        self._write_queue = write_queue
         self._mount_registry = mount_registry
 
     async def _fetch_and_enrich(
@@ -90,7 +98,7 @@ class WebhookService:
                 event_type,
             )
             return
-        parent_node = await self._storage.get_node_by_locator(
+        parent_node = await self._store.get_node_by_locator(
             SynologyLocator(parent_file_ref.file_id)
         )
         if parent_node is None:
@@ -238,7 +246,7 @@ class WebhookService:
                 plan.event_type,
             )
         if plan.wait_for_writes:
-            await self._write_queue.join()
+            await self._node_sync.flush()
         if plan.scan_moved_dir_subtree and not skip_moved_dir_subtree_scan:
             subtree_root_id = await self._resolve_moved_dir_root_id(
                 plan.file_ref,
@@ -277,7 +285,7 @@ class WebhookService:
             MirrorStableId(plan.permanent_link_ref.permanent_link)
         )
         if source_node is None:
-            source_node = await self._storage.get_node_by_locator(
+            source_node = await self._store.get_node_by_locator(
                 SynologyLocator(plan.file_ref.file_id)
             )
         if source_node is None:
@@ -288,7 +296,7 @@ class WebhookService:
         parent_ref = plan.parent_file_ref
         if parent_ref is None:
             return False
-        destination_parent = await self._storage.get_node_by_locator(
+        destination_parent = await self._store.get_node_by_locator(
             SynologyLocator(parent_ref.file_id)
         )
         if destination_parent is not None:
@@ -345,7 +353,7 @@ class WebhookService:
                     file_records.append(observation)
             if dir_records:
                 await self._node_sync.upsert_batch(dir_records, read=read)
-                await self._write_queue.join()
+                await self._node_sync.flush()
             if file_records:
                 await self._node_sync.upsert_file_batch(file_records, read=read)
             return children
@@ -366,7 +374,7 @@ class WebhookService:
         if info is not None:
             permanent_link = info.get("permanent_link")
             return MirrorStableId(permanent_link or permanent_link_ref.permanent_link)
-        record = await self._storage.get_node_by_locator(
+        record = await self._store.get_node_by_locator(
             SynologyLocator(file_ref.file_id)
         )
         if record is not None:

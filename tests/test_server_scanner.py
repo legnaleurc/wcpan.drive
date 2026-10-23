@@ -8,12 +8,13 @@ from contextlib import suppress
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from wcpan.drive.server.lib.mounts import MountRegistry
 from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.services.paths import SynologyPathService
-from wcpan.drive.server.services.scan import StartupScanService
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.synology.mounts import MountRegistry
+from wcpan.drive.server.synology.paths import SynologyPathService
+from wcpan.drive.server.synology.scan import StartupScanService
+from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.types import WriteQueue
 from wcpan.drive.server.workers import create_write_queue
 from wcpan.synology import SynologyPath
@@ -61,9 +62,10 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
                     svc = StartupScanService(
                         drive_api=MagicMock(),
                         storage=storage,
+                        store=SynologyStore(storage=storage),
                         syno_paths=SynologyPathService(
                             registry=MountRegistry(mounts=mounts, root_ids={}),
-                            storage=storage,
+                            store=SynologyStore(storage=storage),
                         ),
                         node_sync=cs,
                     )
@@ -80,13 +82,15 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(db_path, off_main=OffMainService(pool=pool))
+                storage = StorageService(
+                    db_path, off_main=OffMainService(pool=pool), backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
 
                 await self._run_initial_sync(storage, mounts, {"a": 500, "b": 300})
 
-                result = await storage.get_mount_max_ids(mounts)
+                result = await SynologyStore(storage=storage).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 500, "b": 300})
         finally:
             os.unlink(db_path)
@@ -97,16 +101,18 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(db_path, off_main=OffMainService(pool=pool))
+                storage = StorageService(
+                    db_path, off_main=OffMainService(pool=pool), backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
                 # Seed existing per-mount state
-                await storage.set_mount_state("a", "/vol/a", 100)
-                await storage.set_mount_state("b", "/vol/b", 80)
+                await SynologyStore(storage=storage).set_mount_state("a", "/vol/a", 100)
+                await SynologyStore(storage=storage).set_mount_state("b", "/vol/b", 80)
 
                 await self._run_initial_sync(storage, mounts, {"a": 200, "b": 150})
 
-                result = await storage.get_mount_max_ids(mounts)
+                result = await SynologyStore(storage=storage).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 200, "b": 150})
         finally:
             os.unlink(db_path)
@@ -117,16 +123,18 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(db_path, off_main=OffMainService(pool=pool))
+                storage = StorageService(
+                    db_path, off_main=OffMainService(pool=pool), backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
-                await storage.set_mount_state("a", "/vol/a", 100)
-                await storage.set_mount_state("b", "/vol/b", 80)
+                await SynologyStore(storage=storage).set_mount_state("a", "/vol/a", 100)
+                await SynologyStore(storage=storage).set_mount_state("b", "/vol/b", 80)
 
                 # Scan returns identical values — no advance
                 await self._run_initial_sync(storage, mounts, {"a": 100, "b": 80})
 
-                result = await storage.get_mount_max_ids(mounts)
+                result = await SynologyStore(storage=storage).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 100, "b": 80})
         finally:
             os.unlink(db_path)
@@ -142,7 +150,9 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(db_path, off_main=OffMainService(pool=pool))
+                storage = StorageService(
+                    db_path, off_main=OffMainService(pool=pool), backend=SYNOLOGY_SCHEMA
+                )
                 await storage.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a")}
 
@@ -157,7 +167,7 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
                     pre_scan_result={"a": 300},
                 )
 
-                result = await storage.get_mount_max_ids(mounts)
+                result = await SynologyStore(storage=storage).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 300})
         finally:
             os.unlink(db_path)

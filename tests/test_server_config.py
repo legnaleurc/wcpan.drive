@@ -12,8 +12,8 @@ from wcpan.drive.server.config import (
     ConfigVersionError,
     parse_config,
 )
-from wcpan.drive.server.main import main
-from wcpan.synology import SynologyPath
+from wcpan.drive.server.synology.config import parse_synology_config
+from wcpan.drive.server.synology.main import main
 
 
 def _raw_config(**overrides):
@@ -68,7 +68,9 @@ class TestMainConfigVersion(unittest.TestCase):
             ]
             with (
                 patch("sys.argv", argv),
-                patch("wcpan.drive.server.main.cleanup_dangling_nodes") as cleanup,
+                patch(
+                    "wcpan.drive.server.synology.main.cleanup_dangling_nodes"
+                ) as cleanup,
                 redirect_stderr(stderr),
                 self.assertRaises(SystemExit) as cm,
             ):
@@ -80,7 +82,7 @@ class TestMainConfigVersion(unittest.TestCase):
 
 class TestServerConfigDefaults(unittest.TestCase):
     def test_default_webhook_app_id(self):
-        config = parse_config(_raw_config())
+        config = parse_synology_config(_raw_config())
         self.assertEqual(config.webhook_app_id, "wcpan-drive-server-synology")
 
     def test_defaults_host_and_port(self):
@@ -89,38 +91,39 @@ class TestServerConfigDefaults(unittest.TestCase):
         self.assertEqual(config.port, 8080)
 
     def test_maps_nested_config_to_runtime_dataclass(self):
-        config = parse_config(
-            _raw_config(
-                host="0.0.0.0",
-                port=9000,
-                log_path="/tmp/server.log",
-                upload_tmp_dir="/tmp/uploads",
-                local_paths={"/docs": "/mnt/docs"},
-                synology={
-                    "url": "https://nas.example:5001",
-                    "username": "user-2",
-                    "password": "secret-2",
-                    "otp_code": "123456",
-                    "webhook": {
-                        "callback_url": "https://callback.example",
-                        "app_id": "app-2",
-                    },
+        raw = _raw_config(
+            host="0.0.0.0",
+            port=9000,
+            log_path="/tmp/server.log",
+            upload_tmp_dir="/tmp/uploads",
+            local_paths={"/docs": "/mnt/docs"},
+            synology={
+                "url": "https://nas.example:5001",
+                "username": "user-2",
+                "password": "secret-2",
+                "otp_code": "123456",
+                "webhook": {
+                    "callback_url": "https://callback.example",
+                    "app_id": "app-2",
                 },
-            )
+            },
         )
+        config = parse_config(raw)
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 9000)
         self.assertEqual(config.database_url, "sqlite:////tmp/test.db")
-        self.assertEqual(config.synology_url, "https://nas.example:5001")
-        self.assertEqual(config.username, "user-2")
-        self.assertEqual(config.password, "secret-2")
-        self.assertEqual(config.mounts, {"docs": SynologyPath("/docs")})
-        self.assertEqual(config.public_url, "https://callback.example")
-        self.assertEqual(config.webhook_app_id, "app-2")
+        self.assertEqual(config.mounts, {"docs": "/docs"})
         self.assertEqual(config.local_paths, {"/docs": "/mnt/docs"})
-        self.assertEqual(config.otp_code, "123456")
         self.assertEqual(config.log_path, "/tmp/server.log")
         self.assertEqual(config.upload_tmp_dir, "/tmp/uploads")
+
+        synology = parse_synology_config(raw)
+        self.assertEqual(synology.url, "https://nas.example:5001")
+        self.assertEqual(synology.username, "user-2")
+        self.assertEqual(synology.password, "secret-2")
+        self.assertEqual(synology.public_url, "https://callback.example")
+        self.assertEqual(synology.webhook_app_id, "app-2")
+        self.assertEqual(synology.otp_code, "123456")
 
 
 class TestServerConfigValidation(unittest.TestCase):
@@ -128,22 +131,22 @@ class TestServerConfigValidation(unittest.TestCase):
         raw = _raw_config()
         del raw["synology"]
         with self.assertRaisesRegex(ValueError, "synology"):
-            parse_config(raw)
+            parse_synology_config(raw)
 
     def test_missing_webhook_block_is_rejected(self):
         raw = _raw_config()
         del raw["synology"]["webhook"]
         with self.assertRaisesRegex(ValueError, "synology.webhook"):
-            parse_config(raw)
+            parse_synology_config(raw)
 
     def test_missing_synology_url_is_rejected(self):
         raw = _raw_config()
         del raw["synology"]["url"]
         with self.assertRaisesRegex(ValueError, "synology.url"):
-            parse_config(raw)
+            parse_synology_config(raw)
 
     def test_missing_callback_url_is_rejected(self):
         raw = _raw_config()
         del raw["synology"]["webhook"]["callback_url"]
         with self.assertRaisesRegex(ValueError, "synology.webhook.callback_url"):
-            parse_config(raw)
+            parse_synology_config(raw)

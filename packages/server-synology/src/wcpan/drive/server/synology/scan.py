@@ -7,16 +7,17 @@ from logging import getLogger
 
 from wcpan.drive.protocol.lib import utc_now
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.drive.server.synology import convert_file_info
+from wcpan.drive.server.lib.bfs import parallel_bfs
+from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, mount_id
+from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
+from wcpan.drive.server.services.storage import StorageService
+from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.types import NodeObservation, ReadSeq
 from wcpan.synology import SynologyClient, SynologyFileId, SynologyPath
 
-from ..lib.bfs import parallel_bfs
-from ..lib.mounts import SERVER_ROOT_ID, mount_id
-from ..types import NodeObservation, ReadSeq
+from .convert import convert_file_info
 from .paths import SynologyPathService
-from .reconcile import ReconcileSession, reconcile_session
-from .storage import StorageService
-from .sync import NodeSyncService
+from .store import SynologyStore
 
 
 _L = getLogger(__name__)
@@ -86,11 +87,13 @@ class StartupScanService:
         *,
         drive_api: SynologyClient,
         storage: StorageService,
+        store: SynologyStore,
         syno_paths: SynologyPathService,
         node_sync: NodeSyncService,
     ) -> None:
         self._drive_api = drive_api
         self._storage = storage
+        self._store = store
         self._syno_paths = syno_paths
         self._node_sync = node_sync
 
@@ -182,7 +185,7 @@ class StartupScanService:
                 if db_children:
                     should_skip = True
                     try:
-                        locators = await self._storage.get_locators([folder_id])
+                        locators = await self._store.get_locators([folder_id])
                         locator = locators.get(folder_id)
                         if locator is None:
                             raise ValueError(f"missing locator for {folder_id}")
@@ -330,7 +333,7 @@ class StartupScanService:
 
     async def run_initial_scan(self) -> None:
         """First full scan or resume: align nodes + change feed before serving."""
-        last_max_ids = await self._storage.get_mount_max_ids(self._syno_paths.mounts)
+        last_max_ids = await self._store.get_mount_max_ids(self._syno_paths.mounts)
         is_first_run = not any(last_max_ids.values())
 
         if is_first_run:
@@ -361,8 +364,13 @@ class StartupScanService:
         )
         for name, checkpoint in pre_scan_max_ids.items():
             if checkpoint > last_max_ids.get(name, 0):
-                await self._node_sync.set_mount_watermark(
-                    name, self._syno_paths.mounts[name], checkpoint
+                await self._node_sync.enqueue(
+                    partial(
+                        self._store.set_mount_state,
+                        name,
+                        self._syno_paths.mounts[name].path,
+                        checkpoint,
+                    )
                 )
         _L.info("Scan complete; pre-scan checkpoints: %s", pre_scan_max_ids)
 
@@ -371,4 +379,4 @@ class StartupScanService:
         await self.run_initial_scan()
         await self._node_sync.wait_enrichment_drained()
         ready_event.set()
-        _L.info("Server ready")
+        _L.info("Startup scan applied")

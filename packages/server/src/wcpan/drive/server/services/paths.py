@@ -1,8 +1,5 @@
-"""Path-service classes for virtual ID ↔ Synology API bridging.
+"""Path services over the mirror.
 
-Three focused service classes:
-
-- ``SynologyPathService`` — bridge virtual IDs ↔ Synology API refs (holds *mounts*)
 - ``LocalPathService``    — resolve node records to host-filesystem paths
                             (holds *storage*, *mounts*, *local_paths*)
 - ``VirtualPathService``  — resolve client-facing virtual paths to node IDs
@@ -12,137 +9,10 @@ Three focused service classes:
 from pathlib import Path
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.drive.server.synology import convert_file_info
-from wcpan.synology import (
-    SynologyChildRef,
-    SynologyClient,
-    SynologyError,
-    SynologyFileId,
-    SynologyFileInfo,
-    SynologyNetworkError,
-    SynologyParentRef,
-    SynologyPath,
-    SynologyPermanentLink,
-)
 
-from ..lib.mounts import SERVER_ROOT_ID, MountRegistry, is_virtual, mount_name
-from ..lib.names import normalize_name
-from ..types import NodeObservation, SynologyLocator, VirtualPath
-from .operations import LocateUndecidedError
+from ..lib.mounts import SERVER_ROOT_ID, is_virtual, mount_name
+from ..types import VirtualPath
 from .storage import StorageService
-
-
-# ---------------------------------------------------------------------------
-# SynologyPathService
-# ---------------------------------------------------------------------------
-
-
-class SynologyPathService:
-    """Bridge between virtual ID space and Synology Drive API.
-
-    Captures *mounts* so callers no longer pass it on every call.
-    ``drive_api`` remains a method parameter because it varies per context
-    (handlers pull from app keys, services hold their own reference).
-    """
-
-    def __init__(
-        self,
-        *,
-        registry: MountRegistry,
-        storage: StorageService,
-    ) -> None:
-        self._registry = registry
-        self._storage = storage
-
-    @property
-    def mounts(self) -> dict[str, SynologyPath]:
-        return self._registry.mounts
-
-    async def synology_parent_ref(
-        self,
-        parent_node_id: MirrorStableId,
-    ) -> SynologyParentRef:
-        """Translate a mirror parent node ID into a Synology API parent ref."""
-        key = mount_name(parent_node_id)
-        if key is not None:
-            return self._registry.mounts[key]
-        return await self._resolve_locator_ref(parent_node_id)
-
-    async def resolve_parent(
-        self,
-        parent_ref: SynologyFileId,
-    ) -> MirrorStableId | None:
-        """Mirror node ID for a Synology parent: a stored node or a mount root."""
-        parent = await self._storage.get_node_by_locator(
-            SynologyLocator(parent_ref.file_id)
-        )
-        if parent is not None:
-            return parent.id
-        return self._registry.lookup_mount_virtual_id(parent_ref)
-
-    async def locate(
-        self,
-        drive_api: SynologyClient,
-        node_id: MirrorStableId,
-    ) -> NodeObservation | None:
-        """Fetch *node_id* directly; ``None`` unless it exists under a mirrored parent.
-
-        Only a network failure is undecided. Other API errors count as absence,
-        since the error for a missing node is not established.
-        """
-        try:
-            info = await drive_api.get_file(SynologyPermanentLink(node_id))
-        except SynologyNetworkError as e:
-            raise LocateUndecidedError(str(e)) from e
-        except SynologyError:
-            return None
-        if not info or info.get("removed", False):
-            return None
-        parent_id = await self.resolve_parent(SynologyFileId(info["parent_id"]))
-        if parent_id is None:
-            return None
-        return convert_file_info(info, parent_id)
-
-    async def list_children(
-        self,
-        drive_api: SynologyClient,
-        parent_node_id: MirrorStableId,
-    ) -> list[SynologyFileInfo]:
-        """List children of a mirror parent node ID."""
-        folder_ref = await self.synology_parent_ref(parent_node_id)
-        all_items: list[SynologyFileInfo] = []
-        offset = 0
-        while True:
-            items, total = await drive_api.list_folder(folder_ref, offset=offset)
-            all_items.extend(items)
-            offset += len(items)
-            if offset >= total or not items:
-                return all_items
-
-    async def find_child_by_name(
-        self,
-        drive_api: SynologyClient,
-        parent_node_id: MirrorStableId,
-        name: str,
-    ) -> SynologyFileInfo | None:
-        parent_ref = await self.synology_parent_ref(parent_node_id)
-        child_ref = SynologyChildRef(
-            parent_ref=parent_ref,
-            name=normalize_name(name),
-        )
-        return await drive_api.get_file(child_ref)
-
-    async def _resolve_locator_ref(
-        self,
-        parent_node_id: MirrorStableId,
-    ) -> SynologyFileId:
-        locators = await self._storage.get_locators([parent_node_id])
-        locator = locators.get(parent_node_id)
-        if locator is None:
-            raise ValueError(
-                f"No locator found for non-mount parent_id: {parent_node_id!r}"
-            )
-        return SynologyFileId(locator)
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +31,7 @@ class LocalPathService:
         self,
         *,
         storage: StorageService,
-        mounts: dict[str, SynologyPath],
+        mounts: dict[str, str],
         local_paths: dict[str, str],
     ) -> None:
         self._storage = storage
@@ -237,7 +107,7 @@ def _virtual_path_segments(virtual_path: VirtualPath) -> list[str]:
 
 
 def _resolve_local_path(
-    mounts: dict[str, SynologyPath],
+    mounts: dict[str, str],
     local_paths: dict[str, str],
     record: NodeRecord,
     node_cache: dict[str, NodeRecord | None],
@@ -259,21 +129,21 @@ def _resolve_local_path(
     if mname is None:
         return None
 
-    syno_path: SynologyPath | None = mounts.get(mname)
-    if syno_path is None:
+    source = mounts.get(mname)
+    if source is None:
         return None
 
     relative = "/".join(reversed(parts))
-    full_synology_path = syno_path.path.rstrip("/") + "/" + relative
+    full_source_path = source.rstrip("/") + "/" + relative
 
     # Apply longest-prefix match from local_paths
     best_prefix = ""
     for prefix in local_paths:
-        if full_synology_path.startswith(prefix) and len(prefix) > len(best_prefix):
+        if full_source_path.startswith(prefix) and len(prefix) > len(best_prefix):
             best_prefix = prefix
 
     if not best_prefix:
         return None
 
-    local_str = local_paths[best_prefix] + full_synology_path[len(best_prefix) :]
+    local_str = local_paths[best_prefix] + full_source_path[len(best_prefix) :]
     return Path(local_str)

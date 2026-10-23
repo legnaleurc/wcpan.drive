@@ -38,7 +38,7 @@ def _probe_sync(path: Path, *, is_image: bool) -> tuple[int, int, int] | None:
 
 
 class MediaEnrichService:
-    """Probe local files for width/height/duration when Synology metadata is missing or stale."""
+    """Probe local files for width/height/duration when backend metadata is missing or stale."""
 
     def __init__(
         self,

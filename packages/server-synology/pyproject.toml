@@ -7,12 +7,16 @@ license = "MIT"
 requires-python = ">=3.13,<4.0"
 authors = [{ name = "Wei-Cheng Pan", email = "legnaleurc@gmail.com" }]
 dependencies = [
+    "aiohttp>=3.13.0,<4.0.0",
+    "dacite>=1.9.2,<2.0.0",
+    "wcpan-drive-protocol>=0.1.0,<0.2.0",
     "wcpan-drive-server>=0.1.0,<0.2.0",
+    "wcpan-logging>=2.1.0,<3.0.0",
     "wcpan-synology>=0.2.0,<0.3.0",
 ]
 
 [project.scripts]
-"wcpan.drive.server" = "wcpan.drive.server.main:main"
+"wcpan.drive.server" = "wcpan.drive.server.synology.main:main"
 
 [build-system]
 requires = ["hatchling"]

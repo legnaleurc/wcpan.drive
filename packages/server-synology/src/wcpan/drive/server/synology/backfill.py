@@ -5,16 +5,18 @@ from functools import partial
 from pathlib import PurePosixPath
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.drive.server.synology import convert_file_info
+from wcpan.drive.server.lib.bfs import parallel_bfs
+from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
+from wcpan.drive.server.services.paths import VirtualPathService
+from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
+from wcpan.drive.server.services.storage import StorageService
+from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.types import ReadSeq, VirtualPath
 from wcpan.synology import SynologyClient
 
-from ..lib.bfs import parallel_bfs
-from ..lib.mounts import SERVER_ROOT_ID
-from ..types import ReadSeq, VirtualPath
-from .paths import SynologyPathService, VirtualPathService
-from .reconcile import ReconcileSession, reconcile_session
-from .storage import StorageService
-from .sync import NodeSyncService
+from .convert import convert_file_info
+from .paths import SynologyPathService
+from .store import SynologyStore
 
 
 _L = logging.getLogger(__name__)
@@ -58,11 +60,13 @@ class BackfillService:
         *,
         drive_api: SynologyClient,
         storage: StorageService,
+        store: SynologyStore,
         syno_paths: SynologyPathService,
         node_sync: NodeSyncService,
     ) -> None:
         self._drive_api = drive_api
         self._storage = storage
+        self._store = store
         self._syno_paths = syno_paths
         self._node_sync = node_sync
         self._virtual_paths = VirtualPathService(storage=storage)
@@ -130,7 +134,7 @@ class BackfillService:
 
             db_children = await self._storage.get_children(parent_id)
             db_by_id: dict[MirrorStableId, NodeRecord] = {r.id: r for r in db_children}
-            db_locators = await self._storage.get_locators(list(db_by_id))
+            db_locators = await self._store.get_locators(list(db_by_id))
             children: list[MirrorStableId] = []
 
             checked += len(items)

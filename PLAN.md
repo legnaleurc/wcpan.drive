@@ -563,9 +563,8 @@ Status: the node handlers (create, rename/move, delete, download) call a
 backend-neutral `NodeOperations` service (`services/operations.py`) and map its
 `OperationConflictError` and `OperationUnavailableError` to HTTP responses. The
 Synology implementation, including conflict recovery and the ordered mirror
-writes, is `services/synology_operations.py`. Upload handlers already went
-through `UploadService` errors; the service itself still calls Synology directly.
-The webhook route stays Synology-specific and moves with the adapter.
+writes, is `SynologyNodeOperations` in the adapter. Upload sessions stay generic;
+the transfer and conflict lookup go through an `Uploader`.
 
 Route scan,
 backfill, and scoped repair through common reconciliation semantics.
@@ -574,7 +573,7 @@ Status: startup scan and backfill share `ReconcileSession`
 (`services/reconcile.py`). Listings report the nodes they saw and the folders
 they could not cover; removals are decided once at the end of the pass, skip
 nodes touched by newer reads, and fetch each candidate subtree root directly
-(`SynologyPathService.locate`) before removing it. Backfill therefore no longer
+(a backend `Locate` function) before removing it. Backfill therefore no longer
 deletes a node that moved between two of its listings, and `remove_listed_child`
 is gone. Change detection stays per caller: startup scan uses `sync_id`
 checkpoints, backfill compares every field. Scoped repair will open the same
@@ -603,6 +602,22 @@ webhook, backfill, operations, and the server command) into
 Deliverable: generic HTTP and mirror modules import neither `wcpan.synology` nor
 `wcpan.drive.client` types. Core and backend persistence share queued transactions.
 The Synology adapter lives only in its own distribution.
+
+Status: done. `wcpan-drive-server` no longer depends on `wcpan-synology`, and
+`tests/test_server_boundaries.py` rejects backend or client imports in it. The
+generic app takes a `Backend` (`backend.py`): its `BackendSchema` hooks run on
+the core's connection inside core transactions (create tables, bind a locator,
+forget locators of removed nodes), its routes are added to the app, and its
+runtime supplies `NodeOperations`, an `Uploader`, initial discovery before ready,
+and ongoing background work. `NodeObservation.locator` is an opaque
+`BackendLocator`; backend queries and checkpoint writes use `StorageService.read`
+and `write`, the latter through `NodeSyncService.enqueue` so checkpoints follow
+the mirror writes they cover. Configuration keeps generic fields (database,
+listener, mounts as label to source path, `local_paths`) in the core and leaves
+the `synology` section to the adapter; the file format is unchanged. The adapter
+owns `synology_locators` and the `mounts` checkpoint table; the historical 4→5
+core migration still names `synology_locators` because it moved existing data.
+`wcpan.drive.server` is now `wcpan.drive.server.synology.main`.
 
 ### 4. Validate with a minimal filesystem backend
 

@@ -15,8 +15,11 @@ from wcpan.drive.server.services.enricher import (
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import LocalPathService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology import convert_file_info
-from wcpan.drive.server.types import NodeObservation, SynologyLocator
+from wcpan.drive.server.synology.convert import (
+    SynologyLocator,
+    convert_file_info,
+)
+from wcpan.drive.server.types import NodeObservation
 from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,

@@ -34,10 +34,11 @@ The client CLI command is `wcpan.drive.client.cli`. Update configured provider
 module paths from `wcpan.drive.google`, `.crypt`, and `.sqlite` to
 `wcpan.drive.client.google`, `.crypt`, and `.sqlite`, respectively.
 
-This initialization preserves the existing Synology-backed behavior. Backend
-contracts and generic reconciliation remain planned work in `PLAN.md`; the server
-still contains Synology-specific orchestration and requires the Synology adapter
-to run. No filesystem backend is shipped yet.
+The generic server (`wcpan-drive-server`) holds the mirror, change feed, HTTP
+API, and reconciliation, and defines the contract a storage backend implements.
+It does not depend on `wcpan-synology`. The Synology backend and the
+`wcpan.drive.server` command come from `wcpan-drive-server-synology`. No
+filesystem backend is shipped yet.
 
 Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm in
 `hash_algorithm` (both empty for directories and for files without a checksum).
@@ -180,7 +181,7 @@ Important fields:
 - `synology.otp_code`: optional 2FA code when the Synology account requires it
 
 Synology API behavior, reference types, and Synology-side exceptions are
-provided by `wcpan-synology`, which is only needed by the server packages. The client never raises `wcpan.synology` exceptions; it raises the
+provided by `wcpan-synology`, which only the Synology server package needs. The client never raises `wcpan.synology` exceptions; it raises the
 errors in `wcpan.drive.client.remote.exceptions` (`SynologyServerError` and its
 subclasses for access, upload, and name-too-long failures), which describe the
 HTTP client/server boundary.

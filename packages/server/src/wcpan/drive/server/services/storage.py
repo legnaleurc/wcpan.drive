@@ -1,13 +1,14 @@
 import logging
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Sequence
 from contextlib import closing, contextmanager
+from functools import partial
+from typing import Concatenate, Protocol
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
-from wcpan.synology import SynologyPath
 
 from ..lib.mounts import SERVER_ROOT_ID
-from ..types import NodeObservation, SynologyLocator
+from ..types import BackendLocator, NodeObservation
 from .off_main import OffMainService
 
 
@@ -16,6 +17,31 @@ _L = logging.getLogger(__name__)
 
 class SchemaVersionError(RuntimeError):
     pass
+
+
+class BackendSchema(Protocol):
+    """Backend-owned tables, maintained on the core's connection and transaction.
+
+    Hooks must not commit, roll back, or open connections.
+    """
+
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
+        """Create or migrate the backend tables."""
+        ...
+
+    def bind_locator(
+        self, con: sqlite3.Connection, node_id: MirrorStableId, locator: BackendLocator
+    ) -> None:
+        """Persist the locator of *node_id* alongside its observation."""
+        ...
+
+    def forget_nodes(self, con: sqlite3.Connection, node_ids: Sequence[str]) -> None:
+        """Drop backend state of removed nodes."""
+        ...
+
+    def forget_orphans(self, con: sqlite3.Connection) -> None:
+        """Drop backend state of nodes no longer in ``nodes``."""
+        ...
 
 
 _DDL = """
@@ -51,25 +77,10 @@ CREATE TABLE IF NOT EXISTS changes (
 
 CREATE INDEX IF NOT EXISTS ix_changes_node_id ON changes(node_id);
 
--- Synology backend state: maps a public node to its mutable Synology file_id.
--- Rows are removed together with their node; they never emit changes.
-CREATE TABLE IF NOT EXISTS synology_locators (
-    node_id TEXT PRIMARY KEY,
-    file_id TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS ix_synology_locators_file_id ON synology_locators(file_id);
-
 -- Observations withheld because media enrichment failed. The node keeps its last
 -- complete version (or stays unpublished) until a retry or newer observation.
 CREATE TABLE IF NOT EXISTS pending_enrichment (
     node_id TEXT PRIMARY KEY
-);
-
-CREATE TABLE IF NOT EXISTS mounts (
-    name   TEXT PRIMARY KEY,
-    max_id INTEGER NOT NULL,
-    path   TEXT NOT NULL
 );
 """
 
@@ -82,7 +93,8 @@ UPDATE nodes SET hash = '' WHERE is_directory = 1;
 UPDATE nodes SET hash_algorithm = 'md4' WHERE is_directory = 0 AND hash != '';
 """
 
-# Version 5 moves the Synology locator out of the public node table.
+# Version 5 moves the Synology locator out of the public node table. Historical:
+# the Synology backend now owns synology_locators (``BackendSchema``).
 _MIGRATE_4_TO_5 = """
 CREATE TABLE synology_locators (
     node_id TEXT PRIMARY KEY,
@@ -218,7 +230,7 @@ def _read_write(dsn: str) -> Generator[sqlite3.Connection]:
         con.close()
 
 
-def _ensure_schema(dsn: str) -> None:
+def _ensure_schema(dsn: str, backend: BackendSchema | None) -> None:
     with _read_write(dsn) as con:
         version = int(con.execute("PRAGMA user_version").fetchone()[0])
         existing_tables = {
@@ -251,55 +263,34 @@ def _ensure_schema(dsn: str) -> None:
         con.executescript(_DDL)
         if version == 0:
             con.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        if backend is not None:
+            backend.ensure_schema(con)
+
+
+def _run_read[R](
+    dsn: str,
+    fn: Callable[..., R],
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> R:
+    with _read_only(dsn) as con:
+        return fn(con, *args, **kwargs)
+
+
+def _run_write[R](
+    dsn: str,
+    fn: Callable[..., R],
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> R:
+    with _read_write(dsn) as con:
+        con.execute("BEGIN")
+        return fn(con, *args, **kwargs)
 
 
 def _checkpoint(dsn: str) -> None:
     with _read_write(dsn) as con:
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-
-def _get_mount_max_ids(dsn: str, mounts: dict[str, SynologyPath]) -> dict[str, int]:
-    """Return per-mount last_max_id values, resetting when path changes."""
-    names = list(mounts.keys())
-    if not names:
-        return {}
-
-    with _read_only(dsn) as con:
-        placeholders = ",".join("?" * len(names))
-        with closing(
-            con.execute(
-                f"SELECT name, max_id, path FROM mounts WHERE name IN ({placeholders})",
-                names,
-            )
-        ) as cur:
-            by_name = {
-                row["name"]: (int(row["max_id"]), row["path"]) for row in cur.fetchall()
-            }
-
-    result: dict[str, int] = {}
-    for name, syno_path in mounts.items():
-        state = by_name.get(name)
-        if state is None:
-            result[name] = 0
-            continue
-        value, stored_path = state
-        result[name] = value if stored_path == syno_path.path else 0
-
-    return result
-
-
-def _set_mount_state(dsn: str, name: str, path: str, value: int) -> None:
-    """Save per-mount last_max_id and syno_path atomically."""
-    with _read_write(dsn) as con:
-        con.execute(
-            """
-            INSERT INTO mounts (name, max_id, path) VALUES (?, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                max_id = excluded.max_id,
-                path = excluded.path
-            """,
-            (name, value, path),
-        )
 
 
 def _upsert_node_and_emit_change(dsn: str, record: NodeRecord) -> None:
@@ -314,6 +305,7 @@ def _upsert_node_and_emit_change(dsn: str, record: NodeRecord) -> None:
 def _delete_subtree_on_connection(
     con: sqlite3.Connection,
     node_id: MirrorStableId,
+    backend: BackendSchema | None,
 ) -> None:
     """Delete node and all descendants; emit remove-changes for each.
 
@@ -340,9 +332,8 @@ def _delete_subtree_on_connection(
     # Delete from nodes and insert into changes in bulk.
     placeholders = ",".join("?" * len(to_delete))
     con.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", to_delete)
-    con.execute(
-        f"DELETE FROM synology_locators WHERE node_id IN ({placeholders})", to_delete
-    )
+    if backend is not None:
+        backend.forget_nodes(con, to_delete)
     con.execute(
         f"DELETE FROM pending_enrichment WHERE node_id IN ({placeholders})", to_delete
     )
@@ -352,9 +343,11 @@ def _delete_subtree_on_connection(
     )
 
 
-def _delete_subtree_and_emit_changes(dsn: str, node_id: MirrorStableId) -> None:
+def _delete_subtree_and_emit_changes(
+    dsn: str, node_id: MirrorStableId, backend: BackendSchema | None
+) -> None:
     with _read_write(dsn) as con:
-        _delete_subtree_on_connection(con, node_id)
+        _delete_subtree_on_connection(con, node_id, backend)
 
 
 def _node_exists(con: sqlite3.Connection, node_id: MirrorStableId) -> bool:
@@ -375,7 +368,7 @@ def _select_node_row(
 
 
 def _apply_observations(
-    dsn: str, observations: list[NodeObservation]
+    dsn: str, observations: list[NodeObservation], backend: BackendSchema | None
 ) -> set[MirrorStableId]:
     """Upsert nodes and their locators in order, skipping any whose parent is gone.
 
@@ -401,14 +394,8 @@ def _apply_observations(
                     "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
                     (str(record.id),),
                 )
-            if observation.locator is not None:
-                con.execute(
-                    """
-                    INSERT INTO synology_locators (node_id, file_id) VALUES (?, ?)
-                    ON CONFLICT(node_id) DO UPDATE SET file_id = excluded.file_id
-                    """,
-                    (str(record.id), observation.locator),
-                )
+            if observation.locator is not None and backend is not None:
+                backend.bind_locator(con, record.id, observation.locator)
             con.execute(
                 "DELETE FROM pending_enrichment WHERE node_id = ?", (str(record.id),)
             )
@@ -446,7 +433,7 @@ def _get_node_by_id(dsn: str, node_id: MirrorStableId) -> NodeRecord | None:
             con.execute("SELECT * FROM nodes WHERE id = ?", (str(node_id),))
         ) as cur:
             row = cur.fetchone()
-    return _row_to_record(row) if row else None
+    return row_to_record(row) if row else None
 
 
 def _get_nodes_by_ids(
@@ -464,47 +451,7 @@ def _get_nodes_by_ids(
             )
         ) as cur:
             rows = cur.fetchall()
-    return {MirrorStableId(row["id"]): _row_to_record(row) for row in rows}
-
-
-def _get_node_by_locator(
-    dsn: str,
-    locator: SynologyLocator,
-) -> NodeRecord | None:
-    with _read_only(dsn) as con:
-        with closing(
-            con.execute(
-                """
-                SELECT n.* FROM synology_locators l
-                JOIN nodes n ON n.id = l.node_id
-                WHERE l.file_id = ?
-                """,
-                (locator,),
-            )
-        ) as cur:
-            row = cur.fetchone()
-    return _row_to_record(row) if row else None
-
-
-def _get_locators(
-    dsn: str,
-    node_ids: list[MirrorStableId],
-) -> dict[MirrorStableId, SynologyLocator]:
-    if not node_ids:
-        return {}
-    with _read_only(dsn) as con:
-        placeholders = ",".join("?" * len(node_ids))
-        with closing(
-            con.execute(
-                "SELECT node_id, file_id FROM synology_locators"
-                f" WHERE node_id IN ({placeholders})",
-                [str(_) for _ in node_ids],
-            )
-        ) as cur:
-            rows = cur.fetchall()
-    return {
-        MirrorStableId(row["node_id"]): SynologyLocator(row["file_id"]) for row in rows
-    }
+    return {MirrorStableId(row["id"]): row_to_record(row) for row in rows}
 
 
 def _get_children(dsn: str, parent_id: MirrorStableId) -> list[NodeRecord]:
@@ -513,7 +460,7 @@ def _get_children(dsn: str, parent_id: MirrorStableId) -> list[NodeRecord]:
             con.execute("SELECT * FROM nodes WHERE parent_id = ?", (str(parent_id),))
         ) as cur:
             rows = cur.fetchall()
-    return [_row_to_record(r) for r in rows]
+    return [row_to_record(r) for r in rows]
 
 
 def _collect_subtree_node_ids(dsn: str, root_id: MirrorStableId) -> set[MirrorStableId]:
@@ -550,7 +497,7 @@ def _get_ancestors(dsn: str, node_id: MirrorStableId) -> list[NodeRecord]:
     """
     with _read_only(dsn) as con:
         with closing(con.execute(sql, (str(node_id),))) as cur:
-            return [_row_to_record(r) for r in cur.fetchall()]
+            return [row_to_record(r) for r in cur.fetchall()]
 
 
 def _deferred_removal_roots(
@@ -648,14 +595,14 @@ def _get_changes_since(
         is_removed = bool(row["is_removed"])
         record: NodeRecord | None = None
         if not is_removed and row["name"] is not None:
-            record = _row_to_record(row)
+            record = row_to_record(row)
         result.append((MirrorStableId(row["node_id"]), is_removed, record))
 
     new_cursor = rows[-1]["change_id"] if rows else cursor
     return result, new_cursor, has_more
 
 
-def _row_to_record(row: sqlite3.Row) -> NodeRecord:
+def row_to_record(row: sqlite3.Row) -> NodeRecord:
     return NodeRecord(
         id=MirrorStableId(row["id"] if "id" in row.keys() else row["node_id"]),
         parent_id=(
@@ -691,12 +638,12 @@ _GC_CREATE_SQL = """
 """
 
 
-def cleanup_dangling_nodes(dsn: str) -> int:
+def cleanup_dangling_nodes(dsn: str, *, backend: BackendSchema | None) -> int:
     """Delete nodes not reachable from the server root; emit removal changes.
 
     Returns the number of nodes removed.
     """
-    _ensure_schema(dsn)
+    _ensure_schema(dsn, backend)
     with _read_write(dsn) as con:
         con.execute(_GC_CREATE_SQL, (str(SERVER_ROOT_ID),))
         with closing(con.execute("SELECT COUNT(*) AS n FROM temp._dangling")) as cur:
@@ -709,19 +656,18 @@ def cleanup_dangling_nodes(dsn: str) -> int:
             con.execute(
                 "DELETE FROM nodes WHERE id IN (SELECT node_id FROM temp._dangling)"
             )
-        con.execute(
-            "DELETE FROM synology_locators WHERE node_id NOT IN (SELECT id FROM nodes)"
-        )
+        if backend is not None:
+            backend.forget_orphans(con)
         con.execute("DROP TABLE IF EXISTS temp._dangling")
     return count
 
 
-def reset_change_history(dsn: str) -> int:
+def reset_change_history(dsn: str, *, backend: BackendSchema | None) -> int:
     """Clear changes and insert one update row per node except the server root.
 
     Returns the number of change records inserted.
     """
-    _ensure_schema(dsn)
+    _ensure_schema(dsn, backend)
     with _read_write(dsn) as con:
         con.execute("DELETE FROM changes")
         con.execute(
@@ -794,23 +740,42 @@ def _resolve_path_to_id(dsn: str, segments: list[str]) -> MirrorStableId | None:
 class StorageService:
     """Async SQLite access - delegates blocking calls to OffMainService."""
 
-    def __init__(self, dsn: str, *, off_main: OffMainService) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        off_main: OffMainService,
+        backend: BackendSchema | None = None,
+    ) -> None:
         self._dsn = dsn
         self._off_main = off_main
+        self._backend = backend
 
     async def ensure_schema(self) -> None:
-        await self._off_main(_ensure_schema, self._dsn)
+        await self._off_main(_ensure_schema, self._dsn, self._backend)
+
+    async def read[**A, R](
+        self,
+        fn: Callable[Concatenate[sqlite3.Connection, A], R],
+        /,
+        *args: A.args,
+        **kwargs: A.kwargs,
+    ) -> R:
+        """Run *fn* on a read-only connection; for backend-owned queries."""
+        return await self._off_main(_run_read, self._dsn, fn, args, kwargs)
+
+    async def write[**A, R](
+        self,
+        fn: Callable[Concatenate[sqlite3.Connection, A], R],
+        /,
+        *args: A.args,
+        **kwargs: A.kwargs,
+    ) -> R:
+        """Run *fn* in one write transaction; call it from the write queue."""
+        return await self._off_main(_run_write, self._dsn, fn, args, kwargs)
 
     async def checkpoint(self) -> None:
         await self._off_main.untimed(_checkpoint, self._dsn)
-
-    async def get_mount_max_ids(
-        self, mounts: dict[str, SynologyPath]
-    ) -> dict[str, int]:
-        return await self._off_main(_get_mount_max_ids, self._dsn, mounts)
-
-    async def set_mount_state(self, name: str, path: str, value: int) -> None:
-        await self._off_main(_set_mount_state, self._dsn, name, path, value)
 
     async def bulk_upsert_nodes(self, records: list[NodeRecord]) -> None:
         await self._off_main(_bulk_upsert_nodes, self._dsn, records)
@@ -819,12 +784,16 @@ class StorageService:
         await self._off_main(_upsert_node_and_emit_change, self._dsn, record)
 
     async def delete_subtree_and_emit_changes(self, node_id: MirrorStableId) -> None:
-        await self._off_main(_delete_subtree_and_emit_changes, self._dsn, node_id)
+        await self._off_main(
+            _delete_subtree_and_emit_changes, self._dsn, node_id, self._backend
+        )
 
     async def apply_observations(
         self, observations: list[NodeObservation]
     ) -> set[MirrorStableId]:
-        return await self._off_main(_apply_observations, self._dsn, observations)
+        return await self._off_main(
+            _apply_observations, self._dsn, observations, self._backend
+        )
 
     async def mark_enrichment_pending(self, node_id: MirrorStableId) -> None:
         await self._off_main(_mark_enrichment_pending, self._dsn, node_id)
@@ -843,14 +812,6 @@ class StorageService:
         node_ids: list[MirrorStableId],
     ) -> dict[MirrorStableId, NodeRecord]:
         return await self._off_main(_get_nodes_by_ids, self._dsn, node_ids)
-
-    async def get_node_by_locator(self, locator: SynologyLocator) -> NodeRecord | None:
-        return await self._off_main(_get_node_by_locator, self._dsn, locator)
-
-    async def get_locators(
-        self, node_ids: list[MirrorStableId]
-    ) -> dict[MirrorStableId, SynologyLocator]:
-        return await self._off_main(_get_locators, self._dsn, node_ids)
 
     async def get_children(self, parent_id: MirrorStableId) -> list[NodeRecord]:
         return await self._off_main(_get_children, self._dsn, parent_id)
@@ -893,18 +854,23 @@ class StorageService:
         return await self._off_main(_get_changes_since, self._dsn, cursor, max_size)
 
     async def cleanup_dangling_nodes(self) -> int:
-        return await self._off_main(cleanup_dangling_nodes, self._dsn)
+        return await self._off_main(
+            partial(cleanup_dangling_nodes, backend=self._backend), self._dsn
+        )
 
     async def reset_change_history(self) -> int:
-        return await self._off_main(reset_change_history, self._dsn)
+        return await self._off_main(
+            partial(reset_change_history, backend=self._backend), self._dsn
+        )
 
 
 async def create_storage_service(
     database_url: str,
     *,
     off_main: OffMainService,
+    backend: BackendSchema | None = None,
 ) -> StorageService:
-    storage = StorageService(database_url, off_main=off_main)
+    storage = StorageService(database_url, off_main=off_main, backend=backend)
     _L.info("initializing database: %s", database_url)
     await storage.ensure_schema()
     return storage

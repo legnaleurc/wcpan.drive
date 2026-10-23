@@ -67,7 +67,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
             con.close()
 
             with self.assertRaises(SchemaVersionError):
-                cleanup_dangling_nodes(db_path)
+                cleanup_dangling_nodes(db_path, backend=None)
         finally:
             os.unlink(db_path)
 
@@ -79,7 +79,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 storage = _make_storage(db_path, pool)
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes([_make_node("node-001")])
-                count = cleanup_dangling_nodes(db_path)
+                count = cleanup_dangling_nodes(db_path, backend=None)
                 self.assertEqual(count, 0)
                 self.assertIsNotNone(await storage.get_node_by_id("node-001"))
         finally:
@@ -94,7 +94,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 await storage.ensure_schema()
                 orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
                 await storage.bulk_upsert_nodes([orphan])
-                count = cleanup_dangling_nodes(db_path)
+                count = cleanup_dangling_nodes(db_path, backend=None)
                 self.assertEqual(count, 1)
                 self.assertIsNone(await storage.get_node_by_id("orphan-001"))
         finally:
@@ -109,7 +109,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 await storage.ensure_schema()
                 orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
                 await storage.bulk_upsert_nodes([orphan])
-                cleanup_dangling_nodes(db_path)
+                cleanup_dangling_nodes(db_path, backend=None)
                 changes, _, _ = await storage.get_changes_since(0, 1000)
                 self.assertEqual(len(changes), 1)
                 self.assertTrue(changes[0][1])
@@ -127,7 +127,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 reachable = _make_node("node-001")
                 orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
                 await storage.bulk_upsert_nodes([reachable, orphan])
-                count = cleanup_dangling_nodes(db_path)
+                count = cleanup_dangling_nodes(db_path, backend=None)
                 self.assertEqual(count, 1)
                 self.assertIsNotNone(await storage.get_node_by_id("node-001"))
                 self.assertIsNone(await storage.get_node_by_id("orphan-001"))
@@ -148,7 +148,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                     is_directory=True,
                 )
                 await storage.bulk_upsert_nodes([root])
-                cleanup_dangling_nodes(db_path)
+                cleanup_dangling_nodes(db_path, backend=None)
                 self.assertIsNotNone(await storage.get_node_by_id(SERVER_ROOT_ID))
         finally:
             os.unlink(db_path)
@@ -167,7 +167,7 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 await storage.upsert_node_and_emit_change(node)
                 await storage.upsert_node_and_emit_change(node)
                 await storage.upsert_node_and_emit_change(node)
-                reset_change_history(db_path)
+                reset_change_history(db_path, backend=None)
                 changes, _, _ = await storage.get_changes_since(0, 1000)
                 ids = [c[0] for c in changes]
                 self.assertEqual(ids.count("node-001"), 1)
@@ -184,7 +184,7 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 await storage.bulk_upsert_nodes(
                     [_make_node("node-001"), _make_node("node-002")]
                 )
-                count = reset_change_history(db_path)
+                count = reset_change_history(db_path, backend=None)
                 self.assertEqual(count, 2)
         finally:
             os.unlink(db_path)
@@ -203,7 +203,7 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                     is_directory=True,
                 )
                 await storage.bulk_upsert_nodes([root, _make_node("node-001")])
-                reset_change_history(db_path)
+                reset_change_history(db_path, backend=None)
                 changes, _, _ = await storage.get_changes_since(0, 1000)
                 ids = [c[0] for c in changes]
                 self.assertNotIn(SERVER_ROOT_ID, ids)
@@ -218,7 +218,7 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 storage = _make_storage(db_path, pool)
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes([_make_node("node-001")])
-                reset_change_history(db_path)
+                reset_change_history(db_path, backend=None)
                 changes, _, _ = await storage.get_changes_since(0, 1000)
                 self.assertTrue(all(not c[1] for c in changes))
         finally:
