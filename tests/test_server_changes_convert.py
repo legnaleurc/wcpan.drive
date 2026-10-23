@@ -323,20 +323,19 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
                 "sync_id": 1,
             }
             record = _convert(info, parent_id="par")
+            storage.apply_observations = AsyncMock(return_value=1)
+            await cs.reconcile_insert(record)
+            item = await mq.get()
+            mq.task_done()
             with patch.object(
                 cs._enricher,
                 "enrich",
                 new=AsyncMock(return_value=record),
             ):
-                await cs.process_metadata_item(
-                    MetadataWorkItem(
-                        record=record,
-                        force_refresh=True,
-                    )
-                )
+                await cs.process_metadata_item(item)
             job = await wq.get()
             try:
-                job()
+                await job()
             finally:
                 wq.task_done()
-            storage.upsert_node_and_emit_change.assert_called_once_with(record)
+            storage.apply_observations.assert_awaited_once_with([record])

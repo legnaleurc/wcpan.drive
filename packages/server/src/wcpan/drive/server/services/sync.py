@@ -34,6 +34,10 @@ class NodeSyncService:
     and exposes a narrow interface of reusable primitives. Internally handles
     media enrichment, write-queue enqueuing, and storage method dispatch so
     callers are not aware of those concerns.
+
+    Each observation claims its node when accepted, before any enrichment. A write
+    is applied only while its claim is still the latest one, so a slow enrichment
+    cannot overwrite a newer observation or resurrect a node deleted meanwhile.
     """
 
     def __init__(
@@ -51,6 +55,7 @@ class NodeSyncService:
         self._mounts = mounts
         self._local_paths = local_paths
         self._metadata_queue = metadata_queue
+        self._claims: dict[MirrorStableId, object] = {}
         local_path_service = LocalPathService(
             storage=storage,
             mounts=mounts,
@@ -78,35 +83,79 @@ class NodeSyncService:
         """Run from ``metadata_worker``: enrich then enqueue a sync DB write."""
         enriched = await self._try_enrich(item.record, force_refresh=item.force_refresh)
         if enriched is None:
+            self._release(item.record.id, item.claim)
             return
-        await self._write_queue.put(
-            partial(self._storage.upsert_node_and_emit_change, enriched)
-        )
+        await self._put_claimed([(enriched, item.claim)])
+
+    # --- Observation claims ---
+
+    def _claim(self, node_id: MirrorStableId) -> object:
+        claim = object()
+        self._claims[node_id] = claim
+        return claim
+
+    def _release(self, node_id: MirrorStableId, claim: object) -> bool:
+        """Consume *claim* if it is still the latest for *node_id*."""
+        if self._claims.get(node_id) is not claim:
+            return False
+        del self._claims[node_id]
+        return True
+
+    async def _put_claimed(self, claimed: list[tuple[NodeRecord, object]]) -> None:
+        """Enqueue a write of the records whose claims are still current when it runs."""
+
+        async def write() -> None:
+            current = [r for r, claim in claimed if self._release(r.id, claim)]
+            if current:
+                await self._storage.apply_observations(current)
+
+        await self._write_queue.put(write)
 
     # --- Shared primitives (used by multiple sources) ---
 
     async def upsert(self, record: NodeRecord) -> NodeRecord:
-        """Async-enrich, then enqueue upsert_node_and_emit_change.
+        """Async-enrich, then enqueue a claimed write.
 
         Returns the (possibly enriched) record so callers can use it in responses.
         Used by: API (create, update, upload), webhook (delayed per-file upsert).
         """
+        claim = self._claim(record.id)
         enriched = await self._try_enrich(record, force_refresh=False)
         if enriched is None:
+            self._release(record.id, claim)
             return record
-        await self._write_queue.put(
-            partial(self._storage.upsert_node_and_emit_change, enriched)
-        )
+        await self._put_claimed([(enriched, claim)])
         return enriched
 
     async def delete(self, node_id: MirrorStableId) -> None:
-        """Enqueue delete_subtree_and_emit_changes.
+        """Enqueue delete_subtree_and_emit_changes, superseding pending writes.
 
         Used by: API (delete node), webhook (file_removed).
         """
+        self._claims.pop(node_id, None)
         await self._write_queue.put(
             partial(self._storage.delete_subtree_and_emit_changes, node_id)
         )
+
+    async def remove_listed_child(
+        self, node_id: MirrorStableId, parent_id: MirrorStableId
+    ) -> None:
+        """Delete *node_id* only if it is still a child of *parent_id* when applied.
+
+        A listing that no longer contains a node does not prove deletion: the node
+        may have moved after the mirror was read. Pending writes accepted before
+        this call are superseded only when the removal applies.
+
+        Used by: backfill.
+        """
+        claim = self._claims.get(node_id)
+
+        async def remove() -> None:
+            removed = await self._storage.delete_subtree_if_parent(node_id, parent_id)
+            if removed and claim is not None:
+                self._release(node_id, claim)
+
+        await self._write_queue.put(remove)
 
     async def enrich(self, record: NodeRecord) -> NodeRecord:
         """Async media enrichment only — no persistence side-effects.
@@ -127,15 +176,16 @@ class NodeSyncService:
         """
         if not records:
             return
-        enriched: list[NodeRecord] = []
-        for r in records:
+        claims = [self._claim(r.id) for r in records]
+        enriched: list[tuple[NodeRecord, object]] = []
+        for r, claim in zip(records, claims, strict=True):
             if (record := await self._try_enrich(r, force_refresh=False)) is not None:
-                enriched.append(record)
+                enriched.append((record, claim))
+            else:
+                self._release(r.id, claim)
         if not enriched:
             return
-        await self._write_queue.put(
-            partial(self._storage.apply_scan_folder_batch, [], enriched)
-        )
+        await self._put_claimed(enriched)
 
     async def _try_enrich(
         self, record: NodeRecord, *, force_refresh: bool
@@ -169,18 +219,19 @@ class NodeSyncService:
         node_ids = [r.id for r in records]
         existing = await self._storage.get_nodes_by_ids(node_ids)
 
-        skip_batch: list[NodeRecord] = []
+        skip_batch: list[tuple[NodeRecord, object]] = []
         for r in records:
+            claim = self._claim(r.id)
             db_rec = existing.get(r.id)
             if db_rec is not None and _has_complete_media_dims(db_rec):
-                skip_batch.append(r)
+                skip_batch.append((r, claim))
             else:
-                await mq.put(MetadataWorkItem(record=r, force_refresh=True))
+                await mq.put(
+                    MetadataWorkItem(record=r, force_refresh=True, claim=claim)
+                )
 
         if skip_batch:
-            await self._write_queue.put(
-                partial(self._storage.apply_scan_folder_batch, [], skip_batch)
-            )
+            await self._put_claimed(skip_batch)
 
     async def sync_nodes(self, records: list[NodeRecord]) -> None:
         """Enqueue bulk_upsert_nodes — upserts without emitting change rows.
@@ -195,20 +246,24 @@ class NodeSyncService:
     # --- Reconcile / backfill ---
 
     async def reconcile_insert(self, from_api: NodeRecord) -> None:
+        claim = self._claim(from_api.id)
+        if from_api.is_directory:
+            # Write in listing order so children never arrive before their parent.
+            await self._put_claimed([(from_api, claim)])
+            return
         await self._metadata_queue.put(
-            MetadataWorkItem(record=from_api, force_refresh=True)
+            MetadataWorkItem(record=from_api, force_refresh=True, claim=claim)
         )
 
     async def reconcile_update(
         self, from_api: NodeRecord, existing: NodeRecord
     ) -> None:
+        claim = self._claim(from_api.id)
         if _has_complete_media_dims(existing):
-            await self._write_queue.put(
-                partial(self._storage.upsert_node_and_emit_change, from_api)
-            )
+            await self._put_claimed([(from_api, claim)])
             return
         await self._metadata_queue.put(
-            MetadataWorkItem(record=from_api, force_refresh=True)
+            MetadataWorkItem(record=from_api, force_refresh=True, claim=claim)
         )
 
     # --- Scan-specific lifecycle operations ---

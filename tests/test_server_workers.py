@@ -97,7 +97,9 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
         async def process(item: MetadataWorkItem) -> None:
             processed.append(item.record.id)
 
-        item = MetadataWorkItem(record=_make_record("n1"), force_refresh=False)
+        item = MetadataWorkItem(
+            record=_make_record("n1"), force_refresh=False, claim=object()
+        )
         await q.put(item)
 
         worker = asyncio.create_task(metadata_worker(q, process))
@@ -119,8 +121,16 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
             if call_count == 1:
                 raise ValueError("boom")
 
-        await q.put(MetadataWorkItem(record=_make_record("a"), force_refresh=False))
-        await q.put(MetadataWorkItem(record=_make_record("b"), force_refresh=False))
+        await q.put(
+            MetadataWorkItem(
+                record=_make_record("a"), force_refresh=False, claim=object()
+            )
+        )
+        await q.put(
+            MetadataWorkItem(
+                record=_make_record("b"), force_refresh=False, claim=object()
+            )
+        )
 
         worker = asyncio.create_task(metadata_worker(q, process))
         await q.join()

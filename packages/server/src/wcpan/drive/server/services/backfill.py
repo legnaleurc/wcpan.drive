@@ -154,7 +154,7 @@ class BackfillService:
                         parent_id,
                     )
                     if not dry_run:
-                        await cs.delete(existing.id)
+                        await cs.remove_listed_child(existing.id, parent_id)
 
             return children
 

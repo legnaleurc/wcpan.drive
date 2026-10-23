@@ -315,6 +315,57 @@ def _delete_subtree_and_emit_changes(dsn: str, node_id: MirrorStableId) -> None:
         _delete_subtree_on_connection(con, node_id)
 
 
+def _node_exists(con: sqlite3.Connection, node_id: MirrorStableId) -> bool:
+    with closing(
+        con.execute("SELECT 1 FROM nodes WHERE id = ?", (str(node_id),))
+    ) as cur:
+        return cur.fetchone() is not None
+
+
+def _apply_observations(dsn: str, records: list[NodeRecord]) -> int:
+    """Upsert *records* in order and emit changes, skipping any whose parent is gone.
+
+    The parent check and writes share one explicit transaction, so an observation
+    made before its parent was removed cannot recreate an orphan. Returns the
+    number of records applied.
+    """
+    if not records:
+        return 0
+    applied = 0
+    with _read_write(dsn) as con:
+        con.execute("BEGIN")
+        for record in records:
+            if record.parent_id is not None and not _node_exists(con, record.parent_id):
+                continue
+            con.execute(_PRESERVE_MEDIA_UPSERT_SQL, _node_row_values(record))
+            con.execute(
+                "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
+                (str(record.id),),
+            )
+            applied += 1
+    return applied
+
+
+def _delete_subtree_if_parent(
+    dsn: str,
+    node_id: MirrorStableId,
+    parent_id: MirrorStableId,
+) -> bool:
+    """Delete *node_id*'s subtree only while it is still a child of *parent_id*."""
+    with _read_write(dsn) as con:
+        con.execute("BEGIN")
+        with closing(
+            con.execute(
+                "SELECT 1 FROM nodes WHERE id = ? AND parent_id = ?",
+                (str(node_id), str(parent_id)),
+            )
+        ) as cur:
+            if cur.fetchone() is None:
+                return False
+        _delete_subtree_on_connection(con, node_id)
+        return True
+
+
 def _bulk_upsert_nodes(dsn: str, records: list[NodeRecord]) -> None:
     """Upsert nodes only (no change rows) in one transaction."""
     if not records:
@@ -707,6 +758,16 @@ class StorageService:
 
     async def delete_subtree_and_emit_changes(self, node_id: MirrorStableId) -> None:
         await self._off_main(_delete_subtree_and_emit_changes, self._dsn, node_id)
+
+    async def apply_observations(self, records: list[NodeRecord]) -> int:
+        return await self._off_main(_apply_observations, self._dsn, records)
+
+    async def delete_subtree_if_parent(
+        self, node_id: MirrorStableId, parent_id: MirrorStableId
+    ) -> bool:
+        return await self._off_main(
+            _delete_subtree_if_parent, self._dsn, node_id, parent_id
+        )
 
     async def apply_scan_folder_batch(
         self,

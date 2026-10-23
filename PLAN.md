@@ -446,6 +446,31 @@ confirmed issues within the current package.
 
 Deliverable: documented invariants supported by regression tests.
 
+Status: done. `tests/test_server_races.py` reproduced and now guards these:
+
+- Enrichment that was queued or still running (metadata queue, inline `upsert`)
+  overwrote a newer upsert, resurrected a deleted node, or recreated a child of
+  a deleted parent. `NodeSyncService` now claims a node when it accepts an
+  observation; a write applies only while its claim is the latest one, and
+  `apply_observations` skips records whose parent is gone in the same
+  transaction.
+- Backfill deleted a node that a webhook had moved out of the listed folder.
+  Listing-derived removal is now conditional on the node's current parent
+  (`remove_listed_child`).
+
+Verified as not reproducible in the current design: startup scan results cannot
+overwrite webhook or API state, because webhooks are processed and API writes
+accepted only after the scan and its enrichment drain.
+
+Known remaining gaps, deferred to stage 3:
+
+- A node moved during the startup scan, after its new parent was listed and
+  before its old parent was, is removed at the end of the scan. The queued
+  webhook recreates it, so the feed shows removal and creation rather than a move.
+- Backfill runs in a separate process. Its stale upserts can still revert a
+  concurrent webhook update (decision 5). Claims are in-memory per process;
+  only the conditional removal and the parent check protect across processes.
+
 ### 2. Separate normalized records and backend state
 
 Introduce internal protocol/mirror types, Synology locator persistence, and a

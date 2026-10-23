@@ -31,6 +31,8 @@ class MetadataWorkItem:
 
     record: NodeRecord
     force_refresh: bool
+    # Token from ``NodeSyncService``; the write is dropped once a newer write claims the node.
+    claim: object
 
 
 type MetadataQueue = asyncio.Queue[MetadataWorkItem]

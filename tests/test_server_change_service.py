@@ -13,7 +13,6 @@ from wcpan.drive.server.services.sync import (
     NodeSyncService,
     _has_complete_media_dims,
 )
-from wcpan.drive.server.types import MetadataWorkItem
 
 
 _EPOCH = 0
@@ -106,6 +105,7 @@ class _FakeStorage:
         self._scan_batches: list = []
         self._mount_states: list = []
         self._deferred: list = []
+        self._observations: list[list[NodeRecord]] = []
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)
@@ -115,6 +115,12 @@ class _FakeStorage:
 
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
         self._nodes[record.id] = record
+
+    async def apply_observations(self, records: list[NodeRecord]) -> int:
+        self._observations.append(records)
+        for record in records:
+            self._nodes[record.id] = record
+        return len(records)
 
     async def delete_subtree_and_emit_changes(self, node_id: str) -> None:
         self._nodes.pop(node_id, None)
@@ -233,8 +239,8 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
         self.assertEqual(wq.qsize(), 1)
         op = wq.get_nowait()
         await op()
-        self.assertEqual(len(storage._scan_batches), 1)
-        self.assertEqual(len(storage._scan_batches[0][1]), 2)
+        self.assertEqual(len(storage._observations), 1)
+        self.assertEqual(len(storage._observations[0]), 2)
 
     async def test_enrichment_failure_filters_batch_record(self):
         cs, storage, wq = _make_service()
@@ -255,7 +261,7 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
         self.assertEqual(wq.qsize(), 1)
         op = wq.get_nowait()
         await op()
-        self.assertEqual(storage._scan_batches[0][1], [kept])
+        self.assertEqual(storage._observations[0], [kept])
 
     async def test_enrichment_failure_skips_entire_batch_when_all_fail(self):
         cs, _, wq = _make_service()
@@ -397,9 +403,11 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
         mock_enrich.assert_awaited_once_with(record, force_refresh=False)
 
     async def test_process_metadata_item(self):
-        cs, storage, wq = _make_service()
+        mq: asyncio.Queue = asyncio.Queue()
+        cs, storage, wq = _make_service(metadata_queue=mq)
         record = _make_record()
-        item = MetadataWorkItem(record=record, force_refresh=True)
+        await cs.reconcile_insert(record)
+        item = mq.get_nowait()
         with patch(
             "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
             new_callable=AsyncMock,
@@ -412,9 +420,11 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
         self.assertIn("n1", storage._nodes)
 
     async def test_process_metadata_item_skips_enrichment_failure(self):
-        cs, _, wq = _make_service()
+        mq: asyncio.Queue = asyncio.Queue()
+        cs, _, wq = _make_service(metadata_queue=mq)
         record = _make_record(is_image=True)
-        item = MetadataWorkItem(record=record, force_refresh=True)
+        await cs.reconcile_insert(record)
+        item = mq.get_nowait()
         with patch(
             "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
             new_callable=AsyncMock,
