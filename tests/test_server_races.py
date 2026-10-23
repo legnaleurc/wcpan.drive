@@ -9,16 +9,17 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, MountRegistry, mount_id
 from wcpan.drive.server.services.backfill import BackfillService
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import SynologyPathService
+from wcpan.drive.server.services.scan import StartupScanService
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.types import NodeObservation, SynologyLocator
+from wcpan.drive.server.types import NodeObservation, ReadSeq, SynologyLocator
 from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
@@ -26,7 +27,7 @@ from wcpan.drive.server.workers import (
     noop_after_write,
     write_worker,
 )
-from wcpan.synology import SynologyPath
+from wcpan.synology import SynologyApiError, SynologyNetworkError, SynologyPath
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -156,6 +157,11 @@ class _RaceTestCase(IsolatedAsyncioTestCase):
     async def drain(self) -> None:
         await self.node_sync.wait_enrichment_drained()
 
+    async def observed(self, op: Callable[[ReadSeq], Awaitable[object]]) -> None:
+        """Run *op* as one backend read; the read starts when this coroutine runs."""
+        async with self.node_sync.observe() as read:
+            await op(read)
+
     async def run_gated(
         self, gate: _Gate, start: Awaitable[object], race: Callable[[], Awaitable[None]]
     ) -> None:
@@ -179,8 +185,8 @@ class TestStaleEnrichment(_RaceTestCase):
 
         await self.run_gated(
             gate,
-            self.node_sync.reconcile_insert(_obs(f)),
-            lambda: self.node_sync.delete(f.id),
+            self.observed(lambda r: self.node_sync.reconcile_insert(_obs(f), read=r)),
+            lambda: self.observed(lambda r: self.node_sync.delete(f.id, read=r)),
         )
 
         self.assertIsNone(await self.storage.get_node_by_id(f.id))
@@ -190,10 +196,13 @@ class TestStaleEnrichment(_RaceTestCase):
         new = replace(old, name="new")
         gate = self.gate(lambda r: r.name == "old")
 
-        async def race() -> None:
-            await self.node_sync.upsert(_obs(new))
-
-        await self.run_gated(gate, self.node_sync.upsert_file_batch([_obs(old)]), race)
+        await self.run_gated(
+            gate,
+            self.observed(
+                lambda r: self.node_sync.upsert_file_batch([_obs(old)], read=r)
+            ),
+            lambda: self.observed(lambda r: self.node_sync.upsert(_obs(new), read=r)),
+        )
 
         stored = await self.storage.get_node_by_id(old.id)
         assert stored is not None
@@ -209,8 +218,10 @@ class TestStaleEnrichment(_RaceTestCase):
 
         await self.run_gated(
             gate,
-            self.node_sync.upsert_file_batch([_obs(f)]),
-            lambda: self.node_sync.delete(d.id),
+            self.observed(
+                lambda r: self.node_sync.upsert_file_batch([_obs(f)], read=r)
+            ),
+            lambda: self.observed(lambda r: self.node_sync.delete(d.id, read=r)),
         )
 
         self.assertIsNone(await self.storage.get_node_by_id(f.id))
@@ -224,8 +235,8 @@ class TestStaleEnrichment(_RaceTestCase):
 
         await self.run_gated(
             gate,
-            self.node_sync.upsert(_obs(f)),
-            lambda: self.node_sync.delete(f.id),
+            self.observed(lambda r: self.node_sync.upsert(_obs(f), read=r)),
+            lambda: self.observed(lambda r: self.node_sync.delete(f.id, read=r)),
         )
 
         self.assertIsNone(await self.storage.get_node_by_id(f.id))
@@ -238,21 +249,16 @@ class TestStaleEnrichment(_RaceTestCase):
 
         await self.run_gated(
             gate,
-            self.node_sync.reconcile_insert(_obs(f)),
-            lambda: self.node_sync.delete(g.id),
+            self.observed(lambda r: self.node_sync.reconcile_insert(_obs(f), read=r)),
+            lambda: self.observed(lambda r: self.node_sync.delete(g.id, read=r)),
         )
 
         self.assertIsNotNone(await self.storage.get_node_by_id(f.id))
         self.assertIsNone(await self.storage.get_node_by_id(g.id))
 
 
-class TestBackfillMovedNode(_RaceTestCase):
-    async def test_listing_of_former_parent_does_not_delete_moved_node(self) -> None:
-        a = _node("a", _MOUNT, is_directory=True)
-        b = _node("b", _MOUNT, is_directory=True)
-        x = _node("x", "a")
-        await self.storage.bulk_upsert_nodes([a, b, x])
-
+class TestBackfillOrdering(_RaceTestCase):
+    def backfill(self) -> tuple[BackfillService, SynologyPathService]:
         syno_paths = SynologyPathService(
             registry=MountRegistry(mounts=self.mounts, root_ids={}),
             storage=self.storage,
@@ -263,6 +269,14 @@ class TestBackfillMovedNode(_RaceTestCase):
             syno_paths=syno_paths,
             node_sync=self.node_sync,
         )
+        return backfill, syno_paths
+
+    async def test_listing_of_former_parent_does_not_delete_moved_node(self) -> None:
+        a = _node("a", _MOUNT, is_directory=True)
+        b = _node("b", _MOUNT, is_directory=True)
+        x = _node("x", "a")
+        await self.storage.bulk_upsert_nodes([a, b, x])
+        backfill, syno_paths = self.backfill()
 
         async def list_children(_api: object, parent_id: str) -> list[object]:
             return [] if parent_id == "a" else [_syno_item("x")]
@@ -288,3 +302,95 @@ class TestBackfillMovedNode(_RaceTestCase):
         stored = await self.storage.get_node_by_id(x.id)
         assert stored is not None
         self.assertEqual(stored.parent_id, b.id)
+
+    async def test_stale_listing_does_not_revert_newer_webhook_update(self) -> None:
+        a = _node("a", _MOUNT, is_directory=True)
+        x = _node("x", "a")
+        await self.storage.bulk_upsert_nodes([a, x])
+        backfill, syno_paths = self.backfill()
+        renamed = replace(x, name="renamed")
+
+        async def list_children(_api: object, parent_id: str) -> list[object]:
+            # The listing still reports the old name; a webhook read that starts
+            # afterwards observes the rename and is applied first.
+            async with self.node_sync.observe() as read:
+                await self.node_sync.upsert(_obs(renamed), read=read)
+            await self.node_sync.flush()
+            return [_syno_item("x")]
+
+        with patch.object(syno_paths, "list_children", side_effect=list_children):
+            await backfill._reconcile_subtree(a.id)
+        await self.drain()
+
+        stored = await self.storage.get_node_by_id(x.id)
+        assert stored is not None
+        self.assertEqual(stored.name, "renamed")
+
+
+class TestScanRemovalConfirmation(_RaceTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.a = _node("a", _MOUNT, is_directory=True)
+        self.b = _node("b", _MOUNT, is_directory=True)
+        self.x = _node("x", "a")
+        await self.storage.apply_observations(
+            [_obs(self.a), _obs(self.b), _obs(self.x)]
+        )
+        self.drive_api = MagicMock()
+        self.scan = StartupScanService(
+            drive_api=self.drive_api,
+            storage=self.storage,
+            syno_paths=SynologyPathService(
+                registry=MountRegistry(mounts=self.mounts, root_ids={}),
+                storage=self.storage,
+            ),
+            node_sync=self.node_sync,
+        )
+
+    async def test_node_moved_during_scan_is_kept_under_new_parent(self) -> None:
+        self.drive_api.get_file = AsyncMock(
+            return_value={**_syno_item("x"), "parent_id": "b"}
+        )
+
+        await self.scan._remove_unless_moved(self.x.id)
+        await self.drain()
+
+        stored = await self.storage.get_node_by_id(self.x.id)
+        assert stored is not None
+        self.assertEqual(stored.parent_id, self.b.id)
+
+    async def test_missing_node_is_removed(self) -> None:
+        self.drive_api.get_file = AsyncMock(return_value=None)
+
+        await self.scan._remove_unless_moved(self.x.id)
+        await self.drain()
+
+        self.assertIsNone(await self.storage.get_node_by_id(self.x.id))
+
+    async def test_api_error_falls_back_to_removal(self) -> None:
+        self.drive_api.get_file = AsyncMock(
+            side_effect=SynologyApiError("not found", error_code=408)
+        )
+
+        await self.scan._remove_unless_moved(self.x.id)
+        await self.drain()
+
+        self.assertIsNone(await self.storage.get_node_by_id(self.x.id))
+
+    async def test_node_moved_outside_mounts_is_removed(self) -> None:
+        self.drive_api.get_file = AsyncMock(
+            return_value={**_syno_item("x"), "parent_id": "elsewhere"}
+        )
+
+        await self.scan._remove_unless_moved(self.x.id)
+        await self.drain()
+
+        self.assertIsNone(await self.storage.get_node_by_id(self.x.id))
+
+    async def test_network_failure_preserves_node(self) -> None:
+        self.drive_api.get_file = AsyncMock(side_effect=SynologyNetworkError("down"))
+
+        await self.scan._remove_unless_moved(self.x.id)
+        await self.drain()
+
+        self.assertIsNotNone(await self.storage.get_node_by_id(self.x.id))

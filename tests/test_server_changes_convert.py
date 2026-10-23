@@ -334,8 +334,9 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
             observation = convert_file_info(info, parent_id="par")
             assert observation is not None
             record = observation.record
-            storage.apply_observations = AsyncMock(return_value=1)
-            await cs.reconcile_insert(observation)
+            storage.apply_observations = AsyncMock(return_value={record.id})
+            async with cs.observe() as read:
+                await cs.reconcile_insert(observation, read=read)
             item = await mq.get()
             mq.task_done()
             with patch.object(

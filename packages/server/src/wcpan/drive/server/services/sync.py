@@ -1,5 +1,7 @@
 """Central service for persisting node changes from scan, webhook, and API sources."""
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from functools import partial
 from logging import getLogger
@@ -7,9 +9,16 @@ from logging import getLogger
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.synology import SynologyPath
 
-from ..types import MetadataQueue, MetadataWorkItem, NodeObservation, WriteQueue
+from ..types import (
+    MetadataQueue,
+    MetadataWorkItem,
+    NodeObservation,
+    ReadSeq,
+    WriteQueue,
+)
 from .enricher import MediaEnrichmentError, MediaEnrichService
 from .off_main import OffMainService
+from .ordering import ObservationOrder
 from .paths import LocalPathService
 from .storage import StorageService
 
@@ -36,9 +45,10 @@ class NodeSyncService:
     media enrichment, write-queue enqueuing, and storage method dispatch so
     callers are not aware of those concerns.
 
-    Each observation claims its node when accepted, before any enrichment. A write
-    is applied only while its claim is still the latest one, so a slow enrichment
-    cannot overwrite a newer observation or resurrect a node deleted meanwhile.
+    Every write names the backend read it came from (``observe``). A write is
+    applied only if no observation from a later-started read was applied to the
+    node first, so a slow listing or enrichment cannot overwrite a newer
+    observation or resurrect a node removed meanwhile.
     """
 
     def __init__(
@@ -56,7 +66,7 @@ class NodeSyncService:
         self._mounts = mounts
         self._local_paths = local_paths
         self._metadata_queue = metadata_queue
-        self._claims: dict[MirrorStableId, object] = {}
+        self._order = ObservationOrder()
         local_path_service = LocalPathService(
             storage=storage,
             mounts=mounts,
@@ -71,6 +81,19 @@ class NodeSyncService:
     def local_paths(self) -> dict[str, str]:
         return self._local_paths
 
+    @asynccontextmanager
+    async def observe(self) -> AsyncGenerator[ReadSeq, None]:
+        """Number a backend read; enter before the read starts.
+
+        Writes derived from the read keep it outstanding until they are applied,
+        so they may still be enqueued after the context exits.
+        """
+        read = self._order.begin()
+        try:
+            yield read
+        finally:
+            self._order.release(read)
+
     async def flush(self) -> None:
         """Wait for all pending write-queue operations to complete."""
         await self._write_queue.join()
@@ -82,81 +105,96 @@ class NodeSyncService:
 
     async def process_metadata_item(self, item: MetadataWorkItem) -> None:
         """Run from ``metadata_worker``: enrich then enqueue a sync DB write."""
-        observation = item.observation
-        enriched = await self._try_enrich(observation, force_refresh=item.force_refresh)
+        enriched = await self._try_enrich(
+            item.observation, force_refresh=item.force_refresh
+        )
         if enriched is None:
-            self._release(observation.record.id, item.claim)
+            self._order.release(item.read)
             return
-        await self._put_claimed([(enriched, item.claim)])
+        await self._put_upserts([(enriched, item.read)])
 
-    # --- Observation claims ---
+    async def _put_upserts(self, items: list[tuple[NodeObservation, ReadSeq]]) -> None:
+        """Enqueue a write of *items*; each read must already be held.
 
-    def _claim(self, node_id: MirrorStableId) -> object:
-        claim = object()
-        self._claims[node_id] = claim
-        return claim
-
-    def _release(self, node_id: MirrorStableId, claim: object) -> bool:
-        """Consume *claim* if it is still the latest for *node_id*."""
-        if self._claims.get(node_id) is not claim:
-            return False
-        del self._claims[node_id]
-        return True
-
-    async def _put_claimed(self, claimed: list[tuple[NodeObservation, object]]) -> None:
-        """Enqueue a write of the observations whose claims are still current when it runs."""
+        Observations from reads older than the node's latest applied one are
+        dropped when the write runs.
+        """
 
         async def write() -> None:
-            current = [o for o, claim in claimed if self._release(o.record.id, claim)]
-            if current:
-                await self._storage.apply_observations(current)
+            try:
+                admitted = [
+                    (o, read)
+                    for o, read in items
+                    if self._order.admits(o.record.id, read)
+                ]
+                applied = await self._storage.apply_observations(
+                    [o for o, _ in admitted]
+                )
+                for o, read in admitted:
+                    if o.record.id in applied:
+                        self._order.record(o.record.id, read)
+            finally:
+                for _, read in items:
+                    self._order.release(read)
 
         await self._write_queue.put(write)
 
     # --- Shared primitives (used by multiple sources) ---
 
-    async def upsert(self, observation: NodeObservation) -> NodeRecord:
-        """Async-enrich, then enqueue a claimed write.
+    async def upsert(
+        self, observation: NodeObservation, *, read: ReadSeq
+    ) -> NodeRecord:
+        """Async-enrich, then enqueue an ordered write.
 
         Returns the (possibly enriched) record so callers can use it in responses.
         Used by: API (create, update, upload), webhook (delayed per-file upsert).
         """
-        node_id = observation.record.id
-        claim = self._claim(node_id)
+        self._order.hold(read)
         enriched = await self._try_enrich(observation, force_refresh=False)
         if enriched is None:
-            self._release(node_id, claim)
+            self._order.release(read)
             return observation.record
-        await self._put_claimed([(enriched, claim)])
+        await self._put_upserts([(enriched, read)])
         return enriched.record
 
-    async def delete(self, node_id: MirrorStableId) -> None:
-        """Enqueue delete_subtree_and_emit_changes, superseding pending writes.
+    async def delete(self, node_id: MirrorStableId, *, read: ReadSeq) -> None:
+        """Enqueue a subtree removal unless a later read already observed the node.
 
-        Used by: API (delete node), webhook (file_removed).
+        Used by: API (delete node), webhook (file_removed), scan (confirmed absence).
         """
-        self._claims.pop(node_id, None)
-        await self._write_queue.put(
-            partial(self._storage.delete_subtree_and_emit_changes, node_id)
-        )
+        self._order.hold(read)
+
+        async def remove() -> None:
+            try:
+                if not self._order.admits(node_id, read):
+                    return
+                await self._storage.delete_subtree_and_emit_changes(node_id)
+                self._order.record(node_id, read)
+            finally:
+                self._order.release(read)
+
+        await self._write_queue.put(remove)
 
     async def remove_listed_child(
-        self, node_id: MirrorStableId, parent_id: MirrorStableId
+        self, node_id: MirrorStableId, parent_id: MirrorStableId, *, read: ReadSeq
     ) -> None:
         """Delete *node_id* only if it is still a child of *parent_id* when applied.
 
         A listing that no longer contains a node does not prove deletion: the node
-        may have moved after the mirror was read. Pending writes accepted before
-        this call are superseded only when the removal applies.
+        may have moved after the mirror was read, or a later read may have seen it.
 
         Used by: backfill.
         """
-        claim = self._claims.get(node_id)
+        self._order.hold(read)
 
         async def remove() -> None:
-            removed = await self._storage.delete_subtree_if_parent(node_id, parent_id)
-            if removed and claim is not None:
-                self._release(node_id, claim)
+            try:
+                if not self._order.admits(node_id, read):
+                    return
+                if await self._storage.delete_subtree_if_parent(node_id, parent_id):
+                    self._order.record(node_id, read)
+            finally:
+                self._order.release(read)
 
         await self._write_queue.put(remove)
 
@@ -169,7 +207,9 @@ class NodeSyncService:
 
     # --- Batch primitives (shared by scan + webhook) ---
 
-    async def upsert_batch(self, observations: list[NodeObservation]) -> None:
+    async def upsert_batch(
+        self, observations: list[NodeObservation], *, read: ReadSeq
+    ) -> None:
         """Async-enrich each observation, then enqueue a batch upsert.
 
         Uses PRESERVE_MEDIA_UPSERT_SQL so existing enriched dimensions are not
@@ -179,16 +219,17 @@ class NodeSyncService:
         """
         if not observations:
             return
-        claims = [self._claim(o.record.id) for o in observations]
-        enriched: list[tuple[NodeObservation, object]] = []
-        for o, claim in zip(observations, claims, strict=True):
+        for _ in observations:
+            self._order.hold(read)
+        enriched: list[tuple[NodeObservation, ReadSeq]] = []
+        for o in observations:
             if (e := await self._try_enrich(o, force_refresh=False)) is not None:
-                enriched.append((e, claim))
+                enriched.append((e, read))
             else:
-                self._release(o.record.id, claim)
+                self._order.release(read)
         if not enriched:
             return
-        await self._put_claimed(enriched)
+        await self._put_upserts(enriched)
 
     async def _try_enrich(
         self, observation: NodeObservation, *, force_refresh: bool
@@ -206,7 +247,9 @@ class NodeSyncService:
             return None
         return replace(observation, record=enriched)
 
-    async def upsert_file_batch(self, observations: list[NodeObservation]) -> None:
+    async def upsert_file_batch(
+        self, observations: list[NodeObservation], *, read: ReadSeq
+    ) -> None:
         """After directory rows are committed, enqueue per-file media enrichment.
 
         Waits for prior write-queue work so ``get_ancestors`` in the metadata worker
@@ -218,25 +261,26 @@ class NodeSyncService:
         """
         if not observations:
             return
+        for _ in observations:
+            self._order.hold(read)
         mq = self._metadata_queue
         await self._write_queue.join()
 
         node_ids = [o.record.id for o in observations]
         existing = await self._storage.get_nodes_by_ids(node_ids)
 
-        skip_batch: list[tuple[NodeObservation, object]] = []
+        skip_batch: list[tuple[NodeObservation, ReadSeq]] = []
         for o in observations:
-            claim = self._claim(o.record.id)
             db_rec = existing.get(o.record.id)
             if db_rec is not None and _has_complete_media_dims(db_rec):
-                skip_batch.append((o, claim))
+                skip_batch.append((o, read))
             else:
                 await mq.put(
-                    MetadataWorkItem(observation=o, force_refresh=True, claim=claim)
+                    MetadataWorkItem(observation=o, force_refresh=True, read=read)
                 )
 
         if skip_batch:
-            await self._put_claimed(skip_batch)
+            await self._put_upserts(skip_batch)
 
     async def sync_nodes(self, records: list[NodeRecord]) -> None:
         """Enqueue bulk_upsert_nodes — upserts without emitting change rows.
@@ -250,25 +294,27 @@ class NodeSyncService:
 
     # --- Reconcile / backfill ---
 
-    async def reconcile_insert(self, from_api: NodeObservation) -> None:
-        claim = self._claim(from_api.record.id)
+    async def reconcile_insert(
+        self, from_api: NodeObservation, *, read: ReadSeq
+    ) -> None:
+        self._order.hold(read)
         if from_api.record.is_directory:
             # Write in listing order so children never arrive before their parent.
-            await self._put_claimed([(from_api, claim)])
+            await self._put_upserts([(from_api, read)])
             return
         await self._metadata_queue.put(
-            MetadataWorkItem(observation=from_api, force_refresh=True, claim=claim)
+            MetadataWorkItem(observation=from_api, force_refresh=True, read=read)
         )
 
     async def reconcile_update(
-        self, from_api: NodeObservation, existing: NodeRecord
+        self, from_api: NodeObservation, existing: NodeRecord, *, read: ReadSeq
     ) -> None:
-        claim = self._claim(from_api.record.id)
+        self._order.hold(read)
         if _has_complete_media_dims(existing):
-            await self._put_claimed([(from_api, claim)])
+            await self._put_upserts([(from_api, read)])
             return
         await self._metadata_queue.put(
-            MetadataWorkItem(observation=from_api, force_refresh=True, claim=claim)
+            MetadataWorkItem(observation=from_api, force_refresh=True, read=read)
         )
 
     # --- Scan-specific lifecycle operations ---
@@ -281,12 +327,10 @@ class NodeSyncService:
             partial(self._storage.set_mount_state, name, path.path, checkpoint)
         )
 
-    async def apply_deferred_removals(
-        self,
-        preserved: set[MirrorStableId],
-        mount_ids: set[MirrorStableId],
-    ) -> None:
-        """Enqueue apply_deferred_scan_removals. Used by scanner for end-of-scan cleanup."""
-        await self._write_queue.put(
-            partial(self._storage.apply_deferred_scan_removals, preserved, mount_ids)
-        )
+    async def touched_after(self, read: ReadSeq) -> set[MirrorStableId]:
+        """Nodes observed by reads that started after *read*, once queued writes land.
+
+        Used by: scanner, so end-of-scan removals skip nodes seen by newer reads.
+        """
+        await self.wait_enrichment_drained()
+        return self._order.touched_after(read)

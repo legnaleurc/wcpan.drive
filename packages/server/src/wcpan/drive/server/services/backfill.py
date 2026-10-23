@@ -9,7 +9,7 @@ from wcpan.synology import SynologyClient
 
 from ..lib.bfs import parallel_bfs
 from ..lib.mounts import SERVER_ROOT_ID
-from ..types import VirtualPath
+from ..types import ReadSeq, VirtualPath
 from .paths import SynologyPathService, VirtualPathService
 from .storage import StorageService
 from .sync import NodeSyncService
@@ -92,6 +92,12 @@ class BackfillService:
         checked = added = updated = removed = list_errors = 0
 
         async def _visit(parent_id: MirrorStableId) -> list[MirrorStableId]:
+            async with cs.observe() as read:
+                return await _visit_observed(parent_id, read)
+
+        async def _visit_observed(
+            parent_id: MirrorStableId, read: ReadSeq
+        ) -> list[MirrorStableId]:
             nonlocal checked, added, updated, removed, list_errors
             try:
                 items = await self._syno_paths.list_children(self._drive_api, parent_id)
@@ -122,7 +128,7 @@ class BackfillService:
                         parent_id,
                     )
                     if not dry_run:
-                        await cs.reconcile_insert(from_api)
+                        await cs.reconcile_insert(from_api, read=read)
                 else:
                     if (
                         _reconcile_api_fields_differ(existing, from_api.record)
@@ -136,7 +142,7 @@ class BackfillService:
                                 item["name"],
                             )
                         else:
-                            await cs.reconcile_update(from_api, existing)
+                            await cs.reconcile_update(from_api, existing, read=read)
 
                 if item["type"] == "dir":
                     children.append(node_id)
@@ -156,7 +162,7 @@ class BackfillService:
                         parent_id,
                     )
                     if not dry_run:
-                        await cs.remove_listed_child(existing.id, parent_id)
+                        await cs.remove_listed_child(existing.id, parent_id, read=read)
 
             return children
 

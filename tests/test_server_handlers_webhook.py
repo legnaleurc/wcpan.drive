@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.lib.mounts import MountRegistry
@@ -135,7 +135,7 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
             SynologyFileId(file_id="unknown-parent"),
             "file_moved",
         )
-        node_sync.delete.assert_awaited_once_with(MirrorStableId("f1"))
+        node_sync.delete.assert_awaited_once_with(MirrorStableId("f1"), read=ANY)
 
     async def test_file_moved_to_unknown_parent_no_op_when_node_absent(self):
         storage = MagicMock()
@@ -396,7 +396,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
 
         await service._execute_webhook_plan(plan, pending=pending)
 
-        node_sync.delete.assert_awaited_once_with("f1")
+        node_sync.delete.assert_awaited_once_with("f1", read=ANY)
         pending.schedule.assert_not_called()
 
     async def test_schedules_delayed_upsert(self):

@@ -235,6 +235,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
 
                 drive_api = MagicMock()
                 drive_api.list_folder = AsyncMock(side_effect=list_folder_fn)
+                # Unlisted nodes are confirmed missing before removal.
+                drive_api.get_file = AsyncMock(return_value=None)
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
@@ -647,6 +649,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
 
                 drive_api = MagicMock()
                 drive_api.list_folder = AsyncMock(side_effect=list_folder_fn)
+                # Unlisted nodes are confirmed missing before removal.
+                drive_api.get_file = AsyncMock(return_value=None)
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
@@ -809,6 +813,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
 
                 drive_api = MagicMock()
                 drive_api.list_folder = AsyncMock(side_effect=list_one)
+                # Unlisted nodes are confirmed missing before removal.
+                drive_api.get_file = AsyncMock(return_value=None)
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(

@@ -28,6 +28,7 @@ from wcpan.synology import (
 from ..lib.names import normalize_name
 from ..services.paths import SynologyPathService
 from ..services.sync import NodeSyncService
+from ..types import ReadSeq
 
 
 _L = getLogger(__name__)
@@ -262,32 +263,34 @@ class UploadService:
                 parent_id,
             )
         parent_ref = await self._syno_paths.synology_parent_ref(parent_id)
-        try:
-            info = await self._drive_api.upload(
-                parent_path=parent_ref,
-                name=name,
-                data=content,
-                mime_type=mime_type,
+        async with self._node_sync.observe() as read:
+            try:
+                info = await self._drive_api.upload(
+                    parent_path=parent_ref,
+                    name=name,
+                    data=content,
+                    mime_type=mime_type,
+                )
+            except SynologyUploadConflictError:
+                record = await self._resolve_name_conflict(
+                    parent_id=parent_id,
+                    name=name,
+                )
+                raise UploadConflictError(record)
+            except SynologyNetworkError as e:
+                raise UploadTransientError(str(e)) from e
+            except SynologyNameTooLongError as e:
+                raise UploadNameTooLongError(e.file_name or name) from e
+            except SynologyUploadError as e:
+                raise UploadPermanentError(str(e)) from e
+            return UploadCreatedNode(
+                record=await self._upsert_uploaded_node(
+                    info=info,
+                    parent_id=parent_id,
+                    media_info=media_info,
+                    read=read,
+                )
             )
-        except SynologyUploadConflictError:
-            record = await self._resolve_name_conflict(
-                parent_id=parent_id,
-                name=name,
-            )
-            raise UploadConflictError(record)
-        except SynologyNetworkError as e:
-            raise UploadTransientError(str(e)) from e
-        except SynologyNameTooLongError as e:
-            raise UploadNameTooLongError(e.file_name or name) from e
-        except SynologyUploadError as e:
-            raise UploadPermanentError(str(e)) from e
-        return UploadCreatedNode(
-            record=await self._upsert_uploaded_node(
-                info=info,
-                parent_id=parent_id,
-                media_info=media_info,
-            )
-        )
 
     async def append_chunk(
         self,
@@ -374,53 +377,55 @@ class UploadService:
             )
             raise UploadPermanentError("Upload session size mismatch")
 
-        try:
-            with session.temp_path.open("rb") as f:
-                info = await self._drive_api.upload(
-                    parent_path=parent_ref,
-                    name=session.name,
-                    data=self._iter_file(f),
-                    mime_type=session.mime_type,
+        async with self._node_sync.observe() as read:
+            try:
+                with session.temp_path.open("rb") as f:
+                    info = await self._drive_api.upload(
+                        parent_path=parent_ref,
+                        name=session.name,
+                        data=self._iter_file(f),
+                        mime_type=session.mime_type,
+                    )
+            except SynologyUploadConflictError:
+                _L.debug(
+                    "upload session conflicted during finalisation session_id=%r name=%r parent_id=%r",
+                    session_id,
+                    session.name,
+                    session.parent_id,
                 )
-        except SynologyUploadConflictError:
-            _L.debug(
-                "upload session conflicted during finalisation session_id=%r name=%r parent_id=%r",
-                session_id,
-                session.name,
-                session.parent_id,
-            )
-            self._cleanup_session(session_id)
-            record = await self._resolve_name_conflict(
-                parent_id=session.parent_id,
-                name=session.name,
-            )
-            raise UploadConflictError(record)
-        except SynologyNetworkError as e:
-            _L.warning(
-                "upload session failed during finalisation session_id=%r name=%r parent_id=%r error=%s",
-                session_id,
-                session.name,
-                session.parent_id,
-                e,
-            )
-            raise UploadTransientError(str(e)) from e
-        except SynologyNameTooLongError as e:
-            raise UploadNameTooLongError(e.file_name or session.name) from e
-        except SynologyUploadError as e:
-            _L.warning(
-                "upload session permanently failed during finalisation session_id=%r name=%r parent_id=%r error=%s",
-                session_id,
-                session.name,
-                session.parent_id,
-                e,
-            )
-            raise UploadPermanentError(str(e)) from e
+                self._cleanup_session(session_id)
+                record = await self._resolve_name_conflict(
+                    parent_id=session.parent_id,
+                    name=session.name,
+                )
+                raise UploadConflictError(record)
+            except SynologyNetworkError as e:
+                _L.warning(
+                    "upload session failed during finalisation session_id=%r name=%r parent_id=%r error=%s",
+                    session_id,
+                    session.name,
+                    session.parent_id,
+                    e,
+                )
+                raise UploadTransientError(str(e)) from e
+            except SynologyNameTooLongError as e:
+                raise UploadNameTooLongError(e.file_name or session.name) from e
+            except SynologyUploadError as e:
+                _L.warning(
+                    "upload session permanently failed during finalisation session_id=%r name=%r parent_id=%r error=%s",
+                    session_id,
+                    session.name,
+                    session.parent_id,
+                    e,
+                )
+                raise UploadPermanentError(str(e)) from e
 
-        record = await self._upsert_uploaded_node(
-            info=info,
-            parent_id=session.parent_id,
-            media_info=session.media_info,
-        )
+            record = await self._upsert_uploaded_node(
+                info=info,
+                parent_id=session.parent_id,
+                media_info=session.media_info,
+                read=read,
+            )
         self._cleanup_session(session_id)
 
         _L.debug(
@@ -467,6 +472,7 @@ class UploadService:
         info: SynologyFileInfo,
         parent_id: MirrorStableId,
         media_info: MediaInfo | None,
+        read: ReadSeq,
     ) -> NodeRecord:
         observation = convert_file_info(info, parent_id)
         if observation is None:
@@ -484,7 +490,7 @@ class UploadService:
                 ms_duration=media_info.ms_duration,
             )
             observation = replace(observation, record=record)
-        return await self._node_sync.upsert(observation)
+        return await self._node_sync.upsert(observation, read=read)
 
     def _cleanup_session(self, session_id: str) -> None:
         self._store.remove(session_id)

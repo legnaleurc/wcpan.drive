@@ -16,7 +16,7 @@ from wcpan.synology import (
 from ..lib.bfs import parallel_bfs
 from ..lib.debounce import TaskIdDebouncer
 from ..lib.mounts import MountRegistry, mount_name
-from ..types import NodeObservation, SynologyLocator, WriteQueue
+from ..types import NodeObservation, ReadSeq, SynologyLocator, WriteQueue
 from ..workers import WebhookQueue
 from .paths import SynologyPathService
 from .storage import StorageService
@@ -69,6 +69,20 @@ class WebhookService:
         parent_file_ref: SynologyFileId | None,
         event_type: str,
     ) -> None:
+        async with self._node_sync.observe() as read:
+            await self._fetch_and_apply(
+                file_ref, permanent_link_ref, parent_file_ref, event_type, read=read
+            )
+
+    async def _fetch_and_apply(
+        self,
+        file_ref: SynologyFileId,
+        permanent_link_ref: SynologyPermanentLink,
+        parent_file_ref: SynologyFileId | None,
+        event_type: str,
+        *,
+        read: ReadSeq,
+    ) -> None:
         if parent_file_ref is None:
             _L.warning(
                 "file_id %s %s without parent_id; skipping",
@@ -91,7 +105,7 @@ class WebhookService:
                             "file_id %s moved outside configured mounts; deleting from mirror",
                             file_ref.file_id,
                         )
-                        await self._node_sync.delete(existing.id)
+                        await self._node_sync.delete(existing.id, read=read)
                 else:
                     _L.warning(
                         "parent_id %s for %s (%s) not in DB and not a known mount; skipping",
@@ -121,7 +135,7 @@ class WebhookService:
                 permanent_link_ref.permanent_link,
                 observation.record.id,
             )
-        await self._node_sync.upsert(observation)
+        await self._node_sync.upsert(observation, read=read)
 
     def _classify_webhook_item(
         self,
@@ -239,7 +253,8 @@ class WebhookService:
             else:
                 await self._scan_moved_dir_subtree(subtree_root_id)
         if plan.delete_id is not None:
-            await self._node_sync.delete(plan.delete_id)
+            async with self._node_sync.observe() as read:
+                await self._node_sync.delete(plan.delete_id, read=read)
         if plan.schedule_delayed_upsert:
             pending.schedule(
                 plan.schedule_key,
@@ -301,6 +316,12 @@ class WebhookService:
         """BFS-populate children of a moved directory not delivered by the webhook."""
 
         async def _visit(current_id: MirrorStableId) -> list[MirrorStableId]:
+            async with self._node_sync.observe() as read:
+                return await _visit_observed(current_id, read)
+
+        async def _visit_observed(
+            current_id: MirrorStableId, read: ReadSeq
+        ) -> list[MirrorStableId]:
             try:
                 items = await self._syno_paths.list_children(
                     self._drive_api, current_id
@@ -323,10 +344,10 @@ class WebhookService:
                 else:
                     file_records.append(observation)
             if dir_records:
-                await self._node_sync.upsert_batch(dir_records)
+                await self._node_sync.upsert_batch(dir_records, read=read)
                 await self._write_queue.join()
             if file_records:
-                await self._node_sync.upsert_file_batch(file_records)
+                await self._node_sync.upsert_file_batch(file_records, read=read)
             return children
 
         await parallel_bfs([folder_id], _visit)

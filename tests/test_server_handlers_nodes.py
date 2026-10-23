@@ -79,12 +79,12 @@ class _FakeStorage:
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
         self._nodes[record.id] = record
 
-    async def apply_observations(self, observations: list[NodeObservation]) -> int:
+    async def apply_observations(self, observations: list[NodeObservation]) -> set[str]:
         for o in observations:
             self._nodes[o.record.id] = o.record
             if o.locator is not None:
                 self._locators[o.record.id] = o.locator
-        return len(observations)
+        return {o.record.id for o in observations}
 
     async def get_locators(self, node_ids: list[str]) -> dict[str, SynologyLocator]:
         # Fixture nodes use their own ID as the Synology file_id unless rebound.

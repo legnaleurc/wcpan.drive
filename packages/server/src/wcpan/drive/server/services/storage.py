@@ -355,17 +355,19 @@ def _select_node_row(
     return tuple(row) if row is not None else None
 
 
-def _apply_observations(dsn: str, observations: list[NodeObservation]) -> int:
+def _apply_observations(
+    dsn: str, observations: list[NodeObservation]
+) -> set[MirrorStableId]:
     """Upsert nodes and their locators in order, skipping any whose parent is gone.
 
     The parent check and writes share one explicit transaction, so an observation
     made before its parent was removed cannot recreate an orphan. A change is
     emitted only when the public node row actually changes; locator-only updates
-    are silent. Returns the number of observations applied.
+    are silent. Returns the IDs of the nodes that were applied.
     """
     if not observations:
-        return 0
-    applied = 0
+        return set()
+    applied: set[MirrorStableId] = set()
     with _read_write(dsn) as con:
         con.execute("BEGIN")
         for observation in observations:
@@ -387,7 +389,7 @@ def _apply_observations(dsn: str, observations: list[NodeObservation]) -> int:
                     """,
                     (str(record.id), observation.locator),
                 )
-            applied += 1
+            applied.add(record.id)
     return applied
 
 
@@ -532,14 +534,14 @@ def _get_ancestors(dsn: str, node_id: MirrorStableId) -> list[NodeRecord]:
             return [_row_to_record(r) for r in cur.fetchall()]
 
 
-def _apply_deferred_scan_removals(
+def _deferred_removal_roots(
     dsn: str,
     preserved: set[MirrorStableId],
     mount_ids: set[MirrorStableId],
-) -> None:
-    """Remove Synology subtrees under *mount_ids* that are not in *preserved*."""
+) -> list[MirrorStableId]:
+    """Roots of the subtrees under *mount_ids* whose nodes are not in *preserved*."""
     if not mount_ids:
-        return
+        return []
 
     placeholders = ",".join("?" * len(mount_ids))
     # Collect all non-virtual descendants of the mount nodes together with their
@@ -553,27 +555,18 @@ def _apply_deferred_scan_removals(
     )
     SELECT node_id, parent_id FROM descendants WHERE node_id NOT GLOB '_*'
     """
-    with _read_write(dsn) as con:
+    with _read_only(dsn) as con:
         with closing(con.execute(sql, tuple(str(_) for _ in mount_ids))) as cur:
             rows = cur.fetchall()
 
-        parent_by_id: dict[MirrorStableId, MirrorStableId | None] = {
-            MirrorStableId(row["node_id"]): (
-                MirrorStableId(row["parent_id"])
-                if row["parent_id"] is not None
-                else None
-            )
-            for row in rows
-        }
-        candidates = {nid for nid in parent_by_id if nid not in preserved}
-        if not candidates:
-            return
-
-        roots = sorted(
-            nid for nid in candidates if parent_by_id.get(nid) not in candidates
+    parent_by_id: dict[MirrorStableId, MirrorStableId | None] = {
+        MirrorStableId(row["node_id"]): (
+            MirrorStableId(row["parent_id"]) if row["parent_id"] is not None else None
         )
-        for root in roots:
-            _delete_subtree_on_connection(con, root)
+        for row in rows
+    }
+    candidates = {nid for nid in parent_by_id if nid not in preserved}
+    return sorted(nid for nid in candidates if parent_by_id.get(nid) not in candidates)
 
 
 def _get_cursor(dsn: str) -> int:
@@ -806,7 +799,9 @@ class StorageService:
     async def delete_subtree_and_emit_changes(self, node_id: MirrorStableId) -> None:
         await self._off_main(_delete_subtree_and_emit_changes, self._dsn, node_id)
 
-    async def apply_observations(self, observations: list[NodeObservation]) -> int:
+    async def apply_observations(
+        self, observations: list[NodeObservation]
+    ) -> set[MirrorStableId]:
         return await self._off_main(_apply_observations, self._dsn, observations)
 
     async def delete_subtree_if_parent(
@@ -857,13 +852,13 @@ class StorageService:
             _build_deferred_preserved_set, self._dsn, seen_ids, preserve_roots
         )
 
-    async def apply_deferred_scan_removals(
+    async def deferred_removal_roots(
         self,
         preserved: set[MirrorStableId],
         mount_ids: set[MirrorStableId],
-    ) -> None:
-        await self._off_main(
-            _apply_deferred_scan_removals, self._dsn, preserved, mount_ids
+    ) -> list[MirrorStableId]:
+        return await self._off_main(
+            _deferred_removal_roots, self._dsn, preserved, mount_ids
         )
 
     async def get_cursor(self) -> int:

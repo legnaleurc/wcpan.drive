@@ -17,6 +17,7 @@ from ..keys import (
     SYNOLOGY_PATH_KEY,
 )
 from ..services.sync import NodeSyncService
+from ..types import ReadSeq
 
 
 _MEDIA_QUERY_KEYS = ("width", "height", "ms_duration", "media_image", "media_video")
@@ -55,6 +56,7 @@ async def enrich_and_upsert_synology_node(
     info: SynologyFileInfo,
     parent_id: MirrorStableId,
     node_sync: NodeSyncService,
+    read: ReadSeq,
     media_info: MediaInfo | None = None,
 ) -> NodeRecord:
     observation = convert_file_info(info, parent_id)
@@ -72,7 +74,7 @@ async def enrich_and_upsert_synology_node(
             ms_duration=media_info.ms_duration,
         )
         observation = replace(observation, record=record)
-    return await node_sync.upsert(observation)
+    return await node_sync.upsert(observation, read=read)
 
 
 async def resolve_name_conflict_and_upsert(
@@ -87,18 +89,20 @@ async def resolve_name_conflict_and_upsert(
     drive_api = request.app[SYNOLOGY_DRIVE_API_KEY]
     syno_paths = request.app[SYNOLOGY_PATH_KEY]
 
-    info = await syno_paths.find_child_by_name(drive_api, parent_id, name)
+    async with node_sync.observe() as read:
+        info = await syno_paths.find_child_by_name(drive_api, parent_id, name)
 
-    if info is None:
-        raise web.HTTPConflict(
-            reason=(
-                f"Name conflict for {name!r} but existing node could not be resolved"
+        if info is None:
+            raise web.HTTPConflict(
+                reason=(
+                    f"Name conflict for {name!r} but existing node could not be resolved"
+                )
             )
-        )
 
-    return await enrich_and_upsert_synology_node(
-        info=info,
-        parent_id=parent_id,
-        node_sync=node_sync,
-        media_info=media_info,
-    )
+        return await enrich_and_upsert_synology_node(
+            info=info,
+            parent_id=parent_id,
+            node_sync=node_sync,
+            read=read,
+            media_info=media_info,
+        )

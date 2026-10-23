@@ -543,6 +543,16 @@ behind an internal server endpoint and make the `backfill` command its client.
 Cover the stage 1 known gaps: a node moved during the scan is not removed, and
 backfill cannot revert a newer webhook update.
 
+Status: observation ordering is implemented (`services/ordering.py`); every
+`NodeSyncService` write takes the `ReadSeq` of the read it came from. Webhooks
+are still processed after the startup scan, so ordering alone cannot save a node
+that moved during the scan; instead, each end-of-scan removal root is first
+fetched by permanent link. If it still exists under a known parent, the move is
+recorded instead of the removal. Only a network failure preserves the node; API
+errors fall back to removal, so the check never removes more than before.
+Backfill ordering holds within one process; it still runs as a separate process
+until the internal endpoint exists (open decision 4).
+
 Move native API calls and exception handling out of generic handlers. Route scan,
 backfill, and scoped repair through common reconciliation semantics. Separate
 durable discovery from optional enrichment, following the publication rule in

@@ -6,7 +6,7 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock
 
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.drive.server.types import MetadataWorkItem, NodeObservation
+from wcpan.drive.server.types import MetadataWorkItem, NodeObservation, ReadSeq
 from wcpan.drive.server.workers import (
     create_checkpoint_scheduler,
     metadata_worker,
@@ -99,7 +99,7 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
         item = MetadataWorkItem(
             observation=NodeObservation(record=_make_record("n1"), locator=None),
             force_refresh=False,
-            claim=object(),
+            read=ReadSeq(0),
         )
         await q.put(item)
 
@@ -126,14 +126,14 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
             MetadataWorkItem(
                 observation=NodeObservation(record=_make_record("a"), locator=None),
                 force_refresh=False,
-                claim=object(),
+                read=ReadSeq(0),
             )
         )
         await q.put(
             MetadataWorkItem(
                 observation=NodeObservation(record=_make_record("b"), locator=None),
                 force_refresh=False,
-                claim=object(),
+                read=ReadSeq(0),
             )
         )
 

@@ -7,17 +7,27 @@ from logging import getLogger
 from wcpan.drive.protocol.lib import utc_now
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.synology import convert_file_info
-from wcpan.synology import SynologyClient, SynologyFileId, SynologyPath
+from wcpan.synology import (
+    SynologyClient,
+    SynologyError,
+    SynologyFileId,
+    SynologyNetworkError,
+    SynologyPath,
+    SynologyPermanentLink,
+)
 
 from ..lib.bfs import parallel_bfs
 from ..lib.mounts import SERVER_ROOT_ID, mount_id
-from ..types import NodeObservation
+from ..types import NodeObservation, ReadSeq
 from .paths import SynologyPathService
 from .storage import StorageService
 from .sync import NodeSyncService
 
 
 _L = getLogger(__name__)
+
+# Concurrent Synology lookups when confirming end-of-scan removals.
+_CONFIRM_CONCURRENCY = 8
 
 
 @dataclass
@@ -101,6 +111,7 @@ class StartupScanService:
         syno_path: SynologyPath,
         last_max_id: int,
         acc: ScanAccumulator,
+        read: ReadSeq,
     ) -> tuple[int, int, list[tuple[MirrorStableId, int, bool]]]:
         """Scan the first level of a mount using the same child listing path service."""
         try:
@@ -146,7 +157,7 @@ class StartupScanService:
                 subfolders.append((node_id, max_id, is_new))
 
         if pending_upserts:
-            await self._node_sync.upsert_batch(pending_upserts)
+            await self._node_sync.upsert_batch(pending_upserts, read=read)
 
         _L.debug(
             "Mount %r: %d upsert(s) (deletions deferred to end of scan)",
@@ -166,6 +177,13 @@ class StartupScanService:
 
         async def _visit(
             entry: tuple[MirrorStableId, int, bool],
+        ) -> list[tuple[MirrorStableId, int, bool]]:
+            async with self._node_sync.observe() as read:
+                return await _visit_observed(entry, read)
+
+        async def _visit_observed(
+            entry: tuple[MirrorStableId, int, bool],
+            read: ReadSeq,
         ) -> list[tuple[MirrorStableId, int, bool]]:
             folder_id, this_max_id, force_scan = entry
 
@@ -254,9 +272,9 @@ class StartupScanService:
                     children.append((node_id, max_id, is_new))
 
             if pending_dir_upserts:
-                await self._node_sync.upsert_batch(pending_dir_upserts)
+                await self._node_sync.upsert_batch(pending_dir_upserts, read=read)
             if pending_file_records:
-                await self._node_sync.upsert_file_batch(pending_file_records)
+                await self._node_sync.upsert_file_batch(pending_file_records, read=read)
 
             return children
 
@@ -270,6 +288,14 @@ class StartupScanService:
 
         Pass ``last_max_ids`` with zero values for a full initial scan.
         """
+        async with self._node_sync.observe() as scan_read:
+            return await self._scan_all_mounts_observed(last_max_ids, scan_read)
+
+    async def _scan_all_mounts_observed(
+        self,
+        last_max_ids: dict[str, int],
+        scan_read: ReadSeq,
+    ) -> tuple[dict[str, int], dict[str, int]]:
         per_mount_highest: dict[str, int] = {
             name: last_max_ids.get(name, 0) for name in self._syno_paths.mounts
         }
@@ -283,16 +309,18 @@ class StartupScanService:
             mid = mount_id(name)
             mount_last = last_max_ids.get(name, 0)
             try:
-                (
-                    level_highest,
-                    pre_scan_max_id,
-                    subfolders,
-                ) = await self._scan_mount_level(
-                    mid=mid,
-                    syno_path=syno_path,
-                    last_max_id=mount_last,
-                    acc=acc,
-                )
+                async with self._node_sync.observe() as level_read:
+                    (
+                        level_highest,
+                        pre_scan_max_id,
+                        subfolders,
+                    ) = await self._scan_mount_level(
+                        mid=mid,
+                        syno_path=syno_path,
+                        last_max_id=mount_last,
+                        acc=acc,
+                        read=level_read,
+                    )
                 await self._scan_subtree_bfs(
                     initial=subfolders,
                     last_max_id=mount_last,
@@ -308,10 +336,48 @@ class StartupScanService:
             acc.seen_ids,
             acc.subtree_preserve_roots,
         )
+        preserved |= await self._node_sync.touched_after(scan_read)
         mount_ids = {mount_id(n) for n in self._syno_paths.mounts}
-        await self._node_sync.apply_deferred_removals(preserved, mount_ids)
+        roots = await self._storage.deferred_removal_roots(preserved, mount_ids)
+        semaphore = asyncio.Semaphore(_CONFIRM_CONCURRENCY)
+
+        async def confirm(root: MirrorStableId) -> None:
+            async with semaphore:
+                await self._remove_unless_moved(root)
+
+        async with asyncio.TaskGroup() as group:
+            for root in roots:
+                group.create_task(confirm(root))
 
         return per_mount_highest, pre_scan_max_ids
+
+    async def _remove_unless_moved(self, node_id: MirrorStableId) -> None:
+        """Remove a node no listing reported, unless it moved during the scan.
+
+        A node can move into an already listed folder after that listing and out
+        of its old folder before that one is listed. Fetch it directly: if it
+        still exists under a known parent, record the move instead of removing it.
+        Only a network failure preserves the node, since the fetch could not
+        decide; other failures fall back to removal, as without this check.
+        """
+        async with self._node_sync.observe() as read:
+            try:
+                info = await self._drive_api.get_file(SynologyPermanentLink(node_id))
+            except SynologyNetworkError:
+                _L.warning("Could not confirm removal of %s; preserving it", node_id)
+                return
+            except SynologyError:
+                info = None
+            if info and not info.get("removed", False):
+                parent_id = await self._syno_paths.resolve_parent(
+                    SynologyFileId(info["parent_id"])
+                )
+                observation = convert_file_info(info, parent_id) if parent_id else None
+                if observation is not None:
+                    _L.debug("Node %s moved during scan to %s", node_id, parent_id)
+                    await self._node_sync.upsert(observation, read=read)
+                    return
+            await self._node_sync.delete(node_id, read=read)
 
     async def run_initial_scan(self) -> None:
         """First full scan or resume: align nodes + change feed before serving."""
@@ -327,9 +393,11 @@ class StartupScanService:
                 "Creating root node and %d mount node(s)", len(self._syno_paths.mounts)
             )
             structural = _structural_records(self._syno_paths.mounts)
-            await self._node_sync.upsert_batch(
-                [NodeObservation(record=r, locator=None) for r in structural]
-            )
+            async with self._node_sync.observe() as read:
+                await self._node_sync.upsert_batch(
+                    [NodeObservation(record=r, locator=None) for r in structural],
+                    read=read,
+                )
         else:
             _L.info("Resuming with per-mount max_ids: %s", last_max_ids)
             # First run already emitted structural rows into `changes`; keep `nodes`

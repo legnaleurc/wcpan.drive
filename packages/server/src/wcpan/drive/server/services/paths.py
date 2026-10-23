@@ -23,7 +23,7 @@ from wcpan.synology import (
 
 from ..lib.mounts import SERVER_ROOT_ID, MountRegistry, is_virtual, mount_name
 from ..lib.names import normalize_name
-from ..types import VirtualPath
+from ..types import SynologyLocator, VirtualPath
 from .storage import StorageService
 
 
@@ -62,6 +62,18 @@ class SynologyPathService:
         if key is not None:
             return self._registry.mounts[key]
         return await self._resolve_locator_ref(parent_node_id)
+
+    async def resolve_parent(
+        self,
+        parent_ref: SynologyFileId,
+    ) -> MirrorStableId | None:
+        """Mirror node ID for a Synology parent: a stored node or a mount root."""
+        parent = await self._storage.get_node_by_locator(
+            SynologyLocator(parent_ref.file_id)
+        )
+        if parent is not None:
+            return parent.id
+        return self._registry.lookup_mount_virtual_id(parent_ref)
 
     async def list_children(
         self,

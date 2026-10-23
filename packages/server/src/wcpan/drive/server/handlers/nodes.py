@@ -128,49 +128,51 @@ async def create_node(request: web.Request) -> web.Response:
     name = normalize_name(name)
     parent_id = MirrorStableId(parent_id_raw)
 
-    parent_ref = await syno_paths.synology_parent_ref(parent_id)
-    try:
-        info = await drive_api.create_folder(parent_ref, name)
-    except SynologyUploadConflictError:
-        record = await resolve_name_conflict_and_upsert(
-            request=request,
-            parent_id=parent_id,
-            name=name,
-            media_info=None,
-        )
-        return web.json_response(record_to_response(record), status=409)
+    async with node_sync.observe() as read:
+        parent_ref = await syno_paths.synology_parent_ref(parent_id)
+        try:
+            info = await drive_api.create_folder(parent_ref, name)
+        except SynologyUploadConflictError:
+            record = await resolve_name_conflict_and_upsert(
+                request=request,
+                parent_id=parent_id,
+                name=name,
+                media_info=None,
+            )
+            return web.json_response(record_to_response(record), status=409)
 
-    permanent_link = info.get("permanent_link")
-    if not permanent_link:
-        _L.warning(
-            "create_folder response missing permanent_link for file_id=%s; aborting",
-            info["file_id"],
+        permanent_link = info.get("permanent_link")
+        if not permanent_link:
+            _L.warning(
+                "create_folder response missing permanent_link for file_id=%s; aborting",
+                info["file_id"],
+            )
+            raise web.HTTPServiceUnavailable(
+                reason="Synology did not return permanent_link for new folder"
+            )
+        record = NodeRecord(
+            id=MirrorStableId(permanent_link),
+            parent_id=parent_id,
+            name=info["name"],
+            is_directory=True,
+            created_time=info.get("created_time", 0),
+            modified_time=info.get("modified_time", 0),
+            changed_time=info.get("change_time", 0),
+            mime_type="application/x-directory",
+            hash="",
+            hash_algorithm="",
+            size=0,
+            is_image=False,
+            is_video=False,
+            width=0,
+            height=0,
+            ms_duration=0,
         )
-        raise web.HTTPServiceUnavailable(
-            reason="Synology did not return permanent_link for new folder"
+        record = await node_sync.upsert(
+            NodeObservation(record=record, locator=SynologyLocator(info["file_id"])),
+            read=read,
         )
-    record = NodeRecord(
-        id=MirrorStableId(permanent_link),
-        parent_id=parent_id,
-        name=info["name"],
-        is_directory=True,
-        created_time=info.get("created_time", 0),
-        modified_time=info.get("modified_time", 0),
-        changed_time=info.get("change_time", 0),
-        mime_type="application/x-directory",
-        hash="",
-        hash_algorithm="",
-        size=0,
-        is_image=False,
-        is_video=False,
-        width=0,
-        height=0,
-        ms_duration=0,
-    )
-    record = await node_sync.upsert(
-        NodeObservation(record=record, locator=SynologyLocator(info["file_id"]))
-    )
-    return web.json_response(record_to_response(record), status=201)
+        return web.json_response(record_to_response(record), status=201)
 
 
 @require_ready
@@ -197,90 +199,94 @@ async def update_node(request: web.Request) -> web.Response:
         MirrorStableId(body["parent_id"]) if body.get("parent_id") is not None else None
     )
 
-    updated_record = record
-    locator: SynologyLocator | None = None
+    async with node_sync.observe() as read:
+        updated_record = record
+        locator: SynologyLocator | None = None
 
-    if new_name and new_name != record.name:
-        try:
-            info = await drive_api.rename(
-                _stable_node_ref(updated_record),
-                new_name,
-            )
-        except SynologyUploadConflictError:
-            raise web.HTTPConflict(reason=f"{new_name!r} already exists in this folder")
-        hash_ = updated_record.hash
-        hash_algorithm = updated_record.hash_algorithm
-        if not updated_record.is_directory and "hash" in info:
-            hash_ = info["hash"]
-            hash_algorithm = SYNOLOGY_HASH_ALGORITHM if hash_ else ""
-        updated_record = NodeRecord(
-            id=updated_record.id,
-            parent_id=updated_record.parent_id,
-            name=info["name"],
-            is_directory=updated_record.is_directory,
-            created_time=info.get("created_time", 0) or updated_record.created_time,
-            modified_time=info.get("modified_time", 0) or updated_record.modified_time,
-            changed_time=info.get("change_time", 0) or updated_record.changed_time,
-            mime_type=guess_mime_type(
-                info["name"], is_directory=updated_record.is_directory
-            ),
-            hash=hash_,
-            hash_algorithm=hash_algorithm,
-            size=info.get("size", updated_record.size),
-            is_image=updated_record.is_image,
-            is_video=updated_record.is_video,
-            width=updated_record.width,
-            height=updated_record.height,
-            ms_duration=updated_record.ms_duration,
-        )
-        if raw := info.get("file_id"):
-            locator = SynologyLocator(raw)
-
-    if new_parent_id and new_parent_id != record.parent_id:
-        new_parent_ref = await syno_paths.synology_parent_ref(new_parent_id)
-        try:
-            await drive_api.move(
-                _stable_node_ref(updated_record),
-                new_parent_ref,
-            )
-        except Exception as e:
-            raise web.HTTPServiceUnavailable(reason=str(e))
-        actual_record = await _resolve_actual_record_after_move(
-            drive_api,
-            syno_paths,
-            moved_node_ref=_stable_node_ref(updated_record),
-            expected_parent_node_id=new_parent_id,
-            expected_name=updated_record.name,
-        )
-        if actual_record is None:
+        if new_name and new_name != record.name:
+            try:
+                info = await drive_api.rename(
+                    _stable_node_ref(updated_record),
+                    new_name,
+                )
+            except SynologyUploadConflictError:
+                raise web.HTTPConflict(
+                    reason=f"{new_name!r} already exists in this folder"
+                )
+            hash_ = updated_record.hash
+            hash_algorithm = updated_record.hash_algorithm
+            if not updated_record.is_directory and "hash" in info:
+                hash_ = info["hash"]
+                hash_algorithm = SYNOLOGY_HASH_ALGORITHM if hash_ else ""
             updated_record = NodeRecord(
                 id=updated_record.id,
-                parent_id=new_parent_id,
-                name=updated_record.name,
+                parent_id=updated_record.parent_id,
+                name=info["name"],
                 is_directory=updated_record.is_directory,
-                created_time=updated_record.created_time,
-                modified_time=updated_record.modified_time,
-                changed_time=utc_now(),
-                mime_type=updated_record.mime_type,
-                hash=updated_record.hash,
-                hash_algorithm=updated_record.hash_algorithm,
-                size=updated_record.size,
+                created_time=info.get("created_time", 0) or updated_record.created_time,
+                modified_time=info.get("modified_time", 0)
+                or updated_record.modified_time,
+                changed_time=info.get("change_time", 0) or updated_record.changed_time,
+                mime_type=guess_mime_type(
+                    info["name"], is_directory=updated_record.is_directory
+                ),
+                hash=hash_,
+                hash_algorithm=hash_algorithm,
+                size=info.get("size", updated_record.size),
                 is_image=updated_record.is_image,
                 is_video=updated_record.is_video,
                 width=updated_record.width,
                 height=updated_record.height,
                 ms_duration=updated_record.ms_duration,
             )
-        else:
-            updated_record = actual_record.record
-            locator = actual_record.locator
-            if updated_record.id != record.id:
-                await node_sync.delete(record.id)
+            if raw := info.get("file_id"):
+                locator = SynologyLocator(raw)
 
-    updated_record = await node_sync.upsert(
-        NodeObservation(record=updated_record, locator=locator)
-    )
-    return web.json_response(record_to_response(updated_record))
+        if new_parent_id and new_parent_id != record.parent_id:
+            new_parent_ref = await syno_paths.synology_parent_ref(new_parent_id)
+            try:
+                await drive_api.move(
+                    _stable_node_ref(updated_record),
+                    new_parent_ref,
+                )
+            except Exception as e:
+                raise web.HTTPServiceUnavailable(reason=str(e))
+            actual_record = await _resolve_actual_record_after_move(
+                drive_api,
+                syno_paths,
+                moved_node_ref=_stable_node_ref(updated_record),
+                expected_parent_node_id=new_parent_id,
+                expected_name=updated_record.name,
+            )
+            if actual_record is None:
+                updated_record = NodeRecord(
+                    id=updated_record.id,
+                    parent_id=new_parent_id,
+                    name=updated_record.name,
+                    is_directory=updated_record.is_directory,
+                    created_time=updated_record.created_time,
+                    modified_time=updated_record.modified_time,
+                    changed_time=utc_now(),
+                    mime_type=updated_record.mime_type,
+                    hash=updated_record.hash,
+                    hash_algorithm=updated_record.hash_algorithm,
+                    size=updated_record.size,
+                    is_image=updated_record.is_image,
+                    is_video=updated_record.is_video,
+                    width=updated_record.width,
+                    height=updated_record.height,
+                    ms_duration=updated_record.ms_duration,
+                )
+            else:
+                updated_record = actual_record.record
+                locator = actual_record.locator
+                if updated_record.id != record.id:
+                    await node_sync.delete(record.id, read=read)
+
+        updated_record = await node_sync.upsert(
+            NodeObservation(record=updated_record, locator=locator), read=read
+        )
+        return web.json_response(record_to_response(updated_record))
 
 
 @require_ready
@@ -297,9 +303,10 @@ async def delete_node(request: web.Request) -> web.Response:
     if record is None:
         raise web.HTTPNotFound()
 
-    await drive_api.delete(_stable_node_ref(record))
-    await node_sync.delete(node_id)
-    return web.Response(status=204)
+    async with node_sync.observe() as read:
+        await drive_api.delete(_stable_node_ref(record))
+        await node_sync.delete(node_id, read=read)
+        return web.Response(status=204)
 
 
 @require_ready

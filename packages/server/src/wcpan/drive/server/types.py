@@ -18,6 +18,9 @@ VirtualPath = NewType("VirtualPath", PurePosixPath)
 """Client-facing virtual path, e.g. /photos/2024."""
 
 
+ReadSeq = NewType("ReadSeq", int)
+"""Sequence number taken when a backend read starts (see ``services.ordering``)."""
+
 SynologyLocator = NewType("SynologyLocator", str)
 """Synology ``file_id``; mutable across some operations, unlike the public node ID."""
 
@@ -52,8 +55,8 @@ class MetadataWorkItem:
 
     observation: NodeObservation
     force_refresh: bool
-    # Token from ``NodeSyncService``; the write is dropped once a newer write claims the node.
-    claim: object
+    # Start of the backend read that produced the observation.
+    read: ReadSeq
 
 
 type MetadataQueue = asyncio.Queue[MetadataWorkItem]
