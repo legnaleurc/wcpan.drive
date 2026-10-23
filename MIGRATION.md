@@ -33,8 +33,9 @@ retained and run independently to avoid tests-package name collisions.
 
 ## Remaining architecture work
 
-The new workspace does not yet implement generic backend contracts or per-file
-hash algorithms. The server still uses Synology-specific configuration and
-orchestration, and running it requires `wcpan-drive-server-synology`. The remote
-provider still uses MD4. The protocol still contains the existing mutable locator.
-These are follow-up changes specified in PLAN.md, rather than completed features.
+Per-file hash algorithms are implemented. The new workspace does not yet
+implement generic backend contracts. The server still uses Synology-specific
+configuration and orchestration, and running it requires
+`wcpan-drive-server-synology`. The protocol still contains the existing mutable
+locator. These are follow-up changes specified in PLAN.md, rather than completed
+features.

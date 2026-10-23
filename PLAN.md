@@ -4,7 +4,9 @@ Status: the uv workspace and namespace migration are initialized at version
 `0.1.0`. The flat `hash`/`hash_algorithm` model and per-node hasher selection are
 implemented in this repository (protocol, server, and all client packages; client
 service API version 6). duld migration, pending-checksum visibility (decision 4),
-and the generic backend architecture below remain planned.
+and the generic backend architecture below remain planned. The Synology adapter
+is extracted from the generic server at the end of stage 3, before the filesystem
+prototype.
 
 ## Objective
 
@@ -434,17 +436,20 @@ the existing version 2 schema.
 
 ### 1. Establish correctness baselines
 
-Add targeted unittest coverage for checkpoint durability, incomplete scans,
-cross-folder moves, and stale asynchronous writes. Verify the suspected failure
-paths before treating review findings as established bugs. Fix confirmed issues
-within the current package.
+Existing scan tests already cover failed listings preserving subtrees, failed
+mounts withholding `max_id` advancement, cross-mount reparenting, and count-based
+pruning. Add the remaining race and staleness coverage: scan results overwriting
+newer webhook or API-driven state, an older listing of a former parent deleting a
+moved node, and stale media enrichment updating or resurrecting a node. Verify the
+suspected failure paths before treating review findings as established bugs. Fix
+confirmed issues within the current package.
 
 Deliverable: documented invariants supported by regression tests.
 
 ### 2. Separate normalized records and backend state
 
 Introduce internal protocol/mirror types, Synology locator persistence, and a
-transaction-bound application path. Stop counting locator changes as public
+transaction-bound application path (server schema 5). Stop counting locator changes as public
 metadata updates. Prepare tolerant client decoding and migration tests.
 
 Deliverable: generic records contain no Synology locators; existing clients remain
@@ -456,8 +461,14 @@ Move native API calls and exception handling out of generic handlers. Route scan
 backfill, and scoped repair through common reconciliation semantics. Separate
 durable discovery from optional enrichment and settle publication requirements.
 
+Then move Synology orchestration (configuration, mount resolution, scan,
+webhook, backfill, operations, and the server command) into
+`wcpan-drive-server-synology`, and remove the `wcpan-synology` dependency from
+`wcpan-drive-server`. The generic server must not import the adapter package.
+
 Deliverable: generic HTTP and mirror modules import neither `wcpan.synology` nor
 `wcpan.drive.client` types. Core and backend persistence share queued transactions.
+The Synology adapter lives only in its own distribution.
 
 ### 4. Validate with a minimal filesystem backend
 
@@ -467,19 +478,20 @@ hard links, rename, replacement, inaccessible directories, source disappearance,
 restart, overflow recovery, and reads finishing out of order. Add mutations and
 upload staging to verify that those interfaces are also backend-neutral.
 
+Contract changes found here are made across the server and Synology packages in
+this workspace; the extraction in stage 3 does not freeze the backend interface.
+
 Deliverable: both backends satisfy the common contract without filesystem code
 pretending to provide a Synology checkpoint or immutable entry locator.
 
 ### 5. Complete distribution boundaries
 
-The workspace initialization establishes independently buildable distributions.
-Finish removing Synology orchestration from the generic server through the backend
-contracts proven in earlier stages. Keep client and server dependency sets separate.
-No compatibility wrapper is planned for the retired Synology client package.
-
-Coordinate the hash model and service-interface release across the client framework,
-SQLite, providers, crypt, CLI, and duld. Validate independent wheel installations,
-not only imports within the shared development environment.
+The workspace initialization establishes independently buildable distributions,
+and the hash model and service interface are coordinated across the client
+framework, SQLite, providers, crypt, and CLI. Remaining work: migrate duld, keep
+client and server dependency sets separate, and validate independent wheel
+installations, not only imports within the shared development environment. No
+compatibility wrapper is planned for the retired Synology client package.
 
 ## Validation
 
