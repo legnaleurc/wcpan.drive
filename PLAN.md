@@ -655,9 +655,20 @@ new node, which covers replacement and new hard links. Unchanged files are not
 rehashed, and a file that changes while hashed is withheld. A mount whose
 filesystem ID differs from the one recorded in `fs_mounts` is preserved until
 `rebind-mount`. Contract changes this required: `OperationNotSupportedError`
-(mapped to 403 by a middleware) and shared `structural_records`. Not yet done: a
-watcher with overflow recovery, `open_by_handle_at`, mutations and upload
-staging, and multi-backend configuration (version 3).
+(mapped to 403 by a middleware) and shared `structural_records`.
+
+The inotify watcher is implemented. Each directory is watched before it is
+listed, so changes after a listing always produce an event; events during the
+startup scan are applied once it finishes. Watches map to directory node IDs,
+not paths, so they follow renames. Events only mark directories dirty; after a
+short settle delay, a scoped `ReconcileSession` re-lists them and new
+subdirectories, while other subdirectories keep their mirror. A dirty directory
+that is gone or replaced is swapped for its parent. Passes are serialized so two
+listings cannot mint two IDs for one new entry. Queue overflow triggers a full
+rescan; directories that cannot be watched rely on the periodic rescan.
+
+Not yet done: `open_by_handle_at`, mutations and upload staging, and
+multi-backend configuration (version 3).
 
 Deliverable: both backends satisfy the common contract without filesystem code
 pretending to provide a Synology checkpoint or immutable entry locator.

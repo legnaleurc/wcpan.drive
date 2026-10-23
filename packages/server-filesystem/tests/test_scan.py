@@ -1,136 +1,24 @@
 """Filesystem discovery: identity across rescans, removals, and source checks."""
 
-import asyncio
 import hashlib
-import logging
 import os
 import shutil
-import tempfile
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
 from pathlib import Path
-from unittest import IsolatedAsyncioTestCase, skipIf
+from unittest import skipIf
 from unittest.mock import patch
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.filesystem.blocking import Blocking
-from wcpan.drive.server.filesystem.operations import FilesystemOperations
-from wcpan.drive.server.filesystem.paths import NodePaths
 from wcpan.drive.server.filesystem.scan import FilesystemScanner
-from wcpan.drive.server.filesystem.store import FILESYSTEM_SCHEMA, FilesystemStore
-from wcpan.drive.server.lib.mounts import mount_id
-from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.operations import (
     OperationNotSupportedError,
     OperationUnavailableError,
 )
-from wcpan.drive.server.services.storage import StorageService
-from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.workers import (
-    create_metadata_queue,
-    create_write_queue,
-    metadata_worker,
-    noop_after_write,
-    write_worker,
-)
+
+from ._harness import DOCS, ScanTestCase
 
 
-_DOCS = mount_id("docs")
-
-logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
-
-
-class _ScanTestCase(IsolatedAsyncioTestCase):
-    async def asyncSetUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="wcpan_fs_"))
-        self.source = self.tmp / "docs"
-        self.source.mkdir()
-        self.db_path = str(self.tmp / "mirror.sqlite")
-        self.pool = ThreadPoolExecutor(2)
-        self.io_pool = ThreadPoolExecutor(2)
-        self.storage = StorageService(
-            self.db_path,
-            off_main=OffMainService(pool=self.pool),
-            backend=FILESYSTEM_SCHEMA,
-        )
-        await self.storage.ensure_schema()
-        self.write_queue = create_write_queue()
-        self.metadata_queue = create_metadata_queue()
-        self.node_sync = NodeSyncService(
-            storage=self.storage,
-            write_queue=self.write_queue,
-            off_main=OffMainService(pool=self.pool),
-            mounts={"docs": str(self.source)},
-            local_paths={},
-            metadata_queue=self.metadata_queue,
-        )
-        self.tasks = [
-            asyncio.create_task(write_worker(self.write_queue, noop_after_write)),
-            asyncio.create_task(
-                metadata_worker(
-                    self.metadata_queue, self.node_sync.process_metadata_item
-                )
-            ),
-        ]
-        self.store = FilesystemStore(storage=self.storage)
-        self.paths = NodePaths(storage=self.storage, mounts={"docs": str(self.source)})
-        blocking = Blocking(executor=self.io_pool)
-        self.scanner = FilesystemScanner(
-            storage=self.storage,
-            store=self.store,
-            node_sync=self.node_sync,
-            paths=self.paths,
-            blocking=blocking,
-        )
-        self.operations = FilesystemOperations(
-            paths=self.paths, store=self.store, blocking=blocking
-        )
-        await self.scanner.ensure_structure()
-
-    async def asyncTearDown(self) -> None:
-        for task in self.tasks:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        self.pool.shutdown(wait=False, cancel_futures=True)
-        self.io_pool.shutdown(wait=False, cancel_futures=True)
-        for path in self.tmp.rglob("*"):
-            with suppress(OSError):
-                path.chmod(0o700)
-        shutil.rmtree(self.tmp)
-
-    async def scan(self) -> None:
-        await self.scanner.scan()
-        await self.node_sync.wait_enrichment_drained()
-
-    def write(self, relative: str, data: bytes) -> Path:
-        path = self.source / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-        return path
-
-    async def node(self, relative: str) -> NodeRecord | None:
-        """The mirrored node at *relative*, walking names from the mount."""
-        parent = _DOCS
-        record: NodeRecord | None = None
-        for name in relative.split("/"):
-            children = await self.storage.get_children(parent)
-            record = next((c for c in children if c.name == name), None)
-            if record is None:
-                return None
-            parent = record.id
-        return record
-
-    async def node_id(self, relative: str) -> MirrorStableId:
-        record = await self.node(relative)
-        assert record is not None, relative
-        return record.id
-
-    async def cursor(self) -> int:
-        return await self.storage.get_cursor()
-
-
-class TestDiscovery(_ScanTestCase):
+class TestDiscovery(ScanTestCase):
     async def test_publishes_directories_and_files_with_checksums(self) -> None:
         self.write("a/b.txt", b"hello")
         self.write("pic.jpg", b"jpeg")
@@ -140,7 +28,7 @@ class TestDiscovery(_ScanTestCase):
         folder = await self.node("a")
         assert folder is not None
         self.assertTrue(folder.is_directory)
-        self.assertEqual(folder.parent_id, _DOCS)
+        self.assertEqual(folder.parent_id, DOCS)
         file = await self.node("a/b.txt")
         assert file is not None
         self.assertEqual(file.parent_id, folder.id)
@@ -174,7 +62,7 @@ class TestDiscovery(_ScanTestCase):
         self.assertIsNotNone(await self.node("real.txt"))
 
 
-class TestIdentity(_ScanTestCase):
+class TestIdentity(ScanTestCase):
     async def test_rename_keeps_node_id(self) -> None:
         self.write("a/old.txt", b"x")
         await self.scan()
@@ -294,7 +182,7 @@ class TestIdentity(_ScanTestCase):
         self.assertEqual(await self.cursor(), cursor)
 
 
-class TestCoverage(_ScanTestCase):
+class TestCoverage(ScanTestCase):
     @skipIf(os.geteuid() == 0, "root can list any directory")
     async def test_unlistable_folder_keeps_its_subtree(self) -> None:
         self.write("a/f.txt", b"x")
@@ -345,7 +233,7 @@ class TestCoverage(_ScanTestCase):
         self.assertEqual(await self.node("f.txt"), before)
 
 
-class TestOperations(_ScanTestCase):
+class TestOperations(ScanTestCase):
     async def read(self, record: NodeRecord, range_: slice | None = None) -> bytes:
         async with self.operations.download(record, range_=range_) as chunks:
             return b"".join([c async for c in chunks])
@@ -379,7 +267,7 @@ class TestOperations(_ScanTestCase):
         assert record is not None
 
         with self.assertRaises(OperationNotSupportedError):
-            await self.operations.create_folder(_DOCS, "new")
+            await self.operations.create_folder(DOCS, "new")
         with self.assertRaises(OperationNotSupportedError):
             await self.operations.update(record, name="other", parent_id=None)
         with self.assertRaises(OperationNotSupportedError):

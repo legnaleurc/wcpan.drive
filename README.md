@@ -202,6 +202,7 @@ mounts:
 local_paths: {}
 filesystem:
   rescan_interval: 3600  # seconds between full rescans; default 3600
+  watch: true            # follow changes with inotify; default true
 ```
 
 ```bash
@@ -211,8 +212,13 @@ wcpan.drive.server.filesystem --config server.yaml squash
 wcpan.drive.server.filesystem --config server.yaml rebind-mount photos
 ```
 
-- Discovery is a full scan at startup and then every `rescan_interval`
-  seconds; there is no file watcher yet, so changes appear after the next scan.
+- Discovery is a full scan at startup, then inotify: a changed directory is
+  re-read about a second after its last change. Full rescans every
+  `rescan_interval` seconds catch anything missed, such as writes through
+  `mmap` or directories that could not be watched; if the kernel drops events,
+  a full rescan runs immediately. Each watched directory uses one inotify
+  watch; raise `fs.inotify.max_user_watches` for large trees. With
+  `watch: false`, changes appear only after the next rescan.
 - Regular files and directories are mirrored; symlinks and special files are
   skipped. Each directory entry is its own node, so hard links appear once per
   link.

@@ -17,6 +17,7 @@ from wcpan.drive.server.types import ServerConfig
 @dataclass(frozen=True, slots=True)
 class RawFilesystemConfig:
     rescan_interval: float = 3600.0
+    watch: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,8 @@ class _RawFilesystemSection:
 class FilesystemConfig:
     # Seconds between full rescans after the startup scan.
     rescan_interval: float
+    # Re-read changed directories as inotify reports them.
+    watch: bool = True
 
 
 def parse_filesystem_config(raw: Any) -> FilesystemConfig:
@@ -41,7 +44,7 @@ def parse_filesystem_config(raw: Any) -> FilesystemConfig:
         raise ValueError(str(e)) from e
     if parsed.rescan_interval <= 0:
         raise ValueError("filesystem.rescan_interval must be positive")
-    return FilesystemConfig(rescan_interval=parsed.rescan_interval)
+    return FilesystemConfig(rescan_interval=parsed.rescan_interval, watch=parsed.watch)
 
 
 def check_mounts(mounts: dict[str, str]) -> dict[str, str]:
