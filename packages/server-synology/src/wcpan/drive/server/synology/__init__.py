@@ -1,0 +1,56 @@
+"""Adapters between wcpan.synology and the local mirror."""
+
+from contextlib import AbstractAsyncContextManager
+from logging import getLogger
+
+from wcpan.drive.protocol.lib import guess_mime_type
+from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
+from wcpan.drive.server.types import ServerConfig
+from wcpan.synology import SynologyClient, SynologyFileInfo, create_client
+
+
+_L = getLogger(__name__)
+
+
+def create_synology_client(
+    config: ServerConfig,
+) -> AbstractAsyncContextManager[SynologyClient]:
+    return create_client(
+        base_url=config.synology_url,
+        username=config.username,
+        password=config.password,
+        otp_code=config.otp_code,
+    )
+
+
+def convert_file_info(
+    info: SynologyFileInfo,
+    parent_id: MirrorStableId | None,
+) -> NodeRecord | None:
+    is_dir = info["type"] == "dir"
+    name = info["name"]
+    permanent_link = info.get("permanent_link")
+    if not permanent_link:
+        _L.warning(
+            "SynologyFileInfo missing permanent_link for file_id=%s; skipping",
+            info["file_id"],
+        )
+        return None
+    return NodeRecord(
+        id=MirrorStableId(permanent_link),
+        parent_id=parent_id,
+        name=name,
+        is_directory=is_dir,
+        created_time=info.get("created_time", 0),
+        modified_time=info.get("modified_time", 0),
+        changed_time=info.get("change_time", 0),
+        mime_type=guess_mime_type(name, is_directory=is_dir),
+        hash=info.get("hash", ""),
+        size=info.get("size", 0),
+        is_image=info.get("content_type") == "image",
+        is_video=info.get("content_type") == "video",
+        width=0,
+        height=0,
+        ms_duration=0,
+        mutable_id=MirrorMutableId(info["file_id"]),
+    )

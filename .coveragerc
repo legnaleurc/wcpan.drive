@@ -1,0 +1,9 @@
+[run]
+source =
+    wcpan.drive
+parallel = true
+patch = subprocess
+
+[report]
+omit =
+    */tests/*

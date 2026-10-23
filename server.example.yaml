@@ -1,0 +1,58 @@
+# Example configuration for wcpan.drive.server server.
+# Copy to server.yaml (or another path) and adjust values.
+#
+# Run:
+#   wcpan.drive.server --config /path/to/server.yaml serve
+#
+# Other commands (gc, backfill, squash) use the same file; see --help.
+# backfill PATH is a virtual mirror path (/ = server root, then mount names and folders).
+
+# Config schema version. The current supported value is 2.
+version: 2
+
+# HTTP bind address (default: 127.0.0.1)
+host: "0.0.0.0"
+# HTTP port (default: 8080)
+port: 8080
+
+# SQLite database URL (only SQLite is supported; other backends will raise an error).
+database_url: "sqlite:////data/mirror.db"
+
+# Synology API connection and webhook settings.
+synology:
+  # Synology DSM / Drive API base URL (scheme + host + port if needed).
+  url: "https://nas.example.com:5001"
+
+  username: "your-drive-user"
+  password: "your-password"
+
+  # Optional: TOTP code if the account uses 2FA (when required by the API).
+  # otp_code: "123456"
+
+  # Webhook registration is required by the current server behavior.
+  webhook:
+    # Externally reachable base URL of this server.
+    callback_url: "https://my-server.example.com"
+    # Stable identifier for this app's webhook registration
+    # (default: wcpan-drive-server-synology).
+    # app_id: "wcpan-drive-server-synology"
+
+# Mount label -> Synology path as seen by File Station / Drive.
+# Labels appear as virtual node ids "_<label>" under the server root.
+mounts:
+  photos: "/volume1/photos"
+  # archive: "/volume1/archive"
+
+# Map Synology path prefixes to local filesystem paths.
+# This field is required by the current config schema; use {} if unused.
+# Needed for local media metadata probing.
+# Keys should match or prefix the synology paths used in "mounts".
+local_paths: {}
+# local_paths:
+#   "/volume1/photos": "/mnt/nas/photos"
+
+# Optional: log file path for wcpan.logging (omit for stderr-only).
+# log_path: "/var/log/wcpan-drive-server-synology.log"
+
+# Optional: directory for temporary upload files (defaults to system temp dir).
+# upload_tmp_dir: "/tmp/wcpan-uploads"

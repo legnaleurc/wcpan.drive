@@ -1,0 +1,20 @@
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+wcpan-drive-client = { workspace = true }
+wcpan-drive-client-cli = { workspace = true }
+wcpan-drive-client-crypt = { workspace = true }
+wcpan-drive-client-google = { workspace = true }
+wcpan-drive-client-remote = { workspace = true }
+wcpan-drive-client-sqlite = { workspace = true }
+wcpan-drive-protocol = { workspace = true }
+wcpan-drive-server = { workspace = true }
+wcpan-drive-server-synology = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "coverage>=7.13.0,<8.0.0",
+    "pyright>=1.1,<2.0",
+    "ruff>=0.15.0,<1.0.0",
+]
