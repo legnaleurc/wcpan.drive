@@ -557,7 +557,17 @@ errors fall back to removal, so the check never removes more than before.
 Backfill, `gc`, and `squash` remain offline commands that run only while the
 server is stopped, so no internal maintenance endpoint is needed.
 
-Move native API calls and exception handling out of generic handlers. Route scan,
+Move native API calls and exception handling out of generic handlers.
+
+Status: the node handlers (create, rename/move, delete, download) call a
+backend-neutral `NodeOperations` service (`services/operations.py`) and map its
+`OperationConflictError` and `OperationUnavailableError` to HTTP responses. The
+Synology implementation, including conflict recovery and the ordered mirror
+writes, is `services/synology_operations.py`. Upload handlers already went
+through `UploadService` errors; the service itself still calls Synology directly.
+The webhook route stays Synology-specific and moves with the adapter.
+
+Route scan,
 backfill, and scoped repair through common reconciliation semantics. Separate
 durable discovery from optional enrichment, following the publication rule in
 Hash model and client adaptation.

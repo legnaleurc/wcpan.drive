@@ -486,30 +486,8 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
             await patch_upload_chunk(req)
 
     async def test_final_chunk_triggers_synology_upload(self):
-        from wcpan.drive.protocol.types import NodeRecord
-
         session = self._make_session(total=50)
         chunk = b"y" * 50
-
-        now = 1_704_067_200
-        node_record = NodeRecord(
-            id="new-node-1",
-            parent_id="p1",
-            name="f.bin",
-            is_directory=False,
-            created_time=now,
-            modified_time=now,
-            changed_time=now,
-            mime_type="application/octet-stream",
-            hash="abc",
-            hash_algorithm="md4",
-            size=50,
-            is_image=False,
-            is_video=False,
-            width=0,
-            height=0,
-            ms_duration=0,
-        )
 
         app = _make_app(self._store)
         with (
@@ -530,11 +508,6 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
                     "change_time": 0,
                     "sync_id": 1,
                 },
-            ),
-            patch(
-                "wcpan.drive.server.handlers.lib.enrich_and_upsert_synology_node",
-                new_callable=AsyncMock,
-                return_value=node_record,
             ),
             patch.object(_L, "debug") as debug_log,
         ):

@@ -32,6 +32,7 @@ from .keys import (
     CHANGE_SERVICE_KEY,
     CONFIG_KEY,
     MOUNT_REGISTRY_KEY,
+    NODE_OPERATIONS_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
     STORAGE_KEY,
@@ -47,6 +48,7 @@ from .services.paths import SynologyPathService
 from .services.scan import StartupScanService
 from .services.storage import StorageService, create_storage_service
 from .services.sync import NodeSyncService
+from .services.synology_operations import SynologyNodeOperations
 from .services.upload import create_upload_service
 from .services.webhook import WebhookService
 from .types import MetadataQueue, ServerConfig, WriteQueue
@@ -227,6 +229,11 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
             metadata_queue=metadata_queue,
         )
         app[CHANGE_SERVICE_KEY] = node_sync
+        app[NODE_OPERATIONS_KEY] = SynologyNodeOperations(
+            drive_api=drive_api,
+            syno_paths=app[SYNOLOGY_PATH_KEY],
+            node_sync=node_sync,
+        )
         tmp_dir = Path(config.upload_tmp_dir) if config.upload_tmp_dir else None
         app[UPLOAD_SERVICE_KEY] = stack.enter_context(
             create_upload_service(

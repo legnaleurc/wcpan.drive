@@ -17,6 +17,7 @@ from wcpan.drive.server.handlers.upload import (
 )
 from wcpan.drive.server.keys import (
     CHANGE_SERVICE_KEY,
+    NODE_OPERATIONS_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
     STORAGE_KEY,
@@ -28,6 +29,7 @@ from wcpan.drive.server.keys import (
 from wcpan.drive.server.lib.mounts import MountRegistry
 from wcpan.drive.server.services.paths import SynologyPathService
 from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.services.synology_operations import SynologyNodeOperations
 from wcpan.drive.server.services.upload import (
     UploadService,
     UploadSessionStore,
@@ -155,6 +157,11 @@ def _make_app(
     app[SYNOLOGY_PATH_KEY] = syno_paths
     app[CHANGE_SERVICE_KEY] = node_sync
     app[SYNOLOGY_DRIVE_API_KEY] = MagicMock()
+    app[NODE_OPERATIONS_KEY] = SynologyNodeOperations(
+        drive_api=app[SYNOLOGY_DRIVE_API_KEY],
+        syno_paths=syno_paths,
+        node_sync=node_sync,
+    )
     app[UPLOAD_SERVICE_KEY] = UploadService(
         store=session_store,
         node_sync=node_sync,

@@ -2,22 +2,12 @@
 
 import functools
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import replace
 
 from aiohttp import web
 from wcpan.drive.protocol.lib import NodeRecordDict, node_record_to_dict
-from wcpan.drive.protocol.types import MediaInfo, MirrorStableId, NodeRecord
-from wcpan.drive.server.synology import convert_file_info
-from wcpan.synology import SynologyFileInfo
+from wcpan.drive.protocol.types import MediaInfo, NodeRecord
 
-from ..keys import (
-    CHANGE_SERVICE_KEY,
-    READY_KEY,
-    SYNOLOGY_DRIVE_API_KEY,
-    SYNOLOGY_PATH_KEY,
-)
-from ..services.sync import NodeSyncService
-from ..types import ReadSeq
+from ..keys import READY_KEY
 
 
 _MEDIA_QUERY_KEYS = ("width", "height", "ms_duration", "media_image", "media_video")
@@ -49,60 +39,3 @@ def require_ready(
         return await handler(request)
 
     return wrapper
-
-
-async def enrich_and_upsert_synology_node(
-    *,
-    info: SynologyFileInfo,
-    parent_id: MirrorStableId,
-    node_sync: NodeSyncService,
-    read: ReadSeq,
-    media_info: MediaInfo | None = None,
-) -> NodeRecord:
-    observation = convert_file_info(info, parent_id)
-    if observation is None:
-        raise web.HTTPServiceUnavailable(
-            reason="Synology API response missing permanent_link"
-        )
-    if media_info is not None:
-        record = replace(
-            observation.record,
-            is_image=media_info.is_image,
-            is_video=media_info.is_video,
-            width=media_info.width,
-            height=media_info.height,
-            ms_duration=media_info.ms_duration,
-        )
-        observation = replace(observation, record=record)
-    return await node_sync.upsert(observation, read=read)
-
-
-async def resolve_name_conflict_and_upsert(
-    *,
-    request: web.Request,
-    parent_id: MirrorStableId,
-    name: str,
-    media_info: MediaInfo | None,
-) -> NodeRecord:
-    """List Synology children and upsert the matching node (409 conflict recovery)."""
-    node_sync = request.app[CHANGE_SERVICE_KEY]
-    drive_api = request.app[SYNOLOGY_DRIVE_API_KEY]
-    syno_paths = request.app[SYNOLOGY_PATH_KEY]
-
-    async with node_sync.observe() as read:
-        info = await syno_paths.find_child_by_name(drive_api, parent_id, name)
-
-        if info is None:
-            raise web.HTTPConflict(
-                reason=(
-                    f"Name conflict for {name!r} but existing node could not be resolved"
-                )
-            )
-
-        return await enrich_and_upsert_synology_node(
-            info=info,
-            parent_id=parent_id,
-            node_sync=node_sync,
-            read=read,
-            media_info=media_info,
-        )
