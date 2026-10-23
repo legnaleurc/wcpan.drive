@@ -3,8 +3,8 @@
 Status: the uv workspace and namespace migration are initialized at version
 `0.1.0`. The flat `hash`/`hash_algorithm` model and per-node hasher selection are
 implemented in this repository (protocol, server, and all client packages; client
-service API version 6). duld migration, pending-checksum visibility (decision 4),
-and the generic backend architecture below remain planned. The Synology adapter
+service API version 6). Stages 1 and 2 are complete. duld migration and the
+generic backend architecture below remain planned. The Synology adapter
 is extracted from the generic server at the end of stage 3, before the filesystem
 prototype.
 
@@ -235,8 +235,9 @@ Required invariants:
    Likewise, a serialized SQLite writer does not serialize observations.
 6. Derived metadata applies only while its source observation remains current.
    Stale enrichment must not resurrect a removed node.
-7. Backfill and maintenance cannot bypass concurrency control through a second
-   process. Choose an exclusive lease/lock or execution through the running server.
+7. Backfill and scoped repair cannot bypass concurrency control through a second
+   process. They run inside the server, triggered through an internal endpoint
+   (see Observation ordering).
 8. Confirm the configured source is present before declaring its root covered.
    An unmounted filesystem exposing an empty mount-point directory must not erase
    the mirror.
@@ -248,6 +249,37 @@ rather than a general locking or version framework around every operation.
 Prefer a bounded, understandable reconciliation implementation over a universal
 version system. Native source revisions can help where their ordering guarantees
 are established, but are not mandatory in the common contract.
+
+### Observation ordering
+
+Decided: order mirror writes by when the backend read began, not by when its
+result reaches the writer.
+
+- Every backend read takes a monotonic in-process sequence number when it starts:
+  a directory listing (startup scan, backfill, moved-directory scan, repair), a
+  single-node fetch (webhook, API handler), or a notification-reported removal.
+- An upsert applies only if no observation from a later-started read has already
+  been applied to that node.
+- A removal inferred from a listing's absence applies only if no later-started
+  read has touched the node since.
+- Sequence numbers older than the oldest in-flight read can be forgotten, so the
+  bookkeeping stays bounded.
+
+Rationale: a notification is delivered after the change it reports, so the read it
+triggers starts after that change and observes it, while any overlapping listing
+that started earlier may be stale. A change landing during that read produces
+another notification and another, later read. Correctness therefore relies on
+notifications not being silently lost; backends that can lose them need periodic
+repair (see Discovery progress).
+
+This replaces the stage 1 acceptance-order claims, which are the special case of
+ordering by when a write was accepted. It also lets notifications be processed
+during the startup scan instead of after it.
+
+Because the ordering lives in one process, startup scan, backfill, and scoped
+repair all run inside the server as one reconciliation mechanism. The `backfill`
+command becomes a client of an internal server endpoint rather than a second
+writer.
 
 ## Discovery progress and public cursors
 
@@ -315,11 +347,18 @@ distinct identifiers for any provider-specific hashing scheme. Unknown algorithm
 must fail explicitly rather than falling back to another algorithm.
 
 The feed payload can use the same flat shape without depending on the drive model.
-Define any pending-file representation independently. The drive adapter exposes a
-pending file only after its checksum is complete; checksum completion must produce
-a feed update so the file can become visible to drive clients. Handling an already
-visible file whose content changes and checksum becomes pending must also preserve
-the complete-checksum contract, without presenting an old digest as current.
+Define any pending-file representation independently.
+
+Decided: the feed exposes nothing incomplete. A node is published only once its
+checksum and media metadata are complete, and completion produces the feed update
+that makes it visible. When an already visible file changes and its new checksum
+or media metadata is pending, the last complete version stays visible and the
+update is withheld until the new metadata is complete, then published as one
+change. Clients never observe a partially updated node. During that window a
+download may not match the visible digest; verification fails and the client
+retries. Removing and re-adding the node was rejected because clients such as
+duld would observe a deletion. Synology reports the checksum with the rest of its
+metadata, so this window currently arises only from local media probing.
 
 The Google adapter supplies `md5` from its provider contract; the feed adapter
 reads the algorithm from the server. Backend-native or server-calculated checksums
@@ -468,8 +507,9 @@ Known remaining gaps, deferred to stage 3:
   before its old parent was, is removed at the end of the scan. The queued
   webhook recreates it, so the feed shows removal and creation rather than a move.
 - Backfill runs in a separate process. Its stale upserts can still revert a
-  concurrent webhook update (decision 5). Claims are in-memory per process;
-  only the conditional removal and the parent check protect across processes.
+  concurrent webhook update. Claims are in-memory per process; only the
+  conditional removal and the parent check protect across processes. Resolved
+  by observation ordering with backfill running inside the server.
 
 ### 2. Separate normalized records and backend state
 
@@ -497,9 +537,16 @@ name and invalidated when the source path changes.
 
 ### 3. Introduce operations and reconciliation boundaries
 
+First, replace the stage 1 claims with observation ordering, applied to scan,
+webhook, API, and backfill writes and to listing-derived removals. Move backfill
+behind an internal server endpoint and make the `backfill` command its client.
+Cover the stage 1 known gaps: a node moved during the scan is not removed, and
+backfill cannot revert a newer webhook update.
+
 Move native API calls and exception handling out of generic handlers. Route scan,
 backfill, and scoped repair through common reconciliation semantics. Separate
-durable discovery from optional enrichment and settle publication requirements.
+durable discovery from optional enrichment, following the publication rule in
+Hash model and client adaptation.
 
 Then move Synology orchestration (configuration, mount resolution, scan,
 webhook, backfill, operations, and the server command) into
@@ -560,10 +607,12 @@ Tests should verify behavioral guarantees rather than mirror implementation deta
    ambiguous entry renames.
 3. Choose the first supported filesystem/deployment requirements, including whether
    handle-based reopening privileges are required or optional.
-4. Define feed pending-checksum visibility, especially updates to files previously
-   exposed with a complete checksum, while preserving the drive file contract.
-5. Choose maintenance locking versus routing backfill through the running server.
-6. Choose release automation and independent versus coordinated version policy
+4. Protect the internal maintenance endpoint: the server has no authentication.
+   Options are a separate localhost-only listener or Unix socket, a configured
+   shared token, or relying on a trusted network. Also decide whether `gc` and
+   `squash`, which also write from a separate process, move behind the endpoint
+   or keep requiring a stopped server.
+5. Choose release automation and independent versus coordinated version policy
    after the initial `0.1.0` releases.
 
 ## References
