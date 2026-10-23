@@ -9,7 +9,6 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from aiohttp import web
-from wcpan.drive.protocol.types import MirrorMutableId
 from wcpan.drive.server.handlers.upload import (
     create_upload_session,
     delete_upload_session,
@@ -34,6 +33,7 @@ from wcpan.drive.server.services.upload import (
     UploadService,
     UploadSessionStore,
 )
+from wcpan.drive.server.types import SynologyLocator
 from wcpan.synology import (
     SynologyNameTooLongError,
     SynologyNetworkError,
@@ -57,12 +57,10 @@ def _make_app(store: UploadSessionStore) -> dict:
     wq: asyncio.Queue = asyncio.Queue()
     storage = MagicMock()
 
-    async def _get_node_by_id(node_id: str):
-        if node_id == "p1":
-            return MagicMock(mutable_id=MirrorMutableId("p1"))
-        return None
+    async def _get_locators(node_ids: list[str]):
+        return {"p1": SynologyLocator("p1")} if "p1" in node_ids else {}
 
-    storage.get_node_by_id = AsyncMock(side_effect=_get_node_by_id)
+    storage.get_locators = AsyncMock(side_effect=_get_locators)
     syno_paths = SynologyPathService(
         registry=MountRegistry(mounts={"tmp": "/team-folders/download"}, root_ids={}),
         storage=storage,
@@ -488,7 +486,7 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
             await patch_upload_chunk(req)
 
     async def test_final_chunk_triggers_synology_upload(self):
-        from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+        from wcpan.drive.protocol.types import NodeRecord
 
         session = self._make_session(total=50)
         chunk = b"y" * 50
@@ -511,7 +509,6 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
             width=0,
             height=0,
             ms_duration=0,
-            mutable_id=MirrorMutableId("new-node-1"),
         )
 
         app = _make_app(self._store)

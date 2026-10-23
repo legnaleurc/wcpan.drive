@@ -2,7 +2,7 @@
 
 from unittest import TestCase
 
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.lib import (
     media_info_from_query,
     record_to_response,
@@ -28,7 +28,6 @@ def _sample_record() -> NodeRecord:
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId("id1"),
     )
 
 

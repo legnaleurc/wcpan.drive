@@ -5,8 +5,8 @@ import logging
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock
 
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
-from wcpan.drive.server.types import MetadataWorkItem
+from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.server.types import MetadataWorkItem, NodeObservation
 from wcpan.drive.server.workers import (
     create_checkpoint_scheduler,
     metadata_worker,
@@ -39,7 +39,6 @@ def _make_record(node_id: str = "n1") -> NodeRecord:
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(node_id),
     )
 
 
@@ -95,10 +94,12 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
         processed: list[str] = []
 
         async def process(item: MetadataWorkItem) -> None:
-            processed.append(item.record.id)
+            processed.append(item.observation.record.id)
 
         item = MetadataWorkItem(
-            record=_make_record("n1"), force_refresh=False, claim=object()
+            observation=NodeObservation(record=_make_record("n1"), locator=None),
+            force_refresh=False,
+            claim=object(),
         )
         await q.put(item)
 
@@ -123,12 +124,16 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
 
         await q.put(
             MetadataWorkItem(
-                record=_make_record("a"), force_refresh=False, claim=object()
+                observation=NodeObservation(record=_make_record("a"), locator=None),
+                force_refresh=False,
+                claim=object(),
             )
         )
         await q.put(
             MetadataWorkItem(
-                record=_make_record("b"), force_refresh=False, claim=object()
+                observation=NodeObservation(record=_make_record("b"), locator=None),
+                force_refresh=False,
+                claim=object(),
             )
         )
 

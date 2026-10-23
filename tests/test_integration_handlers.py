@@ -16,7 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from wcpan.drive.client.remote._lib import node_record_from_dict
 from wcpan.drive.client.remote.writable import _media_info_to_params
 from wcpan.drive.client.types import MediaInfo
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.changes import get_root
 from wcpan.drive.server.handlers.health import put_null
 from wcpan.drive.server.handlers.nodes import upload_node
@@ -46,6 +46,7 @@ from wcpan.drive.server.services.upload import (
     UploadService,
     UploadSessionStore,
 )
+from wcpan.drive.server.types import NodeObservation, SynologyLocator
 from wcpan.drive.server.workers import create_write_queue
 
 
@@ -79,12 +80,28 @@ class _FakeOffMain:
 class _FakeStorage:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
+        self._locators: dict[str, SynologyLocator] = {}
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)
 
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
         self._nodes[record.id] = record
+
+    async def apply_observations(self, observations: list[NodeObservation]) -> int:
+        for o in observations:
+            self._nodes[o.record.id] = o.record
+            if o.locator is not None:
+                self._locators[o.record.id] = o.locator
+        return len(observations)
+
+    async def get_locators(self, node_ids: list[str]) -> dict[str, SynologyLocator]:
+        # Fixture nodes use their own ID as the Synology file_id unless rebound.
+        return {
+            i: self._locators.get(i, SynologyLocator(i))
+            for i in node_ids
+            if i in self._nodes
+        }
 
 
 def _make_app(
@@ -113,7 +130,6 @@ def _make_app(
             width=0,
             height=0,
             ms_duration=0,
-            mutable_id=MirrorMutableId("parent-a"),
         ),
     )
     syno_paths = SynologyPathService(
@@ -317,7 +333,6 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
             width=0,
             height=0,
             ms_duration=0,
-            mutable_id=MirrorMutableId(""),
         )
         storage._nodes[SERVER_ROOT_ID] = root
         app = _make_app(storage, self._session_store)

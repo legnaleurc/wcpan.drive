@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest import TestCase
 
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.services.paths import (
     _resolve_local_path as resolve_local_path,
 )
@@ -35,7 +35,6 @@ def _node(
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(node_id),
     )
 
 

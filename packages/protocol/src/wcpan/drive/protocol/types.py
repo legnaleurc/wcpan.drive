@@ -3,7 +3,6 @@ from typing import NewType
 
 
 MirrorStableId = NewType("MirrorStableId", str)
-MirrorMutableId = NewType("MirrorMutableId", str)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -11,13 +10,11 @@ class NodeRecord:
     """Wire-format node.
 
     ``id`` / ``parent_id`` are the public mirror IDs.
-    ``mutable_id`` is the mutable Synology locator used for API calls.
     ``hash`` is the content digest and ``hash_algorithm`` names how it was
     computed; the backend defines the identifier and clients interpret it.
     """
 
     id: MirrorStableId
-    mutable_id: MirrorMutableId
     parent_id: MirrorStableId | None
     name: str
     is_directory: bool

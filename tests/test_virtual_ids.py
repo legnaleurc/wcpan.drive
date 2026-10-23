@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId
+from wcpan.drive.protocol.types import MirrorStableId
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     MountRegistry,
@@ -15,6 +15,7 @@ from wcpan.drive.server.lib.mounts import (
     mount_name,
 )
 from wcpan.drive.server.services.paths import SynologyPathService
+from wcpan.drive.server.types import SynologyLocator
 from wcpan.synology import (
     SynologyApiError,
     SynologyChildRef,
@@ -121,7 +122,7 @@ class TestSynologyParentRef(IsolatedAsyncioTestCase):
     async def test_root_requires_stored_node(self):
         # given
         storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=None)
+        storage.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
             storage=storage,
@@ -133,7 +134,7 @@ class TestSynologyParentRef(IsolatedAsyncioTestCase):
     async def test_real_parent_requires_stored_node(self):
         # given
         storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=None)
+        storage.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
             storage=storage,
@@ -254,9 +255,7 @@ class TestFindChildByName(IsolatedAsyncioTestCase):
     async def test_non_mount_parent_calls_get_file_with_child_ref(self):
         # given
         storage = MagicMock()
-        node_record = MagicMock()
-        node_record.mutable_id = MirrorMutableId("42")
-        storage.get_node_by_id = AsyncMock(return_value=node_record)
+        storage.get_locators = AsyncMock(return_value={"42": SynologyLocator("42")})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
             storage=storage,
@@ -280,7 +279,7 @@ class TestFindChildByName(IsolatedAsyncioTestCase):
     async def test_parent_not_found_raises(self):
         # given
         storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=None)
+        storage.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
             storage=storage,

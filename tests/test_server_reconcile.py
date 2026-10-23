@@ -11,7 +11,7 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import MagicMock, patch
 
 from wcpan.drive.client.remote._lib import FOLDER_MIME_TYPE
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     MountRegistry,
@@ -118,7 +118,6 @@ def _node(
         width=width,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(node_id),
     )
 
 

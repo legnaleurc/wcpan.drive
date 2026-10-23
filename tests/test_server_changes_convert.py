@@ -15,12 +15,18 @@ from wcpan.drive.server.services.enricher import (
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import LocalPathService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology import convert_file_info as _convert
-from wcpan.drive.server.types import MetadataWorkItem
+from wcpan.drive.server.synology import convert_file_info
+from wcpan.drive.server.types import NodeObservation, SynologyLocator
 from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
 )
+
+
+def _convert(info, parent_id):
+    observation = convert_file_info(info, parent_id)
+    assert observation is not None
+    return observation.record
 
 
 class TestConvertSynologyFileInfo(TestCase):
@@ -41,8 +47,11 @@ class TestConvertSynologyFileInfo(TestCase):
         }
         parent_id = "_mount"
         # when
-        record = _convert(info, parent_id)
+        observation = convert_file_info(info, parent_id)
+        assert observation is not None
+        record = observation.record
         # then
+        self.assertEqual(observation.locator, "d1")
         self.assertTrue(record.is_directory)
         self.assertEqual(record.mime_type, FOLDER_MIME_TYPE)
         self.assertEqual(record.id, "d1")
@@ -322,9 +331,11 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
                 "change_time": 0,
                 "sync_id": 1,
             }
-            record = _convert(info, parent_id="par")
+            observation = convert_file_info(info, parent_id="par")
+            assert observation is not None
+            record = observation.record
             storage.apply_observations = AsyncMock(return_value=1)
-            await cs.reconcile_insert(record)
+            await cs.reconcile_insert(observation)
             item = await mq.get()
             mq.task_done()
             with patch.object(
@@ -338,4 +349,6 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
                 await job()
             finally:
                 wq.task_done()
-            storage.apply_observations.assert_awaited_once_with([record])
+            storage.apply_observations.assert_awaited_once_with(
+                [NodeObservation(record=record, locator=SynologyLocator("n1"))]
+            )

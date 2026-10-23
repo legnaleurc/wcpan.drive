@@ -5,7 +5,7 @@ from logging import getLogger
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from wcpan.drive.protocol.lib import guess_mime_type, utc_now
-from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.synology import SYNOLOGY_HASH_ALGORITHM, convert_file_info
 from wcpan.synology import (
     SynologyClient,
@@ -30,6 +30,7 @@ from ..services.upload import (
     UploadService,
     UploadTransientError,
 )
+from ..types import NodeObservation, SynologyLocator
 from .lib import (
     media_info_from_query,
     record_to_response,
@@ -52,7 +53,7 @@ async def _resolve_actual_record_after_move(
     moved_node_ref: SynologyPermanentLink,
     expected_parent_node_id: MirrorStableId,
     expected_name: str,
-) -> NodeRecord | None:
+) -> NodeObservation | None:
     info = await drive_api.get_file(moved_node_ref)
     if info is None:
         info = await syno_paths.find_child_by_name(
@@ -165,9 +166,10 @@ async def create_node(request: web.Request) -> web.Response:
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(info["file_id"]),
     )
-    record = await node_sync.upsert(record)
+    record = await node_sync.upsert(
+        NodeObservation(record=record, locator=SynologyLocator(info["file_id"]))
+    )
     return web.json_response(record_to_response(record), status=201)
 
 
@@ -196,6 +198,7 @@ async def update_node(request: web.Request) -> web.Response:
     )
 
     updated_record = record
+    locator: SynologyLocator | None = None
 
     if new_name and new_name != record.name:
         try:
@@ -229,10 +232,9 @@ async def update_node(request: web.Request) -> web.Response:
             width=updated_record.width,
             height=updated_record.height,
             ms_duration=updated_record.ms_duration,
-            mutable_id=MirrorMutableId(raw)
-            if (raw := info.get("file_id"))
-            else updated_record.mutable_id,
         )
+        if raw := info.get("file_id"):
+            locator = SynologyLocator(raw)
 
     if new_parent_id and new_parent_id != record.parent_id:
         new_parent_ref = await syno_paths.synology_parent_ref(new_parent_id)
@@ -268,14 +270,16 @@ async def update_node(request: web.Request) -> web.Response:
                 width=updated_record.width,
                 height=updated_record.height,
                 ms_duration=updated_record.ms_duration,
-                mutable_id=updated_record.mutable_id,
             )
         else:
-            updated_record = actual_record
-            if actual_record.id != record.id:
+            updated_record = actual_record.record
+            locator = actual_record.locator
+            if updated_record.id != record.id:
                 await node_sync.delete(record.id)
 
-    updated_record = await node_sync.upsert(updated_record)
+    updated_record = await node_sync.upsert(
+        NodeObservation(record=updated_record, locator=locator)
+    )
     return web.json_response(record_to_response(updated_record))
 
 

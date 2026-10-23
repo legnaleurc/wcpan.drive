@@ -45,8 +45,6 @@ def _reconcile_api_fields_differ(db: NodeRecord, merged: NodeRecord) -> bool:
         return True
     if db.mime_type != merged.mime_type:
         return True
-    if db.mutable_id != merged.mutable_id:
-        return True
     return False
 
 
@@ -104,6 +102,7 @@ class BackfillService:
 
             db_children = await self._storage.get_children(parent_id)
             db_by_id: dict[MirrorStableId, NodeRecord] = {r.id: r for r in db_children}
+            db_locators = await self._storage.get_locators(list(db_by_id))
             children: list[MirrorStableId] = []
 
             for item in items:
@@ -111,7 +110,7 @@ class BackfillService:
                 from_api = convert_file_info(item, parent_id=parent_id)
                 if from_api is None:
                     continue
-                node_id = from_api.id
+                node_id = from_api.record.id
                 existing = db_by_id.get(node_id)
 
                 if existing is None:
@@ -125,7 +124,10 @@ class BackfillService:
                     if not dry_run:
                         await cs.reconcile_insert(from_api)
                 else:
-                    if _reconcile_api_fields_differ(existing, from_api):
+                    if (
+                        _reconcile_api_fields_differ(existing, from_api.record)
+                        or db_locators.get(node_id) != from_api.locator
+                    ):
                         updated += 1
                         if dry_run:
                             _L.info(
@@ -140,9 +142,9 @@ class BackfillService:
                     children.append(node_id)
 
             api_ids = {
-                r.id
+                o.record.id
                 for item in items
-                if (r := convert_file_info(item, parent_id=parent_id)) is not None
+                if (o := convert_file_info(item, parent_id=parent_id)) is not None
             }
             for node_id, existing in db_by_id.items():
                 if node_id not in api_ids:

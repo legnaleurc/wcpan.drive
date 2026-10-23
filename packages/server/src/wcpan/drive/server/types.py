@@ -18,6 +18,27 @@ VirtualPath = NewType("VirtualPath", PurePosixPath)
 """Client-facing virtual path, e.g. /photos/2024."""
 
 
+SynologyLocator = NewType("SynologyLocator", str)
+"""Synology ``file_id``; mutable across some operations, unlike the public node ID."""
+
+
+# ---------------------------------------------------------------------------
+# Observations
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class NodeObservation:
+    """Public node metadata read from the backend, with its private locator.
+
+    ``locator`` is persisted in the same transaction as ``record`` but is not part
+    of the public node. ``None`` keeps any existing binding unchanged.
+    """
+
+    record: NodeRecord
+    locator: SynologyLocator | None
+
+
 # ---------------------------------------------------------------------------
 # Worker / queue types
 # ---------------------------------------------------------------------------
@@ -29,7 +50,7 @@ type WriteQueue = asyncio.Queue[Callable[[], Awaitable[None]]]
 class MetadataWorkItem:
     """One async media-enrichment job; consumed by ``metadata_worker``."""
 
-    record: NodeRecord
+    observation: NodeObservation
     force_refresh: bool
     # Token from ``NodeSyncService``; the write is dropped once a newer write claims the node.
     claim: object

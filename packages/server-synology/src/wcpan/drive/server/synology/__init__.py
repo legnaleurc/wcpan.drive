@@ -4,8 +4,8 @@ from contextlib import AbstractAsyncContextManager
 from logging import getLogger
 
 from wcpan.drive.protocol.lib import guess_mime_type
-from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
-from wcpan.drive.server.types import ServerConfig
+from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.server.types import NodeObservation, ServerConfig, SynologyLocator
 from wcpan.synology import SynologyClient, SynologyFileInfo, create_client
 
 
@@ -29,7 +29,7 @@ def create_synology_client(
 def convert_file_info(
     info: SynologyFileInfo,
     parent_id: MirrorStableId | None,
-) -> NodeRecord | None:
+) -> NodeObservation | None:
     is_dir = info["type"] == "dir"
     name = info["name"]
     permanent_link = info.get("permanent_link")
@@ -40,7 +40,7 @@ def convert_file_info(
         )
         return None
     hash_ = "" if is_dir else info.get("hash", "")
-    return NodeRecord(
+    record = NodeRecord(
         id=MirrorStableId(permanent_link),
         parent_id=parent_id,
         name=name,
@@ -57,5 +57,5 @@ def convert_file_info(
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(info["file_id"]),
     )
+    return NodeObservation(record=record, locator=SynologyLocator(info["file_id"]))

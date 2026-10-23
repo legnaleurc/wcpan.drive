@@ -57,21 +57,22 @@ async def enrich_and_upsert_synology_node(
     node_sync: NodeSyncService,
     media_info: MediaInfo | None = None,
 ) -> NodeRecord:
-    record = convert_file_info(info, parent_id)
-    if record is None:
+    observation = convert_file_info(info, parent_id)
+    if observation is None:
         raise web.HTTPServiceUnavailable(
             reason="Synology API response missing permanent_link"
         )
     if media_info is not None:
         record = replace(
-            record,
+            observation.record,
             is_image=media_info.is_image,
             is_video=media_info.is_video,
             width=media_info.width,
             height=media_info.height,
             ms_duration=media_info.ms_duration,
         )
-    return await node_sync.upsert(record)
+        observation = replace(observation, record=record)
+    return await node_sync.upsert(observation)
 
 
 async def resolve_name_conflict_and_upsert(

@@ -61,7 +61,7 @@ class SynologyPathService:
         key = mount_name(parent_node_id)
         if key is not None:
             return self._registry.mounts[key]
-        return await self._resolve_mutable_id_ref(parent_node_id)
+        return await self._resolve_locator_ref(parent_node_id)
 
     async def list_children(
         self,
@@ -92,16 +92,17 @@ class SynologyPathService:
         )
         return await drive_api.get_file(child_ref)
 
-    async def _resolve_mutable_id_ref(
+    async def _resolve_locator_ref(
         self,
         parent_node_id: MirrorStableId,
     ) -> SynologyFileId:
-        record = await self._storage.get_node_by_id(parent_node_id)
-        if record is None:
+        locators = await self._storage.get_locators([parent_node_id])
+        locator = locators.get(parent_node_id)
+        if locator is None:
             raise ValueError(
-                f"No node found for non-mount parent_id: {parent_node_id!r}"
+                f"No locator found for non-mount parent_id: {parent_node_id!r}"
             )
-        return SynologyFileId(str(record.mutable_id))
+        return SynologyFileId(locator)
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from logging import getLogger
 
-from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.synology import convert_file_info
 from wcpan.synology import (
     SynologyClient,
@@ -16,7 +16,7 @@ from wcpan.synology import (
 from ..lib.bfs import parallel_bfs
 from ..lib.debounce import TaskIdDebouncer
 from ..lib.mounts import MountRegistry, mount_name
-from ..types import WriteQueue
+from ..types import NodeObservation, SynologyLocator, WriteQueue
 from ..workers import WebhookQueue
 from .paths import SynologyPathService
 from .storage import StorageService
@@ -76,8 +76,8 @@ class WebhookService:
                 event_type,
             )
             return
-        parent_node = await self._storage.get_node_by_mutable_id(
-            MirrorMutableId(parent_file_ref.file_id)
+        parent_node = await self._storage.get_node_by_locator(
+            SynologyLocator(parent_file_ref.file_id)
         )
         if parent_node is None:
             resolved = self._mount_registry.lookup_mount_virtual_id(parent_file_ref)
@@ -111,17 +111,17 @@ class WebhookService:
                 event_type,
             )
             return
-        record = convert_file_info(info, effective_parent_id)
-        if record is None:
+        observation = convert_file_info(info, effective_parent_id)
+        if observation is None:
             return
-        if record.id != permanent_link_ref.permanent_link:
+        if observation.record.id != permanent_link_ref.permanent_link:
             _L.debug(
                 "Webhook permanent_link mismatch for file_id %s: payload=%s fetched=%s",
                 file_ref.file_id,
                 permanent_link_ref.permanent_link,
-                record.id,
+                observation.record.id,
             )
-        await self._node_sync.upsert(record)
+        await self._node_sync.upsert(observation)
 
     def _classify_webhook_item(
         self,
@@ -262,8 +262,8 @@ class WebhookService:
             MirrorStableId(plan.permanent_link_ref.permanent_link)
         )
         if source_node is None:
-            source_node = await self._storage.get_node_by_mutable_id(
-                MirrorMutableId(plan.file_ref.file_id)
+            source_node = await self._storage.get_node_by_locator(
+                SynologyLocator(plan.file_ref.file_id)
             )
         if source_node is None:
             return False
@@ -273,8 +273,8 @@ class WebhookService:
         parent_ref = plan.parent_file_ref
         if parent_ref is None:
             return False
-        destination_parent = await self._storage.get_node_by_mutable_id(
-            MirrorMutableId(parent_ref.file_id)
+        destination_parent = await self._storage.get_node_by_locator(
+            SynologyLocator(parent_ref.file_id)
         )
         if destination_parent is not None:
             return await self._is_node_under_configured_mount(destination_parent)
@@ -310,18 +310,18 @@ class WebhookService:
                     "moved-dir scan: failed to list children of %s", current_id
                 )
                 return []
-            dir_records: list[NodeRecord] = []
-            file_records: list[NodeRecord] = []
+            dir_records: list[NodeObservation] = []
+            file_records: list[NodeObservation] = []
             children: list[MirrorStableId] = []
             for item in items:
-                record = convert_file_info(item, parent_id=current_id)
-                if record is None:
+                observation = convert_file_info(item, parent_id=current_id)
+                if observation is None:
                     continue
                 if item["type"] == "dir":
-                    dir_records.append(record)
-                    children.append(record.id)
+                    dir_records.append(observation)
+                    children.append(observation.record.id)
                 else:
-                    file_records.append(record)
+                    file_records.append(observation)
             if dir_records:
                 await self._node_sync.upsert_batch(dir_records)
                 await self._write_queue.join()
@@ -345,8 +345,8 @@ class WebhookService:
         if info is not None:
             permanent_link = info.get("permanent_link")
             return MirrorStableId(permanent_link or permanent_link_ref.permanent_link)
-        record = await self._storage.get_node_by_mutable_id(
-            MirrorMutableId(file_ref.file_id)
+        record = await self._storage.get_node_by_locator(
+            SynologyLocator(file_ref.file_id)
         )
         if record is not None:
             return record.id

@@ -5,12 +5,13 @@ from dataclasses import dataclass, field
 from logging import getLogger
 
 from wcpan.drive.protocol.lib import utc_now
-from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.synology import convert_file_info
 from wcpan.synology import SynologyClient, SynologyFileId, SynologyPath
 
 from ..lib.bfs import parallel_bfs
 from ..lib.mounts import SERVER_ROOT_ID, mount_id
+from ..types import NodeObservation
 from .paths import SynologyPathService
 from .storage import StorageService
 from .sync import NodeSyncService
@@ -49,7 +50,6 @@ def _make_root_record() -> NodeRecord:
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(""),
     )
 
 
@@ -72,7 +72,6 @@ def _make_mount_record(name: str) -> NodeRecord:
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(""),
     )
 
 
@@ -117,9 +116,9 @@ class StartupScanService:
         db_child_ids = {n.id for n in db_children}
 
         for item in items:
-            r = convert_file_info(item, parent_id=mid)
-            if r is not None:
-                acc.seen_ids.add(r.id)
+            o = convert_file_info(item, parent_id=mid)
+            if o is not None:
+                acc.seen_ids.add(o.record.id)
 
         pre_scan_max_id = max(
             (item.get("max_id", item.get("sync_id", 0)) for item in items),
@@ -127,7 +126,7 @@ class StartupScanService:
         )
         highest = last_max_id
         subfolders: list[tuple[MirrorStableId, int, bool]] = []
-        pending_upserts: list[NodeRecord] = []
+        pending_upserts: list[NodeObservation] = []
 
         for item in items:
             sync_id = item.get("sync_id", 0)
@@ -135,15 +134,16 @@ class StartupScanService:
             if sync_id > highest:
                 highest = sync_id
 
-            record = convert_file_info(item, parent_id=mid)
-            if record is None:
+            observation = convert_file_info(item, parent_id=mid)
+            if observation is None:
                 continue
-            is_new = record.id not in db_child_ids
+            node_id = observation.record.id
+            is_new = node_id not in db_child_ids
             if sync_id > last_max_id or is_new:
-                pending_upserts.append(record)
+                pending_upserts.append(observation)
 
             if item["type"] == "dir":
-                subfolders.append((record.id, max_id, is_new))
+                subfolders.append((node_id, max_id, is_new))
 
         if pending_upserts:
             await self._node_sync.upsert_batch(pending_upserts)
@@ -174,11 +174,12 @@ class StartupScanService:
                 if db_children:
                     should_skip = True
                     try:
-                        record = await self._storage.get_node_by_id(folder_id)
-                        if record is None:
-                            raise ValueError(f"missing DB record for {folder_id}")
+                        locators = await self._storage.get_locators([folder_id])
+                        locator = locators.get(folder_id)
+                        if locator is None:
+                            raise ValueError(f"missing locator for {folder_id}")
                         _, api_count = await self._drive_api.list_folder(
-                            SynologyFileId(str(record.mutable_id)),
+                            SynologyFileId(locator),
                             offset=0,
                             limit=1,
                         )
@@ -221,15 +222,15 @@ class StartupScanService:
                 return []
 
             for item in items:
-                r = convert_file_info(item, parent_id=folder_id)
-                if r is not None:
-                    acc.seen_ids.add(r.id)
+                o = convert_file_info(item, parent_id=folder_id)
+                if o is not None:
+                    acc.seen_ids.add(o.record.id)
 
             db_children = await self._storage.get_children(folder_id)
             db_child_ids = {n.id for n in db_children}
 
-            pending_dir_upserts: list[NodeRecord] = []
-            pending_file_records: list[NodeRecord] = []
+            pending_dir_upserts: list[NodeObservation] = []
+            pending_file_records: list[NodeObservation] = []
             children: list[tuple[MirrorStableId, int, bool]] = []
 
             for item in items:
@@ -238,18 +239,19 @@ class StartupScanService:
                 if sync_id > acc.highest:
                     acc.highest = sync_id
 
-                record = convert_file_info(item, parent_id=folder_id)
-                if record is None:
+                observation = convert_file_info(item, parent_id=folder_id)
+                if observation is None:
                     continue
-                is_new = record.id not in db_child_ids
+                node_id = observation.record.id
+                is_new = node_id not in db_child_ids
                 if sync_id > last_max_id or is_new:
                     if item["type"] == "dir":
-                        pending_dir_upserts.append(record)
+                        pending_dir_upserts.append(observation)
                     else:
-                        pending_file_records.append(record)
+                        pending_file_records.append(observation)
 
                 if item["type"] == "dir":
-                    children.append((record.id, max_id, is_new))
+                    children.append((node_id, max_id, is_new))
 
             if pending_dir_upserts:
                 await self._node_sync.upsert_batch(pending_dir_upserts)
@@ -325,7 +327,9 @@ class StartupScanService:
                 "Creating root node and %d mount node(s)", len(self._syno_paths.mounts)
             )
             structural = _structural_records(self._syno_paths.mounts)
-            await self._node_sync.upsert_batch(structural)
+            await self._node_sync.upsert_batch(
+                [NodeObservation(record=r, locator=None) for r in structural]
+            )
         else:
             _L.info("Resuming with per-mount max_ids: %s", last_max_ids)
             # First run already emitted structural rows into `changes`; keep `nodes`

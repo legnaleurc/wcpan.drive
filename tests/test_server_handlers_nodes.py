@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from wcpan.drive.client.remote._lib import node_record_from_dict
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.nodes import (
     create_node,
     delete_node,
@@ -36,6 +36,7 @@ from wcpan.drive.server.services.upload import (
     UploadService,
     UploadSessionStore,
 )
+from wcpan.drive.server.types import NodeObservation, SynologyLocator
 from wcpan.drive.server.workers import create_write_queue
 from wcpan.synology import (
     SynologyUploadConflictError,
@@ -70,12 +71,28 @@ class _FakeOffMain:
 class _FakeStorage:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
+        self._locators: dict[str, SynologyLocator] = {}
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)
 
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
         self._nodes[record.id] = record
+
+    async def apply_observations(self, observations: list[NodeObservation]) -> int:
+        for o in observations:
+            self._nodes[o.record.id] = o.record
+            if o.locator is not None:
+                self._locators[o.record.id] = o.locator
+        return len(observations)
+
+    async def get_locators(self, node_ids: list[str]) -> dict[str, SynologyLocator]:
+        # Fixture nodes use their own ID as the Synology file_id unless rebound.
+        return {
+            i: self._locators.get(i, SynologyLocator(i))
+            for i in node_ids
+            if i in self._nodes
+        }
 
     async def delete_subtree_and_emit_changes(self, node_id: str) -> None:
         self._nodes.pop(node_id, None)
@@ -107,7 +124,6 @@ def _make_node(
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(str(node_id)),
     )
 
 
@@ -133,7 +149,6 @@ def _make_dir(
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(str(node_id)),
     )
 
 
@@ -358,7 +373,7 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
         self.assertEqual(record.parent_id, "new-parent")
         self.assertEqual(record.id, "n1")
 
-    async def test_move_refreshes_mutable_id_via_permanent_link(self):
+    async def test_move_rebinds_locator_via_permanent_link(self):
         storage = _FakeStorage()
         storage._nodes["n1"] = _make_node()
         app = _make_app(storage)
@@ -396,11 +411,17 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
                     json={"parent_id": "new-parent"},
                 )
                 self.assertEqual(resp.status, 200)
-                record = node_record_from_dict(await resp.json())
+                body = await resp.json()
+                record = node_record_from_dict(body)
         delete_mock.assert_not_awaited()
         self.assertEqual(record.id, "n1")
         self.assertEqual(record.parent_id, "new-parent")
-        self.assertEqual(record.mutable_id, "n2")
+        # The locator stays private; the wire carries only the empty placeholder.
+        self.assertEqual(body["mutable_id"], "")
+        wq = app[WRITE_QUEUE_KEY]
+        while not wq.empty():
+            await wq.get_nowait()()
+        self.assertEqual(await storage.get_locators(["n1"]), {"n1": "n2"})
 
     async def test_rename_conflict(self):
         storage = _FakeStorage()

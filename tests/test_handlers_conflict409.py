@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from wcpan.drive.client.remote._lib import node_record_from_dict
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.nodes import create_node, upload_node
 from wcpan.drive.server.handlers.upload import (
     create_upload_session,
@@ -32,6 +32,7 @@ from wcpan.drive.server.services.upload import (
     UploadService,
     UploadSessionStore,
 )
+from wcpan.drive.server.types import NodeObservation, SynologyLocator
 from wcpan.drive.server.workers import create_write_queue
 from wcpan.synology import SynologyUploadConflictError
 
@@ -82,12 +83,28 @@ class _FakeOffMain:
 class _FakeStorage:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
+        self._locators: dict[str, SynologyLocator] = {}
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)
 
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
         self._nodes[record.id] = record
+
+    async def apply_observations(self, observations: list[NodeObservation]) -> int:
+        for o in observations:
+            self._nodes[o.record.id] = o.record
+            if o.locator is not None:
+                self._locators[o.record.id] = o.locator
+        return len(observations)
+
+    async def get_locators(self, node_ids: list[str]) -> dict[str, SynologyLocator]:
+        # Fixture nodes use their own ID as the Synology file_id unless rebound.
+        return {
+            i: self._locators.get(i, SynologyLocator(i))
+            for i in node_ids
+            if i in self._nodes
+        }
 
 
 def _make_dir(node_id: str) -> NodeRecord:
@@ -109,7 +126,6 @@ def _make_dir(node_id: str) -> NodeRecord:
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(node_id),
     )
 
 

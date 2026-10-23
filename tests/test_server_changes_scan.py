@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import wcpan.drive.server.services.scan as startup_scan_mod
 from wcpan.drive.client.remote._lib import FOLDER_MIME_TYPE
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     MountRegistry,
@@ -22,7 +22,7 @@ from wcpan.drive.server.services.paths import SynologyPathService
 from wcpan.drive.server.services.scan import StartupScanService
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.types import WriteQueue
+from wcpan.drive.server.types import NodeObservation, SynologyLocator, WriteQueue
 from wcpan.drive.server.workers import create_write_queue, metadata_worker
 
 
@@ -32,7 +32,6 @@ def _node(
     parent_id: str | None,
     *,
     is_directory: bool = False,
-    mutable_id: MirrorMutableId = MirrorMutableId(""),
 ) -> NodeRecord:
     t = 1_704_067_200
     return NodeRecord(
@@ -52,7 +51,6 @@ def _node(
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=mutable_id,
     )
 
 
@@ -607,10 +605,19 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                             "F",
                             mount_id("a"),
                             is_directory=True,
-                            mutable_id=MirrorMutableId("dirF"),
                         ),
                         _node("child1", "a.txt", "perm:dirF"),
                         _node("child2", "b.txt", "perm:dirF"),
+                    ]
+                )
+                await storage.apply_observations(
+                    [
+                        NodeObservation(
+                            record=_node(
+                                "perm:dirF", "F", mount_id("a"), is_directory=True
+                            ),
+                            locator=SynologyLocator("dirF"),
+                        )
                     ]
                 )
 

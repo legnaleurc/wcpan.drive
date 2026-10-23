@@ -44,9 +44,20 @@ Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm i
 Each provider defines its identifiers: Google reports `md5`, the Synology backend
 reports `md4`, and the remote client accepts `md4`, `md5`, `sha1`, and `sha256`. Use `Drive.get_hasher_factory(node)` to verify
 a file; it raises `UnsupportedHashAlgorithmError` instead of guessing. The client
-service API version is 6. The server migrates its database to schema 4, marking
-existing Synology digests as `md4`. Existing client SQLite snapshots (schema 6)
-are rejected and must be rebuilt or migrated manually to schema 7.
+service API version is 6. Existing client SQLite snapshots (schema 6) are
+rejected and must be rebuilt or migrated manually to schema 7.
+
+The server database is at schema 5 and migrates older databases (schema 3 or 4)
+automatically at startup. Schema 4 marks existing Synology digests as `md4`;
+schema 5 moves each node's Synology `file_id` out of the public node table into
+backend-owned locator storage. Node IDs and the change feed are preserved. The
+migration cannot be undone in place, so stop the server and copy the database
+file, together with any `-wal` and `-shm` files, before upgrading; restore that
+copy to roll back.
+
+Node payloads no longer expose the Synology `file_id`. Responses keep a
+deprecated, always-empty `mutable_id` key for older decoders that require it, and
+current clients accept payloads without it.
 
 ```bash
 uv sync --all-packages --locked

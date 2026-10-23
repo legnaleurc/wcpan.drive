@@ -1,12 +1,13 @@
 """Central service for persisting node changes from scan, webhook, and API sources."""
 
+from dataclasses import replace
 from functools import partial
 from logging import getLogger
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.synology import SynologyPath
 
-from ..types import MetadataQueue, MetadataWorkItem, WriteQueue
+from ..types import MetadataQueue, MetadataWorkItem, NodeObservation, WriteQueue
 from .enricher import MediaEnrichmentError, MediaEnrichService
 from .off_main import OffMainService
 from .paths import LocalPathService
@@ -81,9 +82,10 @@ class NodeSyncService:
 
     async def process_metadata_item(self, item: MetadataWorkItem) -> None:
         """Run from ``metadata_worker``: enrich then enqueue a sync DB write."""
-        enriched = await self._try_enrich(item.record, force_refresh=item.force_refresh)
+        observation = item.observation
+        enriched = await self._try_enrich(observation, force_refresh=item.force_refresh)
         if enriched is None:
-            self._release(item.record.id, item.claim)
+            self._release(observation.record.id, item.claim)
             return
         await self._put_claimed([(enriched, item.claim)])
 
@@ -101,11 +103,11 @@ class NodeSyncService:
         del self._claims[node_id]
         return True
 
-    async def _put_claimed(self, claimed: list[tuple[NodeRecord, object]]) -> None:
-        """Enqueue a write of the records whose claims are still current when it runs."""
+    async def _put_claimed(self, claimed: list[tuple[NodeObservation, object]]) -> None:
+        """Enqueue a write of the observations whose claims are still current when it runs."""
 
         async def write() -> None:
-            current = [r for r, claim in claimed if self._release(r.id, claim)]
+            current = [o for o, claim in claimed if self._release(o.record.id, claim)]
             if current:
                 await self._storage.apply_observations(current)
 
@@ -113,19 +115,20 @@ class NodeSyncService:
 
     # --- Shared primitives (used by multiple sources) ---
 
-    async def upsert(self, record: NodeRecord) -> NodeRecord:
+    async def upsert(self, observation: NodeObservation) -> NodeRecord:
         """Async-enrich, then enqueue a claimed write.
 
         Returns the (possibly enriched) record so callers can use it in responses.
         Used by: API (create, update, upload), webhook (delayed per-file upsert).
         """
-        claim = self._claim(record.id)
-        enriched = await self._try_enrich(record, force_refresh=False)
+        node_id = observation.record.id
+        claim = self._claim(node_id)
+        enriched = await self._try_enrich(observation, force_refresh=False)
         if enriched is None:
-            self._release(record.id, claim)
-            return record
+            self._release(node_id, claim)
+            return observation.record
         await self._put_claimed([(enriched, claim)])
-        return enriched
+        return enriched.record
 
     async def delete(self, node_id: MirrorStableId) -> None:
         """Enqueue delete_subtree_and_emit_changes, superseding pending writes.
@@ -166,32 +169,33 @@ class NodeSyncService:
 
     # --- Batch primitives (shared by scan + webhook) ---
 
-    async def upsert_batch(self, records: list[NodeRecord]) -> None:
-        """Async-enrich each record, then enqueue a batch upsert.
+    async def upsert_batch(self, observations: list[NodeObservation]) -> None:
+        """Async-enrich each observation, then enqueue a batch upsert.
 
         Uses PRESERVE_MEDIA_UPSERT_SQL so existing enriched dimensions are not
         overwritten by a re-scan or webhook update.
 
         Used by: scan (directory records per BFS level), webhook (batch upserts).
         """
-        if not records:
+        if not observations:
             return
-        claims = [self._claim(r.id) for r in records]
-        enriched: list[tuple[NodeRecord, object]] = []
-        for r, claim in zip(records, claims, strict=True):
-            if (record := await self._try_enrich(r, force_refresh=False)) is not None:
-                enriched.append((record, claim))
+        claims = [self._claim(o.record.id) for o in observations]
+        enriched: list[tuple[NodeObservation, object]] = []
+        for o, claim in zip(observations, claims, strict=True):
+            if (e := await self._try_enrich(o, force_refresh=False)) is not None:
+                enriched.append((e, claim))
             else:
-                self._release(r.id, claim)
+                self._release(o.record.id, claim)
         if not enriched:
             return
         await self._put_claimed(enriched)
 
     async def _try_enrich(
-        self, record: NodeRecord, *, force_refresh: bool
-    ) -> NodeRecord | None:
+        self, observation: NodeObservation, *, force_refresh: bool
+    ) -> NodeObservation | None:
+        record = observation.record
         try:
-            return await self._enricher.enrich(record, force_refresh=force_refresh)
+            enriched = await self._enricher.enrich(record, force_refresh=force_refresh)
         except MediaEnrichmentError as e:
             _L.warning(
                 "Skipping node %s (%s) after media enrichment failed at %s",
@@ -200,8 +204,9 @@ class NodeSyncService:
                 e.path,
             )
             return None
+        return replace(observation, record=enriched)
 
-    async def upsert_file_batch(self, records: list[NodeRecord]) -> None:
+    async def upsert_file_batch(self, observations: list[NodeObservation]) -> None:
         """After directory rows are committed, enqueue per-file media enrichment.
 
         Waits for prior write-queue work so ``get_ancestors`` in the metadata worker
@@ -211,23 +216,23 @@ class NodeSyncService:
         Records whose existing DB row already has complete media dimensions are
         written directly, skipping the expensive metadata queue.
         """
-        if not records:
+        if not observations:
             return
         mq = self._metadata_queue
         await self._write_queue.join()
 
-        node_ids = [r.id for r in records]
+        node_ids = [o.record.id for o in observations]
         existing = await self._storage.get_nodes_by_ids(node_ids)
 
-        skip_batch: list[tuple[NodeRecord, object]] = []
-        for r in records:
-            claim = self._claim(r.id)
-            db_rec = existing.get(r.id)
+        skip_batch: list[tuple[NodeObservation, object]] = []
+        for o in observations:
+            claim = self._claim(o.record.id)
+            db_rec = existing.get(o.record.id)
             if db_rec is not None and _has_complete_media_dims(db_rec):
-                skip_batch.append((r, claim))
+                skip_batch.append((o, claim))
             else:
                 await mq.put(
-                    MetadataWorkItem(record=r, force_refresh=True, claim=claim)
+                    MetadataWorkItem(observation=o, force_refresh=True, claim=claim)
                 )
 
         if skip_batch:
@@ -245,25 +250,25 @@ class NodeSyncService:
 
     # --- Reconcile / backfill ---
 
-    async def reconcile_insert(self, from_api: NodeRecord) -> None:
-        claim = self._claim(from_api.id)
-        if from_api.is_directory:
+    async def reconcile_insert(self, from_api: NodeObservation) -> None:
+        claim = self._claim(from_api.record.id)
+        if from_api.record.is_directory:
             # Write in listing order so children never arrive before their parent.
             await self._put_claimed([(from_api, claim)])
             return
         await self._metadata_queue.put(
-            MetadataWorkItem(record=from_api, force_refresh=True, claim=claim)
+            MetadataWorkItem(observation=from_api, force_refresh=True, claim=claim)
         )
 
     async def reconcile_update(
-        self, from_api: NodeRecord, existing: NodeRecord
+        self, from_api: NodeObservation, existing: NodeRecord
     ) -> None:
-        claim = self._claim(from_api.id)
+        claim = self._claim(from_api.record.id)
         if _has_complete_media_dims(existing):
             await self._put_claimed([(from_api, claim)])
             return
         await self._metadata_queue.put(
-            MetadataWorkItem(record=from_api, force_refresh=True, claim=claim)
+            MetadataWorkItem(observation=from_api, force_refresh=True, claim=claim)
         )
 
     # --- Scan-specific lifecycle operations ---

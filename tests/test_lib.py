@@ -13,7 +13,7 @@ from wcpan.drive.client.remote._lib import (
     node_record_from_dict,
     node_record_to_dict,
 )
-from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 
 
 _NOW = 1_704_067_200
@@ -42,7 +42,6 @@ def _make_record(
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(str(node_id)),
     )
 
 
@@ -156,6 +155,22 @@ class TestNodeRecordRoundtrip(TestCase):
         restored = node_record_from_dict(d)
         # then
         self.assertEqual(restored.name, "照片.jpg")
+
+
+class TestNodeRecordLocatorCompatibility(TestCase):
+    def test_encoder_emits_empty_placeholder(self):
+        d = node_record_to_dict(_make_record())
+        self.assertEqual(d["mutable_id"], "")
+
+    def test_decoder_accepts_missing_field(self):
+        d = node_record_to_dict(_make_record())
+        del d["mutable_id"]
+        self.assertEqual(node_record_from_dict(d), _make_record())
+
+    def test_decoder_ignores_legacy_locator(self):
+        d = node_record_to_dict(_make_record())
+        d["mutable_id"] = "12345"
+        self.assertEqual(node_record_from_dict(d), _make_record())
 
 
 class TestNodeHashFields(TestCase):

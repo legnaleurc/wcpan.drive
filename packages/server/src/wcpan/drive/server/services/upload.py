@@ -8,7 +8,7 @@ import time
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Generator
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from logging import getLogger
 from pathlib import Path
@@ -210,9 +210,9 @@ class UploadService:
             self._drive_api, parent_id, name
         )
         if existing is not None:
-            conflict_record = convert_file_info(existing, parent_id)
-            if conflict_record is not None:
-                raise UploadConflictError(conflict_record)
+            conflict = convert_file_info(existing, parent_id)
+            if conflict is not None:
+                raise UploadConflictError(conflict.record)
             _L.warning(
                 "Conflict detected for %r under %r but existing node lacks permanent_link; proceeding",
                 name,
@@ -253,9 +253,9 @@ class UploadService:
             self._drive_api, parent_id, name
         )
         if existing is not None:
-            conflict_record = convert_file_info(existing, parent_id)
-            if conflict_record is not None:
-                raise UploadConflictError(conflict_record)
+            conflict = convert_file_info(existing, parent_id)
+            if conflict is not None:
+                raise UploadConflictError(conflict.record)
             _L.warning(
                 "Conflict detected for %r under %r but existing node lacks permanent_link; proceeding",
                 name,
@@ -453,13 +453,13 @@ class UploadService:
                 f"Name conflict for {name!r} but existing node could not be resolved",
                 file_name=name,
             )
-        record = convert_file_info(info, parent_id)
-        if record is None:
+        observation = convert_file_info(info, parent_id)
+        if observation is None:
             raise SynologyUploadConflictError(
                 f"Name conflict for {name!r} but existing node lacks permanent_link",
                 file_name=name,
             )
-        return record
+        return observation.record
 
     async def _upsert_uploaded_node(
         self,
@@ -468,33 +468,23 @@ class UploadService:
         parent_id: MirrorStableId,
         media_info: MediaInfo | None,
     ) -> NodeRecord:
-        record = convert_file_info(info, parent_id)
-        if record is None:
+        observation = convert_file_info(info, parent_id)
+        if observation is None:
             raise SynologyUploadError(
                 f"Uploaded node {info.get('name', '?')!r} lacks permanent_link in API response",
                 file_name=info.get("name", ""),
             )
         if media_info is not None:
-            record = NodeRecord(
-                id=record.id,
-                parent_id=record.parent_id,
-                name=record.name,
-                is_directory=record.is_directory,
-                created_time=record.created_time,
-                modified_time=record.modified_time,
-                changed_time=record.changed_time,
-                mime_type=record.mime_type,
-                hash=record.hash,
-                hash_algorithm=record.hash_algorithm,
-                size=record.size,
+            record = replace(
+                observation.record,
                 is_image=media_info.is_image,
                 is_video=media_info.is_video,
                 width=media_info.width,
                 height=media_info.height,
                 ms_duration=media_info.ms_duration,
-                mutable_id=record.mutable_id,
             )
-        return await self._node_sync.upsert(record)
+            observation = replace(observation, record=record)
+        return await self._node_sync.upsert(observation)
 
     def _cleanup_session(self, session_id: str) -> None:
         self._store.remove(session_id)

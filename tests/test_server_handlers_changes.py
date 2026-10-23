@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from wcpan.drive.client.remote._lib import node_record_from_dict
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.changes import (
     get_changes,
     get_cursor,
@@ -22,6 +22,7 @@ from wcpan.drive.server.keys import (
 )
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.types import NodeObservation, SynologyLocator
 from wcpan.drive.server.workers import create_write_queue
 
 
@@ -46,7 +47,6 @@ def _make_node(node_id: str = "n1", parent_id: str | None = "p1") -> NodeRecord:
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(node_id),
     )
 
 
@@ -61,6 +61,7 @@ class _FakeOffMain:
 class _FakeStorage:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
+        self._locators: dict[str, SynologyLocator] = {}
         self._cursor: int = 42
         self._changes: list[tuple[str, bool, NodeRecord | None]] = []
 
@@ -77,6 +78,21 @@ class _FakeStorage:
 
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
         self._nodes[record.id] = record
+
+    async def apply_observations(self, observations: list[NodeObservation]) -> int:
+        for o in observations:
+            self._nodes[o.record.id] = o.record
+            if o.locator is not None:
+                self._locators[o.record.id] = o.locator
+        return len(observations)
+
+    async def get_locators(self, node_ids: list[str]) -> dict[str, SynologyLocator]:
+        # Fixture nodes use their own ID as the Synology file_id unless rebound.
+        return {
+            i: self._locators.get(i, SynologyLocator(i))
+            for i in node_ids
+            if i in self._nodes
+        }
 
 
 def _make_app(storage: _FakeStorage) -> web.Application:
@@ -143,7 +159,6 @@ class TestGetRoot(IsolatedAsyncioTestCase):
             width=0,
             height=0,
             ms_duration=0,
-            mutable_id=MirrorMutableId(""),
         )
         storage._nodes[SERVER_ROOT_ID] = root
         app = _make_app(storage)

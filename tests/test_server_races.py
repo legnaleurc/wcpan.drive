@@ -11,13 +11,14 @@ from dataclasses import replace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
-from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, MountRegistry, mount_id
 from wcpan.drive.server.services.backfill import BackfillService
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import SynologyPathService
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.types import NodeObservation, SynologyLocator
 from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
@@ -58,8 +59,11 @@ def _node(
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(node_id),
     )
+
+
+def _obs(record: NodeRecord) -> NodeObservation:
+    return NodeObservation(record=record, locator=SynologyLocator(record.id))
 
 
 def _syno_item(node_id: str, *, is_dir: bool = False) -> dict[str, object]:
@@ -156,13 +160,15 @@ class _RaceTestCase(IsolatedAsyncioTestCase):
         self, gate: _Gate, start: Awaitable[object], race: Callable[[], Awaitable[None]]
     ) -> None:
         """Start gated work, apply *race* while it is blocked, then release it."""
-        task = asyncio.ensure_future(start)
-        await gate.entered.wait()
-        await race()
-        await self.node_sync.flush()
-        gate.release.set()
-        await task
-        await self.drain()
+        # Fail instead of hanging when the gated work errors before reaching the gate.
+        async with asyncio.timeout(5):
+            task = asyncio.ensure_future(start)
+            await gate.entered.wait()
+            await race()
+            await self.node_sync.flush()
+            gate.release.set()
+            await task
+            await self.drain()
 
 
 class TestStaleEnrichment(_RaceTestCase):
@@ -173,7 +179,7 @@ class TestStaleEnrichment(_RaceTestCase):
 
         await self.run_gated(
             gate,
-            self.node_sync.reconcile_insert(f),
+            self.node_sync.reconcile_insert(_obs(f)),
             lambda: self.node_sync.delete(f.id),
         )
 
@@ -185,9 +191,9 @@ class TestStaleEnrichment(_RaceTestCase):
         gate = self.gate(lambda r: r.name == "old")
 
         async def race() -> None:
-            await self.node_sync.upsert(new)
+            await self.node_sync.upsert(_obs(new))
 
-        await self.run_gated(gate, self.node_sync.upsert_file_batch([old]), race)
+        await self.run_gated(gate, self.node_sync.upsert_file_batch([_obs(old)]), race)
 
         stored = await self.storage.get_node_by_id(old.id)
         assert stored is not None
@@ -203,7 +209,7 @@ class TestStaleEnrichment(_RaceTestCase):
 
         await self.run_gated(
             gate,
-            self.node_sync.upsert_file_batch([f]),
+            self.node_sync.upsert_file_batch([_obs(f)]),
             lambda: self.node_sync.delete(d.id),
         )
 
@@ -218,7 +224,7 @@ class TestStaleEnrichment(_RaceTestCase):
 
         await self.run_gated(
             gate,
-            self.node_sync.upsert(f),
+            self.node_sync.upsert(_obs(f)),
             lambda: self.node_sync.delete(f.id),
         )
 
@@ -232,7 +238,7 @@ class TestStaleEnrichment(_RaceTestCase):
 
         await self.run_gated(
             gate,
-            self.node_sync.reconcile_insert(f),
+            self.node_sync.reconcile_insert(_obs(f)),
             lambda: self.node_sync.delete(g.id),
         )
 

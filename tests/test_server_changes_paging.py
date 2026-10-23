@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.client.remote._lib import FOLDER_MIME_TYPE
-from wcpan.drive.protocol.types import MirrorMutableId, NodeRecord
+from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 from wcpan.drive.server.services.storage import StorageService
@@ -38,7 +38,6 @@ def _make_node(
         width=0,
         height=0,
         ms_duration=0,
-        mutable_id=MirrorMutableId(node_id),
     )
 
 

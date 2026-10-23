@@ -3,10 +3,11 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import closing, contextmanager
 
-from wcpan.drive.protocol.types import MirrorMutableId, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.synology import SynologyPath
 
 from ..lib.mounts import SERVER_ROOT_ID
+from ..types import NodeObservation, SynologyLocator
 from .off_main import OffMainService
 
 
@@ -23,7 +24,6 @@ PRAGMA cache_size = -65536;
 
 CREATE TABLE IF NOT EXISTS nodes (
     id           TEXT    PRIMARY KEY,
-    mutable_id   TEXT    NOT NULL,
     parent_id    TEXT,
     name         TEXT    NOT NULL,
     is_directory INTEGER NOT NULL DEFAULT 0,
@@ -42,7 +42,6 @@ CREATE TABLE IF NOT EXISTS nodes (
 );
 
 CREATE INDEX IF NOT EXISTS ix_nodes_parent_id ON nodes(parent_id);
-CREATE INDEX IF NOT EXISTS ix_nodes_mutable_id ON nodes(mutable_id);
 
 CREATE TABLE IF NOT EXISTS changes (
     change_id  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +51,15 @@ CREATE TABLE IF NOT EXISTS changes (
 
 CREATE INDEX IF NOT EXISTS ix_changes_node_id ON changes(node_id);
 
+-- Synology backend state: maps a public node to its mutable Synology file_id.
+-- Rows are removed together with their node; they never emit changes.
+CREATE TABLE IF NOT EXISTS synology_locators (
+    node_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_synology_locators_file_id ON synology_locators(file_id);
+
 CREATE TABLE IF NOT EXISTS mounts (
     name   TEXT PRIMARY KEY,
     max_id INTEGER NOT NULL,
@@ -59,7 +67,7 @@ CREATE TABLE IF NOT EXISTS mounts (
 );
 """
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 # Before version 4 every stored digest came from Synology Drive.
 _MIGRATE_3_TO_4 = """
@@ -67,16 +75,27 @@ ALTER TABLE nodes ADD COLUMN hash_algorithm TEXT NOT NULL DEFAULT '';
 UPDATE nodes SET hash = '' WHERE is_directory = 1;
 UPDATE nodes SET hash_algorithm = 'md4' WHERE is_directory = 0 AND hash != '';
 """
+
+# Version 5 moves the Synology locator out of the public node table.
+_MIGRATE_4_TO_5 = """
+CREATE TABLE synology_locators (
+    node_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL
+);
+INSERT INTO synology_locators (node_id, file_id)
+    SELECT id, mutable_id FROM nodes WHERE mutable_id != '';
+DROP INDEX IF EXISTS ix_nodes_mutable_id;
+ALTER TABLE nodes DROP COLUMN mutable_id;
+"""
 _MAX_CHANGES_PER_PAGE = 1000
 
 _UPSERT_NODE_SQL = """
             INSERT INTO nodes
-                (id, mutable_id, parent_id, name, is_directory, created_time, modified_time, changed_time,
+                (id, parent_id, name, is_directory, created_time, modified_time, changed_time,
                  mime_type, hash, hash_algorithm, size, is_image, is_video, width, height,
                  ms_duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                mutable_id=excluded.mutable_id,
                 parent_id=excluded.parent_id,
                 name=excluded.name,
                 is_directory=excluded.is_directory,
@@ -98,12 +117,11 @@ _UPSERT_NODE_SQL = """
 # so that media info set by the API upload handler is not overwritten with zeros.
 _PRESERVE_MEDIA_UPSERT_SQL = """
             INSERT INTO nodes
-                (id, mutable_id, parent_id, name, is_directory, created_time, modified_time, changed_time,
+                (id, parent_id, name, is_directory, created_time, modified_time, changed_time,
                  mime_type, hash, hash_algorithm, size, is_image, is_video, width, height,
                  ms_duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                mutable_id=excluded.mutable_id,
                 parent_id=excluded.parent_id,
                 name=excluded.name,
                 is_directory=excluded.is_directory,
@@ -126,7 +144,6 @@ def _node_row_values(
     record: NodeRecord,
 ) -> tuple[
     str,
-    str,
     str | None,
     str,
     int,
@@ -145,7 +162,6 @@ def _node_row_values(
 ]:
     return (
         str(record.id),
-        str(record.mutable_id),
         str(record.parent_id) if record.parent_id is not None else None,
         record.name,
         1 if record.is_directory else 0,
@@ -210,8 +226,12 @@ def _ensure_schema(dsn: str) -> None:
             )
         if version == 3:
             con.executescript(_MIGRATE_3_TO_4)
-            con.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
-            version = _SCHEMA_VERSION
+            con.execute("PRAGMA user_version = 4")
+            version = 4
+        if version == 4:
+            con.executescript(_MIGRATE_4_TO_5)
+            con.execute("PRAGMA user_version = 5")
+            version = 5
         if version not in (0, _SCHEMA_VERSION):
             raise SchemaVersionError(
                 "database schema version mismatch: "
@@ -304,6 +324,9 @@ def _delete_subtree_on_connection(
     # Delete from nodes and insert into changes in bulk.
     placeholders = ",".join("?" * len(to_delete))
     con.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", to_delete)
+    con.execute(
+        f"DELETE FROM synology_locators WHERE node_id IN ({placeholders})", to_delete
+    )
     con.executemany(
         "INSERT INTO changes (node_id, is_removed) VALUES (?, 1)",
         [(nid,) for nid in to_delete],
@@ -322,26 +345,48 @@ def _node_exists(con: sqlite3.Connection, node_id: MirrorStableId) -> bool:
         return cur.fetchone() is not None
 
 
-def _apply_observations(dsn: str, records: list[NodeRecord]) -> int:
-    """Upsert *records* in order and emit changes, skipping any whose parent is gone.
+def _select_node_row(
+    con: sqlite3.Connection, node_id: MirrorStableId
+) -> tuple[object, ...] | None:
+    with closing(
+        con.execute("SELECT * FROM nodes WHERE id = ?", (str(node_id),))
+    ) as cur:
+        row = cur.fetchone()
+    return tuple(row) if row is not None else None
+
+
+def _apply_observations(dsn: str, observations: list[NodeObservation]) -> int:
+    """Upsert nodes and their locators in order, skipping any whose parent is gone.
 
     The parent check and writes share one explicit transaction, so an observation
-    made before its parent was removed cannot recreate an orphan. Returns the
-    number of records applied.
+    made before its parent was removed cannot recreate an orphan. A change is
+    emitted only when the public node row actually changes; locator-only updates
+    are silent. Returns the number of observations applied.
     """
-    if not records:
+    if not observations:
         return 0
     applied = 0
     with _read_write(dsn) as con:
         con.execute("BEGIN")
-        for record in records:
+        for observation in observations:
+            record = observation.record
             if record.parent_id is not None and not _node_exists(con, record.parent_id):
                 continue
+            before = _select_node_row(con, record.id)
             con.execute(_PRESERVE_MEDIA_UPSERT_SQL, _node_row_values(record))
-            con.execute(
-                "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
-                (str(record.id),),
-            )
+            if _select_node_row(con, record.id) != before:
+                con.execute(
+                    "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
+                    (str(record.id),),
+                )
+            if observation.locator is not None:
+                con.execute(
+                    """
+                    INSERT INTO synology_locators (node_id, file_id) VALUES (?, ?)
+                    ON CONFLICT(node_id) DO UPDATE SET file_id = excluded.file_id
+                    """,
+                    (str(record.id), observation.locator),
+                )
             applied += 1
     return applied
 
@@ -374,31 +419,6 @@ def _bulk_upsert_nodes(dsn: str, records: list[NodeRecord]) -> None:
         con.executemany(_UPSERT_NODE_SQL, [_node_row_values(r) for r in records])
 
 
-def _apply_scan_folder_batch(
-    dsn: str,
-    delete_roots: list[MirrorStableId],
-    upserts: list[NodeRecord],
-) -> None:
-    """Apply all subtree removals and upserts for one polled folder in one transaction.
-
-    Deletes run first (same order as *delete_roots), then upserts. API-driven
-    writes still interleave on the write queue as separate jobs before/after this
-    batch.
-    """
-    if not delete_roots and not upserts:
-        return
-    with _read_write(dsn) as con:
-        for root in delete_roots:
-            _delete_subtree_on_connection(con, root)
-        con.executemany(
-            _PRESERVE_MEDIA_UPSERT_SQL, [_node_row_values(r) for r in upserts]
-        )
-        con.executemany(
-            "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
-            [(str(r.id),) for r in upserts],
-        )
-
-
 def _get_node_by_id(dsn: str, node_id: MirrorStableId) -> NodeRecord | None:
     with _read_only(dsn) as con:
         with closing(
@@ -426,19 +446,44 @@ def _get_nodes_by_ids(
     return {MirrorStableId(row["id"]): _row_to_record(row) for row in rows}
 
 
-def _get_node_by_mutable_id(
+def _get_node_by_locator(
     dsn: str,
-    mutable_id: MirrorMutableId,
+    locator: SynologyLocator,
 ) -> NodeRecord | None:
     with _read_only(dsn) as con:
         with closing(
             con.execute(
-                "SELECT * FROM nodes WHERE mutable_id = ?",
-                (mutable_id,),
+                """
+                SELECT n.* FROM synology_locators l
+                JOIN nodes n ON n.id = l.node_id
+                WHERE l.file_id = ?
+                """,
+                (locator,),
             )
         ) as cur:
             row = cur.fetchone()
     return _row_to_record(row) if row else None
+
+
+def _get_locators(
+    dsn: str,
+    node_ids: list[MirrorStableId],
+) -> dict[MirrorStableId, SynologyLocator]:
+    if not node_ids:
+        return {}
+    with _read_only(dsn) as con:
+        placeholders = ",".join("?" * len(node_ids))
+        with closing(
+            con.execute(
+                "SELECT node_id, file_id FROM synology_locators"
+                f" WHERE node_id IN ({placeholders})",
+                [str(_) for _ in node_ids],
+            )
+        ) as cur:
+            rows = cur.fetchall()
+    return {
+        MirrorStableId(row["node_id"]): SynologyLocator(row["file_id"]) for row in rows
+    }
 
 
 def _get_children(dsn: str, parent_id: MirrorStableId) -> list[NodeRecord]:
@@ -555,7 +600,7 @@ def _get_changes_since(
                 """
             SELECT c.change_id, c.node_id, c.is_removed,
                    n.id,
-                   n.mutable_id, n.parent_id, n.name, n.is_directory, n.created_time, n.modified_time, n.changed_time,
+                   n.parent_id, n.name, n.is_directory, n.created_time, n.modified_time, n.changed_time,
                    n.mime_type, n.hash, n.hash_algorithm, n.size, n.is_image, n.is_video,
                    n.width, n.height, n.ms_duration
             FROM changes c
@@ -598,7 +643,6 @@ def _get_changes_since(
 def _row_to_record(row: sqlite3.Row) -> NodeRecord:
     return NodeRecord(
         id=MirrorStableId(row["id"] if "id" in row.keys() else row["node_id"]),
-        mutable_id=MirrorMutableId(row["mutable_id"]),
         parent_id=(
             MirrorStableId(row["parent_id"]) if row["parent_id"] is not None else None
         ),
@@ -650,6 +694,9 @@ def cleanup_dangling_nodes(dsn: str) -> int:
             con.execute(
                 "DELETE FROM nodes WHERE id IN (SELECT node_id FROM temp._dangling)"
             )
+        con.execute(
+            "DELETE FROM synology_locators WHERE node_id NOT IN (SELECT id FROM nodes)"
+        )
         con.execute("DROP TABLE IF EXISTS temp._dangling")
     return count
 
@@ -759,8 +806,8 @@ class StorageService:
     async def delete_subtree_and_emit_changes(self, node_id: MirrorStableId) -> None:
         await self._off_main(_delete_subtree_and_emit_changes, self._dsn, node_id)
 
-    async def apply_observations(self, records: list[NodeRecord]) -> int:
-        return await self._off_main(_apply_observations, self._dsn, records)
+    async def apply_observations(self, observations: list[NodeObservation]) -> int:
+        return await self._off_main(_apply_observations, self._dsn, observations)
 
     async def delete_subtree_if_parent(
         self, node_id: MirrorStableId, parent_id: MirrorStableId
@@ -768,13 +815,6 @@ class StorageService:
         return await self._off_main(
             _delete_subtree_if_parent, self._dsn, node_id, parent_id
         )
-
-    async def apply_scan_folder_batch(
-        self,
-        delete_roots: list[MirrorStableId],
-        upserts: list[NodeRecord],
-    ) -> None:
-        await self._off_main(_apply_scan_folder_batch, self._dsn, delete_roots, upserts)
 
     async def resolve_path_to_id(self, segments: list[str]) -> MirrorStableId | None:
         return await self._off_main(_resolve_path_to_id, self._dsn, segments)
@@ -788,11 +828,13 @@ class StorageService:
     ) -> dict[MirrorStableId, NodeRecord]:
         return await self._off_main(_get_nodes_by_ids, self._dsn, node_ids)
 
-    async def get_node_by_mutable_id(
-        self,
-        mutable_id: MirrorMutableId,
-    ) -> NodeRecord | None:
-        return await self._off_main(_get_node_by_mutable_id, self._dsn, mutable_id)
+    async def get_node_by_locator(self, locator: SynologyLocator) -> NodeRecord | None:
+        return await self._off_main(_get_node_by_locator, self._dsn, locator)
+
+    async def get_locators(
+        self, node_ids: list[MirrorStableId]
+    ) -> dict[MirrorStableId, SynologyLocator]:
+        return await self._off_main(_get_locators, self._dsn, node_ids)
 
     async def get_children(self, parent_id: MirrorStableId) -> list[NodeRecord]:
         return await self._off_main(_get_children, self._dsn, parent_id)
