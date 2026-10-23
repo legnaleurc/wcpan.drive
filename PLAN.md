@@ -584,6 +584,17 @@ Separate
 durable discovery from optional enrichment, following the publication rule in
 Hash model and client adaptation.
 
+Status: observations are still published only after enrichment, so the feed
+never shows an incomplete node and a changed file keeps its last complete
+version. A failed media probe is no longer dropped: the node is recorded in
+`pending_enrichment` (schema 6) unless a later read already observed it. Any
+applied observation or removal of the node clears the entry, and startup
+re-observes each pending node after the scan (`retry_pending_enrichment`),
+removing it if the backend no longer has it. Checkpoints may therefore advance
+past a failed update without losing it. A probe that keeps failing leaves the
+file withheld; a file with no reachable local path is published without probed
+dimensions, as before.
+
 Then move Synology orchestration (configuration, mount resolution, scan,
 webhook, backfill, operations, and the server command) into
 `wcpan-drive-server-synology`, and remove the `wcpan-synology` dependency from

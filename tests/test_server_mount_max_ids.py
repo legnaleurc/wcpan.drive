@@ -135,7 +135,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         version = con.execute("PRAGMA user_version").fetchone()[0]
         con.close()
 
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
 
     async def test_version_3_db_is_migrated(self) -> None:
         con = sqlite3.connect(self.db_path)
@@ -175,7 +175,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         locators = dict(con.execute("SELECT node_id, file_id FROM synology_locators"))
         con.close()
 
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertEqual(rows["f1"], ("abc", "md4"))
         self.assertEqual(rows["f2"], ("", ""))
         self.assertEqual(rows["d1"], ("", ""))
@@ -226,7 +226,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         version = con.execute("PRAGMA user_version").fetchone()[0]
         columns = {row[1] for row in con.execute("PRAGMA table_info(nodes)")}
         con.close()
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertNotIn("mutable_id", columns)
 
         # Public IDs and the change feed survive; virtual nodes get no locator.

@@ -356,6 +356,9 @@ class StartupScanService:
             await self._node_sync.sync_nodes(structural)
 
         _, pre_scan_max_ids = await self._scan_all_mounts(last_max_ids)
+        await self._node_sync.retry_pending_enrichment(
+            locate=partial(self._syno_paths.locate, self._drive_api)
+        )
         for name, checkpoint in pre_scan_max_ids.items():
             if checkpoint > last_max_ids.get(name, 0):
                 await self._node_sync.set_mount_watermark(

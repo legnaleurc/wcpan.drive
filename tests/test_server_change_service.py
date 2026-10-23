@@ -104,6 +104,10 @@ class _FakeStorage:
         self._bulk: list[NodeRecord] = []
         self._mount_states: list = []
         self._observations: list[list[NodeRecord]] = []
+        self._pending: set[str] = set()
+
+    async def mark_enrichment_pending(self, node_id: str) -> None:
+        self._pending.add(node_id)
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)
@@ -191,8 +195,8 @@ class TestNodeSyncServiceUpsert(IsolatedAsyncioTestCase):
         await op()
         self.assertIn("n1", storage._nodes)
 
-    async def test_enrichment_failure_skips_write(self):
-        cs, _, wq = _make_service()
+    async def test_enrichment_failure_withholds_write_and_marks_pending(self):
+        cs, storage, wq = _make_service()
         record = _make_record(is_image=True)
         with patch(
             "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
@@ -202,7 +206,10 @@ class TestNodeSyncServiceUpsert(IsolatedAsyncioTestCase):
             async with cs.observe() as read:
                 result = await cs.upsert(_obs(record), read=read)
         self.assertIs(result, record)
-        self.assertEqual(wq.qsize(), 0)
+        self.assertEqual(wq.qsize(), 1)
+        await wq.get_nowait()()
+        self.assertEqual(storage._observations, [])
+        self.assertEqual(storage._pending, {record.id})
 
 
 class TestNodeSyncServiceDelete(IsolatedAsyncioTestCase):
@@ -257,13 +264,14 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
         ):
             async with cs.observe() as read:
                 await cs.upsert_batch([_obs(failed), _obs(kept)], read=read)
-        self.assertEqual(wq.qsize(), 1)
-        op = wq.get_nowait()
-        await op()
-        self.assertEqual(storage._observations[0], [kept])
+        self.assertEqual(wq.qsize(), 2)
+        while not wq.empty():
+            await wq.get_nowait()()
+        self.assertEqual(storage._observations, [[kept]])
+        self.assertEqual(storage._pending, {failed.id})
 
     async def test_enrichment_failure_skips_entire_batch_when_all_fail(self):
-        cs, _, wq = _make_service()
+        cs, storage, wq = _make_service()
         record = _make_record("a", is_image=True)
         with patch(
             "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
@@ -272,7 +280,10 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
         ):
             async with cs.observe() as read:
                 await cs.upsert_batch([_obs(record)], read=read)
-        self.assertEqual(wq.qsize(), 0)
+        self.assertEqual(wq.qsize(), 1)
+        await wq.get_nowait()()
+        self.assertEqual(storage._observations, [])
+        self.assertEqual(storage._pending, {record.id})
 
 
 class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
@@ -419,9 +430,9 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
         await op()
         self.assertIn("n1", storage._nodes)
 
-    async def test_process_metadata_item_skips_enrichment_failure(self):
+    async def test_process_metadata_item_withholds_enrichment_failure(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, _, wq = _make_service(metadata_queue=mq)
+        cs, storage, wq = _make_service(metadata_queue=mq)
         record = _make_record(is_image=True)
         async with cs.observe() as read:
             await cs.reconcile_insert(_obs(record), read=read)
@@ -432,4 +443,7 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
             side_effect=MediaEnrichmentError(record, Path("/tmp/bad.jpg")),
         ):
             await cs.process_metadata_item(item)
-        self.assertEqual(wq.qsize(), 0)
+        self.assertEqual(wq.qsize(), 1)
+        await wq.get_nowait()()
+        self.assertEqual(storage._observations, [])
+        self.assertEqual(storage._pending, {record.id})

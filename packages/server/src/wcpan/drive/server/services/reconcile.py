@@ -5,14 +5,14 @@ are decided once, at the end of the pass, rather than from any single listing.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from logging import getLogger
 
 from wcpan.drive.protocol.types import MirrorStableId
 
-from ..types import NodeObservation, ReadSeq
-from .operations import LocateUndecidedError
+from ..types import ReadSeq
+from .operations import Locate, LocateUndecidedError
 from .storage import StorageService
 from .sync import NodeSyncService
 
@@ -21,12 +21,6 @@ _L = getLogger(__name__)
 
 # Concurrent backend lookups when confirming removals.
 _CONFIRM_CONCURRENCY = 8
-
-
-# Fetch a node directly from the backend. Returns ``None`` when the node no longer
-# exists under a mirrored parent; raises ``LocateUndecidedError`` when the backend
-# cannot answer.
-type Locate = Callable[[MirrorStableId], Awaitable[NodeObservation | None]]
 
 
 class ReconcileSession:

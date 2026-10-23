@@ -9,13 +9,16 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, MountRegistry, mount_id
 from wcpan.drive.server.services.backfill import BackfillService
+from wcpan.drive.server.services.enricher import MediaEnrichmentError
 from wcpan.drive.server.services.off_main import OffMainService
+from wcpan.drive.server.services.operations import LocateUndecidedError
 from wcpan.drive.server.services.paths import SynologyPathService
 from wcpan.drive.server.services.reconcile import reconcile_session
 from wcpan.drive.server.services.storage import StorageService
@@ -454,3 +457,95 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         stored = await self.storage.get_node_by_id(x.id)
         assert stored is not None
         self.assertEqual(stored.parent_id, b.id)
+
+
+class TestPendingEnrichment(_RaceTestCase):
+    """Failed enrichment is withheld from the feed but kept as durable retry work."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.old = replace(_node("x", _MOUNT), is_image=True, width=10, height=10)
+        await self.storage.apply_observations([_obs(self.old)])
+        self.new = replace(self.old, name="renamed", width=0, height=0)
+        self.cursor = await self.storage.get_cursor()
+
+    def fail_enrichment(self, failing: bool = True) -> None:
+        async def enrich(record: NodeRecord, **_: object) -> NodeRecord:
+            if failing:
+                raise MediaEnrichmentError(record, Path("/bad"))
+            return replace(record, width=20, height=20)
+
+        patcher = patch.object(self.node_sync._enricher, "enrich", enrich)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_failed_update_keeps_old_version_and_is_pending(self) -> None:
+        self.fail_enrichment()
+
+        await self.observed(lambda r: self.node_sync.upsert(_obs(self.new), read=r))
+        await self.drain()
+
+        self.assertEqual(await self.storage.get_node_by_id(self.old.id), self.old)
+        self.assertEqual(await self.storage.get_cursor(), self.cursor)
+        self.assertEqual(await self.storage.get_pending_enrichment(), [self.old.id])
+
+    async def test_retry_publishes_and_clears_pending(self) -> None:
+        await self.storage.mark_enrichment_pending(self.old.id)
+        self.fail_enrichment(failing=False)
+
+        async def locate(_node_id: MirrorStableId) -> NodeObservation:
+            return _obs(self.new)
+
+        await self.node_sync.retry_pending_enrichment(locate=locate)
+        await self.drain()
+
+        stored = await self.storage.get_node_by_id(self.old.id)
+        assert stored is not None
+        self.assertEqual((stored.name, stored.width), ("renamed", 20))
+        self.assertEqual(await self.storage.get_pending_enrichment(), [])
+
+    async def test_retry_of_missing_node_removes_it(self) -> None:
+        await self.storage.mark_enrichment_pending(self.old.id)
+        await self.storage.mark_enrichment_pending(MirrorStableId("never-published"))
+
+        async def locate(_node_id: MirrorStableId) -> None:
+            return None
+
+        await self.node_sync.retry_pending_enrichment(locate=locate)
+        await self.drain()
+
+        self.assertIsNone(await self.storage.get_node_by_id(self.old.id))
+        self.assertEqual(await self.storage.get_pending_enrichment(), [])
+
+    async def test_undecided_retry_keeps_pending(self) -> None:
+        await self.storage.mark_enrichment_pending(self.old.id)
+
+        async def locate(_node_id: MirrorStableId) -> None:
+            raise LocateUndecidedError("down")
+
+        await self.node_sync.retry_pending_enrichment(locate=locate)
+        await self.drain()
+
+        self.assertEqual(await self.storage.get_pending_enrichment(), [self.old.id])
+
+    async def test_stale_failure_is_not_marked_after_newer_apply(self) -> None:
+        gate = self.gate(lambda r: r.name == "renamed")
+        newer = replace(self.old, name="newer")
+
+        async def fail_after_gate(record: NodeRecord, **kw: object) -> NodeRecord:
+            await gate.enrich(record)
+            if record.name == "renamed":
+                raise MediaEnrichmentError(record, Path("/bad"))
+            return record
+
+        with patch.object(self.node_sync._enricher, "enrich", fail_after_gate):
+            await self.run_gated(
+                gate,
+                self.observed(lambda r: self.node_sync.upsert(_obs(self.new), read=r)),
+                lambda: self.observed(
+                    lambda r: self.node_sync.upsert_batch([_obs(newer)], read=r)
+                ),
+            )
+        await self.drain()
+
+        self.assertEqual(await self.storage.get_pending_enrichment(), [])

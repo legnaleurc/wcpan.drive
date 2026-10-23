@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS synology_locators (
 
 CREATE INDEX IF NOT EXISTS ix_synology_locators_file_id ON synology_locators(file_id);
 
+-- Observations withheld because media enrichment failed. The node keeps its last
+-- complete version (or stays unpublished) until a retry or newer observation.
+CREATE TABLE IF NOT EXISTS pending_enrichment (
+    node_id TEXT PRIMARY KEY
+);
+
 CREATE TABLE IF NOT EXISTS mounts (
     name   TEXT PRIMARY KEY,
     max_id INTEGER NOT NULL,
@@ -67,7 +73,7 @@ CREATE TABLE IF NOT EXISTS mounts (
 );
 """
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 # Before version 4 every stored digest came from Synology Drive.
 _MIGRATE_3_TO_4 = """
@@ -87,6 +93,8 @@ INSERT INTO synology_locators (node_id, file_id)
 DROP INDEX IF EXISTS ix_nodes_mutable_id;
 ALTER TABLE nodes DROP COLUMN mutable_id;
 """
+
+# Version 6 adds pending_enrichment, created by the DDL below.
 _MAX_CHANGES_PER_PAGE = 1000
 
 _UPSERT_NODE_SQL = """
@@ -232,6 +240,9 @@ def _ensure_schema(dsn: str) -> None:
             con.executescript(_MIGRATE_4_TO_5)
             con.execute("PRAGMA user_version = 5")
             version = 5
+        if version == 5:
+            con.execute("PRAGMA user_version = 6")
+            version = 6
         if version not in (0, _SCHEMA_VERSION):
             raise SchemaVersionError(
                 "database schema version mismatch: "
@@ -304,7 +315,12 @@ def _delete_subtree_on_connection(
     con: sqlite3.Connection,
     node_id: MirrorStableId,
 ) -> None:
-    """Delete node and all descendants; emit remove-changes for each."""
+    """Delete node and all descendants; emit remove-changes for each.
+
+    Also drops pending enrichment for them, including *node_id* when it was
+    never published.
+    """
+    con.execute("DELETE FROM pending_enrichment WHERE node_id = ?", (str(node_id),))
     # Find all descendants including the root node_id using a recursive CTE.
     sql = """
     WITH RECURSIVE descendants(node_id) AS (
@@ -326,6 +342,9 @@ def _delete_subtree_on_connection(
     con.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", to_delete)
     con.execute(
         f"DELETE FROM synology_locators WHERE node_id IN ({placeholders})", to_delete
+    )
+    con.execute(
+        f"DELETE FROM pending_enrichment WHERE node_id IN ({placeholders})", to_delete
     )
     con.executemany(
         "INSERT INTO changes (node_id, is_removed) VALUES (?, 1)",
@@ -363,7 +382,8 @@ def _apply_observations(
     The parent check and writes share one explicit transaction, so an observation
     made before its parent was removed cannot recreate an orphan. A change is
     emitted only when the public node row actually changes; locator-only updates
-    are silent. Returns the IDs of the nodes that were applied.
+    are silent. An applied observation is complete, so it clears any pending
+    enrichment for the node. Returns the IDs of the nodes that were applied.
     """
     if not observations:
         return set()
@@ -389,8 +409,27 @@ def _apply_observations(
                     """,
                     (str(record.id), observation.locator),
                 )
+            con.execute(
+                "DELETE FROM pending_enrichment WHERE node_id = ?", (str(record.id),)
+            )
             applied.add(record.id)
     return applied
+
+
+def _mark_enrichment_pending(dsn: str, node_id: MirrorStableId) -> None:
+    with _read_write(dsn) as con:
+        con.execute(
+            "INSERT OR IGNORE INTO pending_enrichment (node_id) VALUES (?)",
+            (str(node_id),),
+        )
+
+
+def _get_pending_enrichment(dsn: str) -> list[MirrorStableId]:
+    with _read_only(dsn) as con:
+        with closing(
+            con.execute("SELECT node_id FROM pending_enrichment ORDER BY node_id")
+        ) as cur:
+            return [MirrorStableId(row["node_id"]) for row in cur.fetchall()]
 
 
 def _bulk_upsert_nodes(dsn: str, records: list[NodeRecord]) -> None:
@@ -786,6 +825,12 @@ class StorageService:
         self, observations: list[NodeObservation]
     ) -> set[MirrorStableId]:
         return await self._off_main(_apply_observations, self._dsn, observations)
+
+    async def mark_enrichment_pending(self, node_id: MirrorStableId) -> None:
+        await self._off_main(_mark_enrichment_pending, self._dsn, node_id)
+
+    async def get_pending_enrichment(self) -> list[MirrorStableId]:
+        return await self._off_main(_get_pending_enrichment, self._dsn)
 
     async def resolve_path_to_id(self, segments: list[str]) -> MirrorStableId | None:
         return await self._off_main(_resolve_path_to_id, self._dsn, segments)

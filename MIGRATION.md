@@ -37,5 +37,5 @@ Per-file hash algorithms are implemented. The new workspace does not yet
 implement generic backend contracts. The server still uses Synology-specific
 configuration and orchestration, and running it requires
 `wcpan-drive-server-synology`. The Synology locator is now private server state
-(schema 5); the wire format keeps only an empty `mutable_id` placeholder. The
+(schema 5, now 6); the wire format keeps only an empty `mutable_id` placeholder. The
 remaining work is specified in PLAN.md rather than completed.

@@ -18,6 +18,7 @@ from ..types import (
 )
 from .enricher import MediaEnrichmentError, MediaEnrichService
 from .off_main import OffMainService
+from .operations import Locate, LocateUndecidedError
 from .ordering import ObservationOrder
 from .paths import LocalPathService
 from .storage import StorageService
@@ -106,7 +107,7 @@ class NodeSyncService:
     async def process_metadata_item(self, item: MetadataWorkItem) -> None:
         """Run from ``metadata_worker``: enrich then enqueue a sync DB write."""
         enriched = await self._try_enrich(
-            item.observation, force_refresh=item.force_refresh
+            item.observation, force_refresh=item.force_refresh, read=item.read
         )
         if enriched is None:
             self._order.release(item.read)
@@ -150,7 +151,7 @@ class NodeSyncService:
         Used by: API (create, update, upload), webhook (delayed per-file upsert).
         """
         self._order.hold(read)
-        enriched = await self._try_enrich(observation, force_refresh=False)
+        enriched = await self._try_enrich(observation, force_refresh=False, read=read)
         if enriched is None:
             self._order.release(read)
             return observation.record
@@ -200,7 +201,9 @@ class NodeSyncService:
             self._order.hold(read)
         enriched: list[tuple[NodeObservation, ReadSeq]] = []
         for o in observations:
-            if (e := await self._try_enrich(o, force_refresh=False)) is not None:
+            if (
+                e := await self._try_enrich(o, force_refresh=False, read=read)
+            ) is not None:
                 enriched.append((e, read))
             else:
                 self._order.release(read)
@@ -209,20 +212,37 @@ class NodeSyncService:
         await self._put_upserts(enriched)
 
     async def _try_enrich(
-        self, observation: NodeObservation, *, force_refresh: bool
+        self, observation: NodeObservation, *, force_refresh: bool, read: ReadSeq
     ) -> NodeObservation | None:
+        """Enrich *observation*; on failure withhold it and record durable retry work."""
         record = observation.record
         try:
             enriched = await self._enricher.enrich(record, force_refresh=force_refresh)
         except MediaEnrichmentError as e:
             _L.warning(
-                "Skipping node %s (%s) after media enrichment failed at %s",
+                "Withholding node %s (%s) after media enrichment failed at %s",
                 record.id,
                 record.name,
                 e.path,
             )
+            await self._mark_enrichment_pending(record.id, read=read)
             return None
         return replace(observation, record=enriched)
+
+    async def _mark_enrichment_pending(
+        self, node_id: MirrorStableId, *, read: ReadSeq
+    ) -> None:
+        """Persist retry work unless a later read already observed the node."""
+        self._order.hold(read)
+
+        async def mark() -> None:
+            try:
+                if self._order.admits(node_id, read):
+                    await self._storage.mark_enrichment_pending(node_id)
+            finally:
+                self._order.release(read)
+
+        await self._write_queue.put(mark)
 
     async def upsert_file_batch(
         self, observations: list[NodeObservation], *, read: ReadSeq
@@ -268,6 +288,27 @@ class NodeSyncService:
         if not records:
             return
         await self._write_queue.put(partial(self._storage.bulk_upsert_nodes, records))
+
+    async def retry_pending_enrichment(self, *, locate: Locate) -> None:
+        """Re-observe nodes whose enrichment failed and enqueue them again.
+
+        A node the backend no longer has is removed, which also clears its entry.
+        Used by: scanner, after the startup scan.
+        """
+        for node_id in await self._storage.get_pending_enrichment():
+            async with self.observe() as read:
+                try:
+                    current = await locate(node_id)
+                except LocateUndecidedError:
+                    _L.warning("Could not re-observe %s; retrying later", node_id)
+                    continue
+                if current is None:
+                    await self.delete(node_id, read=read)
+                    continue
+                self._order.hold(read)
+                await self._metadata_queue.put(
+                    MetadataWorkItem(observation=current, force_refresh=True, read=read)
+                )
 
     # --- Reconcile / backfill ---
 

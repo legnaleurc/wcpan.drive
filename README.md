@@ -47,10 +47,11 @@ a file; it raises `UnsupportedHashAlgorithmError` instead of guessing. The clien
 service API version is 6. Existing client SQLite snapshots (schema 6) are
 rejected and must be rebuilt or migrated manually to schema 7.
 
-The server database is at schema 5 and migrates older databases (schema 3 or 4)
+The server database is at schema 6 and migrates older databases (schema 3 to 5)
 automatically at startup. Schema 4 marks existing Synology digests as `md4`;
 schema 5 moves each node's Synology `file_id` out of the public node table into
-backend-owned locator storage. Node IDs and the change feed are preserved. The
+backend-owned locator storage; schema 6 adds a table of files whose media probe
+failed. Node IDs and the change feed are preserved. The
 migration cannot be undone in place, so stop the server and copy the database
 file, together with any `-wal` and `-shm` files, before upgrading; restore that
 copy to roll back.
@@ -170,7 +171,10 @@ Important fields:
 - `synology.url`: DSM / Synology Drive base URL
 - `mounts`: virtual mount label to Synology path mapping
 - `local_paths`: optional Synology-path to local-filesystem mapping for media
-  probing; required by the current schema, so use `{}` if unused
+  probing; required by the current schema, so use `{}` if unused. When probing
+  a reachable image or video fails, the change is withheld: a new file stays
+  hidden and a changed file keeps its previous version. Each server start
+  retries withheld files.
 - `synology.webhook.callback_url`: externally reachable base URL used for
   webhook registration
 - `synology.otp_code`: optional 2FA code when the Synology account requires it

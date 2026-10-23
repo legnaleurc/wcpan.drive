@@ -1,10 +1,12 @@
 """Backend-neutral node operations used by the HTTP handlers."""
 
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+
+from ..types import NodeObservation
 
 
 class OperationConflictError(Exception):
@@ -24,6 +26,12 @@ class OperationUnavailableError(Exception):
 
 class LocateUndecidedError(Exception):
     """The backend could not tell whether a node still exists."""
+
+
+# Fetch a node directly from the backend. Returns ``None`` when the node no longer
+# exists under a mirrored parent; raises ``LocateUndecidedError`` when the backend
+# cannot answer.
+type Locate = Callable[[MirrorStableId], Awaitable[NodeObservation | None]]
 
 
 class NodeOperations(Protocol):
