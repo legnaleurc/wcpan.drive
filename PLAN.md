@@ -498,7 +498,7 @@ Status: done. `tests/test_server_races.py` reproduced and now guards these:
   transaction.
 - Backfill deleted a node that a webhook had moved out of the listed folder.
   Listing-derived removal is now conditional on the node's current parent
-  (`remove_listed_child`).
+  (`remove_listed_child`; replaced in stage 3 by end-of-pass removals).
 
 Verified as not reproducible in the current design: startup scan results cannot
 overwrite webhook or API state, because webhooks are processed and API writes
@@ -568,7 +568,19 @@ through `UploadService` errors; the service itself still calls Synology directly
 The webhook route stays Synology-specific and moves with the adapter.
 
 Route scan,
-backfill, and scoped repair through common reconciliation semantics. Separate
+backfill, and scoped repair through common reconciliation semantics.
+
+Status: startup scan and backfill share `ReconcileSession`
+(`services/reconcile.py`). Listings report the nodes they saw and the folders
+they could not cover; removals are decided once at the end of the pass, skip
+nodes touched by newer reads, and fetch each candidate subtree root directly
+(`SynologyPathService.locate`) before removing it. Backfill therefore no longer
+deletes a node that moved between two of its listings, and `remove_listed_child`
+is gone. Change detection stays per caller: startup scan uses `sync_id`
+checkpoints, backfill compares every field. Scoped repair will open the same
+session.
+
+Separate
 durable discovery from optional enrichment, following the publication rule in
 Hash model and client adaptation.
 

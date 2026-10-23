@@ -393,26 +393,6 @@ def _apply_observations(
     return applied
 
 
-def _delete_subtree_if_parent(
-    dsn: str,
-    node_id: MirrorStableId,
-    parent_id: MirrorStableId,
-) -> bool:
-    """Delete *node_id*'s subtree only while it is still a child of *parent_id*."""
-    with _read_write(dsn) as con:
-        con.execute("BEGIN")
-        with closing(
-            con.execute(
-                "SELECT 1 FROM nodes WHERE id = ? AND parent_id = ?",
-                (str(node_id), str(parent_id)),
-            )
-        ) as cur:
-            if cur.fetchone() is None:
-                return False
-        _delete_subtree_on_connection(con, node_id)
-        return True
-
-
 def _bulk_upsert_nodes(dsn: str, records: list[NodeRecord]) -> None:
     """Upsert nodes only (no change rows) in one transaction."""
     if not records:
@@ -537,18 +517,21 @@ def _get_ancestors(dsn: str, node_id: MirrorStableId) -> list[NodeRecord]:
 def _deferred_removal_roots(
     dsn: str,
     preserved: set[MirrorStableId],
-    mount_ids: set[MirrorStableId],
+    scope: set[MirrorStableId],
 ) -> list[MirrorStableId]:
-    """Roots of the subtrees under *mount_ids* whose nodes are not in *preserved*."""
-    if not mount_ids:
+    """Roots of the subtrees under *scope* whose nodes are not in *preserved*.
+
+    The *scope* nodes themselves are never roots.
+    """
+    if not scope:
         return []
 
-    placeholders = ",".join("?" * len(mount_ids))
-    # Collect all non-virtual descendants of the mount nodes together with their
+    placeholders = ",".join("?" * len(scope))
+    # Collect all non-virtual descendants of the scope nodes together with their
     # parent_ids so we can compute deletion roots in one transaction.
     sql = f"""
     WITH RECURSIVE descendants(node_id, parent_id) AS (
-        SELECT id, parent_id FROM nodes WHERE id IN ({placeholders})
+        SELECT id, parent_id FROM nodes WHERE parent_id IN ({placeholders})
         UNION ALL
         SELECT n.id, n.parent_id FROM nodes n
         JOIN descendants d ON n.parent_id = d.node_id
@@ -556,7 +539,7 @@ def _deferred_removal_roots(
     SELECT node_id, parent_id FROM descendants WHERE node_id NOT GLOB '_*'
     """
     with _read_only(dsn) as con:
-        with closing(con.execute(sql, tuple(str(_) for _ in mount_ids))) as cur:
+        with closing(con.execute(sql, tuple(str(_) for _ in scope))) as cur:
             rows = cur.fetchall()
 
     parent_by_id: dict[MirrorStableId, MirrorStableId | None] = {
@@ -804,13 +787,6 @@ class StorageService:
     ) -> set[MirrorStableId]:
         return await self._off_main(_apply_observations, self._dsn, observations)
 
-    async def delete_subtree_if_parent(
-        self, node_id: MirrorStableId, parent_id: MirrorStableId
-    ) -> bool:
-        return await self._off_main(
-            _delete_subtree_if_parent, self._dsn, node_id, parent_id
-        )
-
     async def resolve_path_to_id(self, segments: list[str]) -> MirrorStableId | None:
         return await self._off_main(_resolve_path_to_id, self._dsn, segments)
 
@@ -855,10 +831,10 @@ class StorageService:
     async def deferred_removal_roots(
         self,
         preserved: set[MirrorStableId],
-        mount_ids: set[MirrorStableId],
+        scope: set[MirrorStableId],
     ) -> list[MirrorStableId]:
         return await self._off_main(
-            _deferred_removal_roots, self._dsn, preserved, mount_ids
+            _deferred_removal_roots, self._dsn, preserved, scope
         )
 
     async def get_cursor(self) -> int:

@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
+from functools import partial
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,7 +17,7 @@ from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, MountRegistry, mount_i
 from wcpan.drive.server.services.backfill import BackfillService
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import SynologyPathService
-from wcpan.drive.server.services.scan import StartupScanService
+from wcpan.drive.server.services.reconcile import reconcile_session
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation, ReadSeq, SynologyLocator
@@ -327,7 +328,9 @@ class TestBackfillOrdering(_RaceTestCase):
         self.assertEqual(stored.name, "renamed")
 
 
-class TestScanRemovalConfirmation(_RaceTestCase):
+class TestReconcileRemovalConfirmation(_RaceTestCase):
+    """Nodes no listing reported are fetched directly before removal."""
+
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         self.a = _node("a", _MOUNT, is_directory=True)
@@ -337,23 +340,30 @@ class TestScanRemovalConfirmation(_RaceTestCase):
             [_obs(self.a), _obs(self.b), _obs(self.x)]
         )
         self.drive_api = MagicMock()
-        self.scan = StartupScanService(
-            drive_api=self.drive_api,
+        self.syno_paths = SynologyPathService(
+            registry=MountRegistry(mounts=self.mounts, root_ids={}),
             storage=self.storage,
-            syno_paths=SynologyPathService(
-                registry=MountRegistry(mounts=self.mounts, root_ids={}),
-                storage=self.storage,
-            ),
-            node_sync=self.node_sync,
         )
 
-    async def test_node_moved_during_scan_is_kept_under_new_parent(self) -> None:
+    async def commit(self) -> list[MirrorStableId]:
+        """Run a pass over the mount whose listings reported only a and b."""
+        async with reconcile_session(
+            {_MOUNT},
+            storage=self.storage,
+            node_sync=self.node_sync,
+            locate=partial(self.syno_paths.locate, self.drive_api),
+        ) as session:
+            session.saw([self.a.id, self.b.id])
+            removed = await session.commit_removals()
+        await self.drain()
+        return removed
+
+    async def test_node_moved_during_pass_is_kept_under_new_parent(self) -> None:
         self.drive_api.get_file = AsyncMock(
             return_value={**_syno_item("x"), "parent_id": "b"}
         )
 
-        await self.scan._remove_unless_moved(self.x.id)
-        await self.drain()
+        self.assertEqual(await self.commit(), [])
 
         stored = await self.storage.get_node_by_id(self.x.id)
         assert stored is not None
@@ -362,8 +372,7 @@ class TestScanRemovalConfirmation(_RaceTestCase):
     async def test_missing_node_is_removed(self) -> None:
         self.drive_api.get_file = AsyncMock(return_value=None)
 
-        await self.scan._remove_unless_moved(self.x.id)
-        await self.drain()
+        self.assertEqual(await self.commit(), [self.x.id])
 
         self.assertIsNone(await self.storage.get_node_by_id(self.x.id))
 
@@ -372,8 +381,7 @@ class TestScanRemovalConfirmation(_RaceTestCase):
             side_effect=SynologyApiError("not found", error_code=408)
         )
 
-        await self.scan._remove_unless_moved(self.x.id)
-        await self.drain()
+        await self.commit()
 
         self.assertIsNone(await self.storage.get_node_by_id(self.x.id))
 
@@ -382,15 +390,67 @@ class TestScanRemovalConfirmation(_RaceTestCase):
             return_value={**_syno_item("x"), "parent_id": "elsewhere"}
         )
 
-        await self.scan._remove_unless_moved(self.x.id)
-        await self.drain()
+        await self.commit()
 
         self.assertIsNone(await self.storage.get_node_by_id(self.x.id))
 
     async def test_network_failure_preserves_node(self) -> None:
         self.drive_api.get_file = AsyncMock(side_effect=SynologyNetworkError("down"))
 
-        await self.scan._remove_unless_moved(self.x.id)
-        await self.drain()
+        self.assertEqual(await self.commit(), [])
 
         self.assertIsNotNone(await self.storage.get_node_by_id(self.x.id))
+
+    async def test_preserved_subtree_is_not_looked_up(self) -> None:
+        self.drive_api.get_file = AsyncMock(return_value=None)
+
+        async with reconcile_session(
+            {_MOUNT},
+            storage=self.storage,
+            node_sync=self.node_sync,
+            locate=partial(self.syno_paths.locate, self.drive_api),
+        ) as session:
+            session.saw([self.a.id, self.b.id])
+            session.preserve(self.a.id)
+            self.assertEqual(await session.commit_removals(), [])
+        await self.drain()
+
+        self.drive_api.get_file.assert_not_awaited()
+        self.assertIsNotNone(await self.storage.get_node_by_id(self.x.id))
+
+
+class TestBackfillRemovalConfirmation(_RaceTestCase):
+    async def test_node_moved_between_listings_is_kept(self) -> None:
+        a = _node("a", _MOUNT, is_directory=True)
+        b = _node("b", _MOUNT, is_directory=True)
+        x = _node("x", "a")
+        await self.storage.apply_observations([_obs(a), _obs(b), _obs(x)])
+        syno_paths = SynologyPathService(
+            registry=MountRegistry(mounts=self.mounts, root_ids={}),
+            storage=self.storage,
+        )
+        drive_api = MagicMock()
+        # x moved from a to b after b was listed and before a was.
+        drive_api.get_file = AsyncMock(
+            return_value={**_syno_item("x"), "parent_id": "b"}
+        )
+        backfill = BackfillService(
+            drive_api=drive_api,
+            storage=self.storage,
+            syno_paths=syno_paths,
+            node_sync=self.node_sync,
+        )
+
+        async def list_children(_api: object, parent_id: str) -> list[object]:
+            if parent_id == _MOUNT:
+                return [_syno_item("a", is_dir=True), _syno_item("b", is_dir=True)]
+            return []
+
+        with patch.object(syno_paths, "list_children", side_effect=list_children):
+            stats = await backfill._reconcile_subtree(_MOUNT)
+        await self.drain()
+
+        self.assertEqual(stats["removed"], 0)
+        stored = await self.storage.get_node_by_id(x.id)
+        assert stored is not None
+        self.assertEqual(stored.parent_id, b.id)

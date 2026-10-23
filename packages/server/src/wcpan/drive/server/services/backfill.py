@@ -1,6 +1,7 @@
 """Subtree reconcile against Synology (CLI ``backfill``); same deps as server scan."""
 
 import logging
+from functools import partial
 from pathlib import PurePosixPath
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
@@ -11,6 +12,7 @@ from ..lib.bfs import parallel_bfs
 from ..lib.mounts import SERVER_ROOT_ID
 from ..types import ReadSeq, VirtualPath
 from .paths import SynologyPathService, VirtualPathService
+from .reconcile import ReconcileSession, reconcile_session
 from .storage import StorageService
 from .sync import NodeSyncService
 
@@ -80,16 +82,35 @@ class BackfillService:
         *,
         dry_run: bool = False,
     ) -> dict[str, int]:
-        """Reconcile: full API vs DB compare per folder; writes via NodeSyncService."""
-        cs = self._node_sync
+        """Reconcile: full API vs DB compare per folder; writes via NodeSyncService.
 
+        Removals are decided at the end of the pass (see ``ReconcileSession``).
+        """
         if root_node_id == SERVER_ROOT_ID:
             roots = await self._storage.get_children(root_node_id)
             initial = [c.id for c in roots]
         else:
             initial = [root_node_id]
 
-        checked = added = updated = removed = list_errors = 0
+        async with reconcile_session(
+            set(initial),
+            storage=self._storage,
+            node_sync=self._node_sync,
+            locate=partial(self._syno_paths.locate, self._drive_api),
+        ) as session:
+            return await self._reconcile_in_session(
+                initial, session=session, dry_run=dry_run
+            )
+
+    async def _reconcile_in_session(
+        self,
+        initial: list[MirrorStableId],
+        *,
+        session: ReconcileSession,
+        dry_run: bool,
+    ) -> dict[str, int]:
+        cs = self._node_sync
+        checked = added = updated = list_errors = 0
 
         async def _visit(parent_id: MirrorStableId) -> list[MirrorStableId]:
             async with cs.observe() as read:
@@ -98,12 +119,13 @@ class BackfillService:
         async def _visit_observed(
             parent_id: MirrorStableId, read: ReadSeq
         ) -> list[MirrorStableId]:
-            nonlocal checked, added, updated, removed, list_errors
+            nonlocal checked, added, updated, list_errors
             try:
                 items = await self._syno_paths.list_children(self._drive_api, parent_id)
             except Exception:
                 _L.exception("Failed to list parent %r", parent_id)
                 list_errors += 1
+                session.preserve(parent_id)
                 return []
 
             db_children = await self._storage.get_children(parent_id)
@@ -111,11 +133,15 @@ class BackfillService:
             db_locators = await self._storage.get_locators(list(db_by_id))
             children: list[MirrorStableId] = []
 
-            for item in items:
-                checked += 1
-                from_api = convert_file_info(item, parent_id=parent_id)
-                if from_api is None:
-                    continue
+            checked += len(items)
+            listed = [
+                (item, o)
+                for item in items
+                if (o := convert_file_info(item, parent_id=parent_id)) is not None
+            ]
+            session.saw(o.record.id for _, o in listed)
+
+            for item, from_api in listed:
                 node_id = from_api.record.id
                 existing = db_by_id.get(node_id)
 
@@ -147,26 +173,20 @@ class BackfillService:
                 if item["type"] == "dir":
                     children.append(node_id)
 
-            api_ids = {
-                o.record.id
-                for item in items
-                if (o := convert_file_info(item, parent_id=parent_id)) is not None
-            }
-            for node_id, existing in db_by_id.items():
-                if node_id not in api_ids:
-                    removed += 1
-                    _L.info(
-                        "Removing node %r (%r) absent from API under %r",
-                        node_id,
-                        existing.name,
-                        parent_id,
-                    )
-                    if not dry_run:
-                        await cs.remove_listed_child(existing.id, parent_id, read=read)
-
             return children
 
         await parallel_bfs(initial, _visit)
+
+        if dry_run:
+            candidates = await session.removal_roots()
+            for node_id in candidates:
+                _L.info("dry-run: would remove %r absent from API", node_id)
+            removed = len(candidates)
+        else:
+            removed_ids = await session.commit_removals()
+            for node_id in removed_ids:
+                _L.info("Removed node %r absent from API", node_id)
+            removed = len(removed_ids)
 
         return {
             "checked": checked,

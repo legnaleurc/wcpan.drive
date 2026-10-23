@@ -12,18 +12,23 @@ Three focused service classes:
 from pathlib import Path
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.server.synology import convert_file_info
 from wcpan.synology import (
     SynologyChildRef,
     SynologyClient,
+    SynologyError,
     SynologyFileId,
     SynologyFileInfo,
+    SynologyNetworkError,
     SynologyParentRef,
     SynologyPath,
+    SynologyPermanentLink,
 )
 
 from ..lib.mounts import SERVER_ROOT_ID, MountRegistry, is_virtual, mount_name
 from ..lib.names import normalize_name
-from ..types import SynologyLocator, VirtualPath
+from ..types import NodeObservation, SynologyLocator, VirtualPath
+from .operations import LocateUndecidedError
 from .storage import StorageService
 
 
@@ -74,6 +79,29 @@ class SynologyPathService:
         if parent is not None:
             return parent.id
         return self._registry.lookup_mount_virtual_id(parent_ref)
+
+    async def locate(
+        self,
+        drive_api: SynologyClient,
+        node_id: MirrorStableId,
+    ) -> NodeObservation | None:
+        """Fetch *node_id* directly; ``None`` unless it exists under a mirrored parent.
+
+        Only a network failure is undecided. Other API errors count as absence,
+        since the error for a missing node is not established.
+        """
+        try:
+            info = await drive_api.get_file(SynologyPermanentLink(node_id))
+        except SynologyNetworkError as e:
+            raise LocateUndecidedError(str(e)) from e
+        except SynologyError:
+            return None
+        if not info or info.get("removed", False):
+            return None
+        parent_id = await self.resolve_parent(SynologyFileId(info["parent_id"]))
+        if parent_id is None:
+            return None
+        return convert_file_info(info, parent_id)
 
     async def list_children(
         self,

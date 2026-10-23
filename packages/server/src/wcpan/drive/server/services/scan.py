@@ -1,43 +1,32 @@
 """First-run / resume mirror scan: incremental sync_id BFS, then server-ready signal."""
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import partial
 from logging import getLogger
 
 from wcpan.drive.protocol.lib import utc_now
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.synology import convert_file_info
-from wcpan.synology import (
-    SynologyClient,
-    SynologyError,
-    SynologyFileId,
-    SynologyNetworkError,
-    SynologyPath,
-    SynologyPermanentLink,
-)
+from wcpan.synology import SynologyClient, SynologyFileId, SynologyPath
 
 from ..lib.bfs import parallel_bfs
 from ..lib.mounts import SERVER_ROOT_ID, mount_id
 from ..types import NodeObservation, ReadSeq
 from .paths import SynologyPathService
+from .reconcile import ReconcileSession, reconcile_session
 from .storage import StorageService
 from .sync import NodeSyncService
 
 
 _L = getLogger(__name__)
 
-# Concurrent Synology lookups when confirming end-of-scan removals.
-_CONFIRM_CONCURRENCY = 8
-
 
 @dataclass
 class ScanAccumulator:
-    """State for one incremental scan pass (deferred deletion)."""
+    """State for one incremental scan pass."""
 
-    seen_ids: set[MirrorStableId] = field(default_factory=lambda: set[MirrorStableId]())
-    subtree_preserve_roots: set[MirrorStableId] = field(
-        default_factory=lambda: set[MirrorStableId]()
-    )
+    session: ReconcileSession
     highest: int = 0
 
 
@@ -118,7 +107,7 @@ class StartupScanService:
             items = await self._syno_paths.list_children(self._drive_api, mid)
         except Exception:
             _L.exception("Failed to list mount path %r", syno_path)
-            acc.subtree_preserve_roots.add(mid)
+            acc.session.preserve(mid)
             return last_max_id, last_max_id, []
 
         _L.debug("Mount %r: %d item(s) from API", syno_path, len(items))
@@ -126,10 +115,11 @@ class StartupScanService:
         db_children = await self._storage.get_children(mid)
         db_child_ids = {n.id for n in db_children}
 
-        for item in items:
-            o = convert_file_info(item, parent_id=mid)
-            if o is not None:
-                acc.seen_ids.add(o.record.id)
+        acc.session.saw(
+            o.record.id
+            for item in items
+            if (o := convert_file_info(item, parent_id=mid)) is not None
+        )
 
         pre_scan_max_id = max(
             (item.get("max_id", item.get("sync_id", 0)) for item in items),
@@ -222,7 +212,7 @@ class StartupScanService:
                             this_max_id,
                             last_max_id,
                         )
-                        acc.subtree_preserve_roots.add(folder_id)
+                        acc.session.preserve(folder_id)
                         return []
                 else:
                     _L.debug(
@@ -236,13 +226,14 @@ class StartupScanService:
                 items = await self._syno_paths.list_children(self._drive_api, folder_id)
             except Exception:
                 _L.exception("Failed to list folder %s", folder_id)
-                acc.subtree_preserve_roots.add(folder_id)
+                acc.session.preserve(folder_id)
                 return []
 
-            for item in items:
-                o = convert_file_info(item, parent_id=folder_id)
-                if o is not None:
-                    acc.seen_ids.add(o.record.id)
+            acc.session.saw(
+                o.record.id
+                for item in items
+                if (o := convert_file_info(item, parent_id=folder_id)) is not None
+            )
 
             db_children = await self._storage.get_children(folder_id)
             db_child_ids = {n.id for n in db_children}
@@ -284,100 +275,58 @@ class StartupScanService:
         self,
         last_max_ids: dict[str, int],
     ) -> tuple[dict[str, int], dict[str, int]]:
-        """Incremental sync_id scan across all mounts; deferred removals via NodeSyncService.
+        """Incremental sync_id scan across all mounts, then confirmed removals.
 
         Pass ``last_max_ids`` with zero values for a full initial scan.
         """
-        async with self._node_sync.observe() as scan_read:
-            return await self._scan_all_mounts_observed(last_max_ids, scan_read)
-
-    async def _scan_all_mounts_observed(
-        self,
-        last_max_ids: dict[str, int],
-        scan_read: ReadSeq,
-    ) -> tuple[dict[str, int], dict[str, int]]:
         per_mount_highest: dict[str, int] = {
             name: last_max_ids.get(name, 0) for name in self._syno_paths.mounts
         }
         pre_scan_max_ids: dict[str, int] = {
             name: last_max_ids.get(name, 0) for name in self._syno_paths.mounts
         }
-        acc = ScanAccumulator()
+        mount_ids = {mount_id(n) for n in self._syno_paths.mounts}
 
-        for name, syno_path in self._syno_paths.mounts.items():
-            _L.debug("Scanning mount %r (%s)", name, syno_path)
-            mid = mount_id(name)
-            mount_last = last_max_ids.get(name, 0)
-            try:
-                async with self._node_sync.observe() as level_read:
-                    (
-                        level_highest,
-                        pre_scan_max_id,
-                        subfolders,
-                    ) = await self._scan_mount_level(
-                        mid=mid,
-                        syno_path=syno_path,
+        async with reconcile_session(
+            mount_ids,
+            storage=self._storage,
+            node_sync=self._node_sync,
+            locate=partial(self._syno_paths.locate, self._drive_api),
+        ) as session:
+            acc = ScanAccumulator(session=session)
+            for name, syno_path in self._syno_paths.mounts.items():
+                _L.debug("Scanning mount %r (%s)", name, syno_path)
+                mid = mount_id(name)
+                mount_last = last_max_ids.get(name, 0)
+                try:
+                    async with self._node_sync.observe() as level_read:
+                        (
+                            level_highest,
+                            pre_scan_max_id,
+                            subfolders,
+                        ) = await self._scan_mount_level(
+                            mid=mid,
+                            syno_path=syno_path,
+                            last_max_id=mount_last,
+                            acc=acc,
+                            read=level_read,
+                        )
+                    await self._scan_subtree_bfs(
+                        initial=subfolders,
                         last_max_id=mount_last,
                         acc=acc,
-                        read=level_read,
                     )
-                await self._scan_subtree_bfs(
-                    initial=subfolders,
-                    last_max_id=mount_last,
-                    acc=acc,
-                )
-                per_mount_highest[name] = max(mount_last, level_highest, acc.highest)
-                pre_scan_max_ids[name] = pre_scan_max_id
-            except Exception:
-                _L.exception("Error scanning mount %r (%s)", name, syno_path)
-                acc.subtree_preserve_roots.add(mid)
+                    per_mount_highest[name] = max(
+                        mount_last, level_highest, acc.highest
+                    )
+                    pre_scan_max_ids[name] = pre_scan_max_id
+                except Exception:
+                    _L.exception("Error scanning mount %r (%s)", name, syno_path)
+                    session.preserve(mid)
 
-        preserved = await self._storage.build_deferred_preserved_set(
-            acc.seen_ids,
-            acc.subtree_preserve_roots,
-        )
-        preserved |= await self._node_sync.touched_after(scan_read)
-        mount_ids = {mount_id(n) for n in self._syno_paths.mounts}
-        roots = await self._storage.deferred_removal_roots(preserved, mount_ids)
-        semaphore = asyncio.Semaphore(_CONFIRM_CONCURRENCY)
-
-        async def confirm(root: MirrorStableId) -> None:
-            async with semaphore:
-                await self._remove_unless_moved(root)
-
-        async with asyncio.TaskGroup() as group:
-            for root in roots:
-                group.create_task(confirm(root))
+            await session.commit_removals()
 
         return per_mount_highest, pre_scan_max_ids
-
-    async def _remove_unless_moved(self, node_id: MirrorStableId) -> None:
-        """Remove a node no listing reported, unless it moved during the scan.
-
-        A node can move into an already listed folder after that listing and out
-        of its old folder before that one is listed. Fetch it directly: if it
-        still exists under a known parent, record the move instead of removing it.
-        Only a network failure preserves the node, since the fetch could not
-        decide; other failures fall back to removal, as without this check.
-        """
-        async with self._node_sync.observe() as read:
-            try:
-                info = await self._drive_api.get_file(SynologyPermanentLink(node_id))
-            except SynologyNetworkError:
-                _L.warning("Could not confirm removal of %s; preserving it", node_id)
-                return
-            except SynologyError:
-                info = None
-            if info and not info.get("removed", False):
-                parent_id = await self._syno_paths.resolve_parent(
-                    SynologyFileId(info["parent_id"])
-                )
-                observation = convert_file_info(info, parent_id) if parent_id else None
-                if observation is not None:
-                    _L.debug("Node %s moved during scan to %s", node_id, parent_id)
-                    await self._node_sync.upsert(observation, read=read)
-                    return
-            await self._node_sync.delete(node_id, read=read)
 
     async def run_initial_scan(self) -> None:
         """First full scan or resume: align nodes + change feed before serving."""

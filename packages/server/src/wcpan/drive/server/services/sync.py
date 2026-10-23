@@ -175,29 +175,6 @@ class NodeSyncService:
 
         await self._write_queue.put(remove)
 
-    async def remove_listed_child(
-        self, node_id: MirrorStableId, parent_id: MirrorStableId, *, read: ReadSeq
-    ) -> None:
-        """Delete *node_id* only if it is still a child of *parent_id* when applied.
-
-        A listing that no longer contains a node does not prove deletion: the node
-        may have moved after the mirror was read, or a later read may have seen it.
-
-        Used by: backfill.
-        """
-        self._order.hold(read)
-
-        async def remove() -> None:
-            try:
-                if not self._order.admits(node_id, read):
-                    return
-                if await self._storage.delete_subtree_if_parent(node_id, parent_id):
-                    self._order.record(node_id, read)
-            finally:
-                self._order.release(read)
-
-        await self._write_queue.put(remove)
-
     async def enrich(self, record: NodeRecord) -> NodeRecord:
         """Async media enrichment only — no persistence side-effects.
 

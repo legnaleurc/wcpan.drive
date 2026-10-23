@@ -8,7 +8,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.client.remote._lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
@@ -426,6 +426,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                 )
                 mounts = {"docs": "/volume1/docs"}
                 drive_api = MagicMock()
+                drive_api.get_file = AsyncMock(return_value=None)
 
                 async def _list_children(_nw: object, parent_id: str) -> list[dict]:
                     if parent_id == "dir-1":

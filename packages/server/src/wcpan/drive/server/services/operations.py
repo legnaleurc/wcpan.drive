@@ -22,6 +22,10 @@ class OperationUnavailableError(Exception):
     """The backend failed or returned an unusable result; a retry may succeed."""
 
 
+class LocateUndecidedError(Exception):
+    """The backend could not tell whether a node still exists."""
+
+
 class NodeOperations(Protocol):
     """Mutate and read backend nodes, keeping the mirror in step.
 
