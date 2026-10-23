@@ -1,0 +1,525 @@
+# Drive client/server workspace and extraction plan
+
+Status: the uv workspace and namespace migration are initialized at version
+`0.1.0`. The generic backend architecture and hash interface changes below remain
+planned; initialization preserves the existing protocol and Synology behavior.
+
+## Objective
+
+Separate the HTTP client, generic mirrored file server, and Synology backend.
+Validate the server boundary against a Linux local filesystem backend so that
+the extracted server does not retain Synology synchronization assumptions.
+
+The public mirror uses stable, opaque node IDs. Backend locators, event sources,
+and discovery progress remain private to each backend.
+
+## Packages and dependencies
+
+Use one uv workspace under the `wcpan.drive` umbrella. Each member is separately
+published, with its own dependencies and version. The root is not published.
+
+| Distribution | Python namespace | Responsibility |
+| --- | --- | --- |
+| `wcpan-drive-client` | `wcpan.drive.client` | Client framework, public contracts, model, exceptions; constructors in `client.api` |
+| `wcpan-drive-client-google` | `wcpan.drive.client.google` | Google provider |
+| `wcpan-drive-client-remote` | `wcpan.drive.client.remote` | HTTP server provider and client-model adaptation |
+| `wcpan-drive-client-crypt` | `wcpan.drive.client.crypt` | Encryption middleware |
+| `wcpan-drive-client-sqlite` | `wcpan.drive.client.sqlite` | Client metadata cache |
+| `wcpan-drive-client-cli` | `wcpan.drive.client.cli` | Client command line |
+| `wcpan-drive-protocol` | `wcpan.drive.protocol` | Lightweight HTTP wire models and serialization |
+| `wcpan-drive-server` | `wcpan.drive.server` | Mirror, HTTP server, reconciliation, and backend extension contracts |
+| `wcpan-drive-server-synology` | `wcpan.drive.server.synology` | Synology adapter |
+| Future `wcpan-drive-server-filesystem` | `wcpan.drive.server.filesystem` | Filesystem backend; not yet shipped |
+
+Client and server roots are namespace packages with explicit public modules and
+private implementation. Neither needs a separate core distribution initially;
+extract contracts only if dependency or release needs justify it. The protocol
+package depends on neither runtime. The remote provider depends on the client
+framework and protocol, never on the server. The server must eventually depend
+on neither the client framework nor concrete backends. The current initialization
+removes client-framework imports from the server but still has Synology-specific
+orchestration; the adapter distribution supplies the runnable server command.
+
+Breaking migration is accepted: retire old distribution/import names directly,
+without compatibility wrappers. Newly named distributions begin at `0.1.0`.
+Existing external consumers, including duld, require coordinated migration.
+
+### Independent feed protocol
+
+`wcpan-drive-server` is an independent file service. It owns its node model, HTTP payloads,
+capabilities, metadata availability, and errors. Its payload may initially retain
+the current shape for compatibility, but need not follow `wcpan.drive.client` types
+or evolve with them.
+
+There are two distinct adaptations:
+
+```text
+Synology / filesystem
+    -> backend adaptation -> feed model and HTTP API
+    -> drive client adaptation -> wcpan.drive.client model
+```
+
+The client maps feed nodes, changes, capabilities, and errors into the drive
+interface, as other drive clients adapt their providers' APIs. Similar fields do
+not require a shared runtime type or dependency. Replace existing server imports
+from `wcpan.drive.client` with feed-owned definitions during extraction.
+
+## Ownership boundaries
+
+### Generic server
+
+- Normalized node metadata, virtual root/mount presentation, and opaque IDs.
+- SQLite mirror, public change log, tombstones, feed cursor validity, and GC.
+- Reconciliation sessions, coverage tracking, and conditional removal.
+- Atomic application of observations and backend persistence updates.
+- Generic HTTP handlers and translation of common application errors into HTTP.
+- Upload-session offsets, expiry, and request handling.
+- Readiness state, lifecycle coordination, and a private SQLite execution facility.
+- Optional derived metadata work, with conditional updates against its input version.
+
+### Backend
+
+- Identity rules and locator meaning, including reverse lookup from native events.
+- Listing, metadata retrieval, create, rename/move, delete, download, and upload.
+- Native error translation into common server errors.
+- Discovery strategy, notification registration, debounce, and recovery from loss.
+- Native checkpoint interpretation, serialization, comparison, and reset rules.
+- Source validation and backend-specific path, name, mount, and symlink policies.
+- Backend-specific routes, configuration, credentials, and I/O execution resources.
+
+The server owns generic readiness reporting; the backend reports synchronization
+progress and degraded coverage. The Synology webhook route is registered by the
+Synology backend through an application extension hook.
+
+## Node identity and backend state
+
+Remove `mutable_id` from the normalized server node model. Keep only opaque node
+IDs, parent IDs, and public metadata. The core must not parse Synology permanent
+links, Linux handles, or backend-specific ID prefixes.
+
+Identity must not falsely merge unrelated objects. Continuity across a rename or
+restart depends on the backend's documented identity strategy. Object replacement
+or an unresolvable identity transition may produce removal plus creation.
+
+Backend state lives in the same SQLite database as the mirror. The backend owns
+its schema and semantics, while the server supplies a transaction-bound write
+facility. Begin with concrete Synology locator/checkpoint tables; avoid designing
+a universal state-blob framework before both backend prototypes demonstrate the
+requirements. Indexed reverse lookup must remain possible.
+
+For Synology, store `file_id` in a locator table associated with the public node
+ID, with an index for webhook reverse lookup. Store the source path and `max_id`
+in a checkpoint table scoped to the backend instance and mount. Retaining the
+source path allows checkpoint invalidation when the source changes.
+
+Do not introduce a generic `mounts` table containing only an ID without a concrete
+need. Mounts can remain configuration-driven, with their virtual nodes in `nodes`
+and their Synology state in backend-owned tables. A generic mount table is only
+needed if generic persistent mount attributes emerge.
+
+Required persistence behavior:
+
+- Commit a node observation and its identity/locator binding together.
+- Locator-only changes do not emit public metadata changes.
+- Delete or invalidate obsolete bindings consistently with node lifecycle.
+- Scope identity and checkpoint state to a source instance; changing a source
+  configuration must not accidentally reuse another source's state.
+- Keep virtual IDs and backend IDs collision-free through an explicit namespace
+  boundary, rather than assumptions about a backend's ID spelling.
+
+### Writer queue and transactions
+
+Use one writer queue as the primary database concurrency mechanism. Each logical
+state transition runs as one queued job, reading current database state, checking
+conditions, and updating core and backend tables in one transaction.
+
+The feed server owns the connection and transaction lifecycle. The backend can
+execute SQLite SQL for its own tables through the supplied connection; it must
+not commit, roll back, or open another write connection. Core tables are modified
+through core operations using that same connection. Register backend schema
+migrations with database initialization. This intentionally makes backend
+persistence SQLite-specific rather than introducing a storage abstraction.
+
+Cross-table atomicity does not require foreign-key enforcement. If foreign keys
+are disabled, explicit lifecycle cleanup must prevent orphaned backend rows.
+Separate queued jobs are separate commits; related writes must share a job.
+
+Retain WAL mode. Use explicit `BEGIN` (deferred) for read/check/write jobs so reads
+are included in the transaction. `BEGIN IMMEDIATE` is not required when all writes
+use the single writer. The current Python implicit transaction starts at the
+first DML write, so entering `_read_write` alone does not include preceding reads.
+WAL readers on separate connections can continue reading committed snapshots.
+
+Perform external network calls and filesystem reads before entering the database
+transaction. Their results can become stale; validate those cases when applying
+them. The queue serializes database state transitions, not the external source.
+
+### Linux file handles
+
+For supported Linux filesystems, use opaque file handles from
+`name_to_handle_at()` as object identity evidence and use `open_by_handle_at()`
+where supported and permitted. Qualify handles by persistent filesystem identity
+and store their type and bytes without interpreting their encoding.
+
+Do not persist a mount ID as filesystem identity. Probe filesystem capabilities;
+opening by handle requires `CAP_DAC_READ_SEARCH`. A stale handle triggers
+validation/reconciliation, not unconditional deletion. Handle persistence and
+rename behavior must be verified for the supported filesystem and handle flags.
+
+The mirror remains a tree: one node has one name and parent. Represent hard-link
+entries as separate public nodes, with a potentially shared backend object handle.
+Do not make the handle column unique across those entry bindings. Preserving an
+entry ID through an ambiguous hard-link rename is not guaranteed.
+
+Handles do not replace entry locators: rename and unlink still require a parent
+directory and name. Safe resolution and mutation race handling belong to the
+filesystem adapter. Cross-filesystem moves are removal plus creation unless the
+backend explicitly implements a stronger identity policy.
+
+## Backend contracts
+
+Establish two internal interfaces before extracting packages.
+
+### Operations
+
+Operations accept public stable IDs and semantic inputs. They return normalized
+observations or common errors. Handlers must not construct native references or
+catch Synology exceptions.
+
+Keep infrastructure dependencies keyword-only, following repository conventions.
+Exact method signatures will be derived from existing handlers and the filesystem
+prototype rather than fixed in this document.
+
+Upload bookkeeping belongs to the server, but the backend controls staging and
+finalization. A filesystem backend may require a temporary file on the destination
+filesystem for atomic finalization. Synology conflict handling remains inside its
+adapter.
+
+### Synchronization
+
+Separate notification hints from authoritative observations:
+
+- Invalidation: a node or scope needs to be read again.
+- Observation: normalized metadata from a backend read, or a confirmed absence.
+- Coverage: which directory listings completed and which scopes remain unknown.
+- Progress: optional backend state that can safely be persisted after the work it
+  covers is durable.
+
+A backend need not provide notifications, a replayable event stream, ordered source
+revisions, or a checkpoint. Polling and full traversal are valid implementations.
+
+Do not model all backends as a Synology scan with renamed `max_id` fields.
+
+## Reconciliation and concurrency
+
+Use one reconciliation mechanism for startup, backfill, and scoped repair.
+Conceptually, a session begins for a scope, accepts observations and coverage,
+then commits eligible removals and safe progress.
+
+Required invariants:
+
+1. Missing from an incomplete listing does not mean deleted. Failed or inaccessible
+   scopes preserve existing nodes and report degraded coverage.
+2. A successful listing does not imply an atomic snapshot of the whole tree.
+3. Listing-derived removals are conditional on the expected parent/binding and
+   reconciliation state. A move observed elsewhere must not be deleted by an
+   older listing of its former parent.
+4. Scan results must not overwrite newer API or notification-driven reconciliation.
+   Coordinate backend reads and application, track invalidations during reads,
+   and validate/retry conflicting results.
+5. A sequence number assigned when a read starts is not proof of source freshness.
+   Likewise, a serialized SQLite writer does not serialize observations.
+6. Derived metadata applies only while its source observation remains current.
+   Stale enrichment must not resurrect a removed node.
+7. Backfill and maintenance cannot bypass concurrency control through a second
+   process. Choose an exclusive lease/lock or execution through the running server.
+8. Confirm the configured source is present before declaring its root covered.
+   An unmounted filesystem exposing an empty mount-point directory must not erase
+   the mirror.
+
+The single writer and transaction-local checks solve database check-then-write
+races. Add targeted observation validation where external reads can become stale,
+rather than a general locking or version framework around every operation.
+
+Prefer a bounded, understandable reconciliation implementation over a universal
+version system. Native source revisions can help where their ordering guarantees
+are established, but are not mandatory in the common contract.
+
+## Discovery progress and public cursors
+
+Public feed cursors refer only to committed server changes. Backend checkpoints
+refer only to backend discovery. Scan coverage is separate from both.
+
+For Synology:
+
+- Keep `sync_id`, `max_id`, pre-scan watermarks, count checks, and pruning inside
+  the adapter.
+- Persist progress only after every observation it covers is durable.
+- Incomplete coverage must either prevent checkpoint advancement or retain durable
+  repair work that cannot be skipped by the new checkpoint. Initially prefer
+  withholding advancement for the affected mount.
+- Do not treat matching child counts as proof that metadata is unchanged.
+
+For filesystems:
+
+- Do not assume a durable inotify/fanotify cursor.
+- Establish watches and scan with a race-aware strategy, then reconcile scopes
+  invalidated during setup and traversal.
+- Queue overflow or lost coverage schedules repair. Restart recovery normally
+  requires a traversal unless another trustworthy recovery mechanism is available.
+- Timestamp or hash caches are backend optimizations, not proof of subtree coverage.
+
+Backends with potentially silent event loss need periodic repair. The adapter
+defines the necessary repair scope; the server can supply scheduling facilities.
+
+Change-log compaction must expose a retention boundary or epoch so old public
+cursors fail explicitly and clients can resynchronize.
+
+## Persistence, hashing, and enrichment
+
+Persist basic observations before optional media probing. Media probing failure
+must not discard discovered nodes or permit unsafe checkpoint advancement.
+
+Separate durable discovery from publication requirements. The independent feed
+server can internally persist pending checksums, but every file exposed through
+the drive contract must have a complete checksum and a compatible client hasher.
+The client does not define verification without a checksum. Do not add silent
+verification skipping or algorithm-only file nodes to the drive contract.
+
+### Hash model and client adaptation
+
+Use flat fields rather than a nested hash object:
+
+```python
+hash: str
+hash_algorithm: str
+```
+
+`hash` remains the digest string, preserving existing truth checks and digest
+comparisons. `hash_algorithm` is an explicit normalized field, persisted alongside
+the digest rather than hidden in raw/private provider metadata. Both are strings;
+an empty algorithm means undefined, with no nullable field or separate hash type.
+
+| Drive node | `hash` | `hash_algorithm` |
+| --- | --- | --- |
+| Directory | Empty string | Empty string |
+| File | Complete, nonempty digest | Nonempty algorithm identifier |
+
+Validate these invariants when constructing/adapting drive nodes. Use precise
+algorithm identifiers with documented computation and digest encoding, including
+distinct identifiers for any provider-specific hashing scheme. Unknown algorithms
+must fail explicitly rather than falling back to another algorithm.
+
+The feed payload can use the same flat shape without depending on the drive model.
+Define any pending-file representation independently. The drive adapter exposes a
+pending file only after its checksum is complete; checksum completion must produce
+a feed update so the file can become visible to drive clients. Handling an already
+visible file whose content changes and checksum becomes pending must also preserve
+the complete-checksum contract, without presenting an old digest as current.
+
+The Google adapter supplies `md5` from its provider contract; the feed adapter
+reads the algorithm from the server. Backend-native or server-calculated checksums
+are both valid. Hash algorithm selection is per file, without exposing mounts or
+putting hashing policy on directory nodes.
+
+The current transfer paths support this design:
+
+- duld and CLI uploads obtain a file node before calculating the local checksum.
+- Existing-file checks use the existing file node.
+- CLI downloads verify against the source file node after transfer.
+- The CLI hash helper already calls `Drive.get_hasher_factory(node)`.
+
+No pre-upload algorithm negotiation is needed for those paths. Core transfer
+helpers move bytes; their callers perform checksum verification afterward.
+
+Coordinated changes are required outside this repository:
+
+- `wcpan-drive-client`: add `hash_algorithm` to `Node`; make
+  `FileService.get_hasher_factory(node)` accept file context. Single-source Drive
+  forwards it; multi-source Drive forwards the unscoped node to its service.
+- Provider clients: populate the algorithm and select a compatible per-file
+  factory. Google can keep its fixed MD5 implementation; the feed client selects
+  from the returned node rather than hard-coding MD4.
+- `wcpan-drive-client-sqlite`: persist the algorithm and migrate existing records with a
+  source-aware policy. Remove assumptions that hash nullability identifies a
+  directory; pending or malformed file metadata must not change node kind.
+- `wcpan-drive-client-crypt`: forward node context and preserve the encrypt-before-hash
+  wrapper. A global algorithm lookup must not bypass service transformations.
+- CLI/duld: preserve digest comparisons and required-checksum verification, update
+  fixtures/contracts, and exercise mixed algorithms within one feed service.
+- CLI process-pool hashing: factories must remain picklable, using suitable
+  module-level callables or partials rather than closures capturing an HTTP client.
+
+Hashing a changing local file requires validation and retry; a close-write event
+is a scheduling hint, not a guarantee that content will remain unchanged. Hash and
+media updates must be conditional on the source state they examined.
+
+Keep SQLite execution separate from backend blocking I/O and bulk content reads.
+The filesystem backend owns bounded pools. A timeout does not cancel an underlying
+blocked thread, so pool saturation and shutdown need explicit behavior.
+
+## Compatibility and configuration
+
+Use separate server settings, named backend instances, and virtual mount names.
+The following is a proposed schema, not an implemented configuration change:
+
+```yaml
+version: 3
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  database_url: "sqlite:////data/feed.db"
+  upload_tmp_dir: "/data/uploads"
+
+backends:
+  nas:
+    type: synology
+    url: "https://nas.example.com:5001"
+    username: "feed-user"
+    password: "..."
+    webhook:
+      callback_url: "https://feed.example.com"
+      app_id: "wcpan-drive-server-synology"
+    local_paths:
+      "/volume1/photos": "/mnt/photos"
+
+  disk:
+    type: filesystem
+    watch: auto
+
+mounts:
+  photos:
+    backend: nas
+    source: "/volume1/photos"
+  documents:
+    backend: disk
+    source: "/srv/documents"
+```
+
+The core parses `server`, backend instance names and types, and mount names and
+backend references. Each backend parses its own settings and mount `source`.
+Filesystem settings such as `watch: auto` remain illustrative until that backend
+is implemented. Multiple mounts may share one backend instance.
+
+Mount keys are single-component virtual names: `photos` exposes `/photos`.
+They are not arbitrary virtual paths; nested mount names are outside the initial
+scope. Reject empty names, names containing `/`, and `.` or `..`. `/` is the
+server's virtual root. Backend name rules for source entries remain separate.
+
+Keep `callback_url` under the Synology webhook configuration. Its only current
+operational use is webhook registration; the generic server has no `public_url`
+requirement. A filesystem-only deployment does not need a callback URL.
+
+Backend instance names identify persistent source instances. Changes to a mount's
+backend or source require an explicit reconfiguration policy and checkpoint
+invalidation. Locators, handles, `max_id`, and other discovery progress belong in
+the database, never in configuration. Version 3 is proposed as the successor to
+the existing version 2 schema.
+
+- Preserve existing client imports, HTTP routes, error behavior, and CLI behavior
+  during the internal refactor unless a separately reviewed migration requires change.
+- Release a client decoder that tolerates absent `mutable_id` before removing the
+  field from server responses. Keep a compatibility field during transition.
+- Keep Synology credentials, native mount paths, and webhook settings in backend
+  configuration; generic server settings remain in the server configuration.
+- Provide explicit database migration and rollback/backup guidance before extraction.
+  Existing node IDs and public feed continuity should survive migration.
+- Update `README.md`, `server.example.yaml`, and configuration tests together when
+  installation, commands, or configuration behavior changes.
+
+## Implementation stages
+
+### 1. Establish correctness baselines
+
+Add targeted unittest coverage for checkpoint durability, incomplete scans,
+cross-folder moves, and stale asynchronous writes. Verify the suspected failure
+paths before treating review findings as established bugs. Fix confirmed issues
+within the current package.
+
+Deliverable: documented invariants supported by regression tests.
+
+### 2. Separate normalized records and backend state
+
+Introduce internal protocol/mirror types, Synology locator persistence, and a
+transaction-bound application path. Stop counting locator changes as public
+metadata updates. Prepare tolerant client decoding and migration tests.
+
+Deliverable: generic records contain no Synology locators; existing clients remain
+compatible with server responses.
+
+### 3. Introduce operations and reconciliation boundaries
+
+Move native API calls and exception handling out of generic handlers. Route scan,
+backfill, and scoped repair through common reconciliation semantics. Separate
+durable discovery from optional enrichment and settle publication requirements.
+
+Deliverable: generic HTTP and mirror modules import neither `wcpan.synology` nor
+`wcpan.drive.client` types. Core and backend persistence share queued transactions.
+
+### 4. Validate with a minimal filesystem backend
+
+Start with traversal and read operations on a documented supported filesystem,
+then add watcher invalidations and recovery. Exercise stable handle identity,
+hard links, rename, replacement, inaccessible directories, source disappearance,
+restart, overflow recovery, and reads finishing out of order. Add mutations and
+upload staging to verify that those interfaces are also backend-neutral.
+
+Deliverable: both backends satisfy the common contract without filesystem code
+pretending to provide a Synology checkpoint or immutable entry locator.
+
+### 5. Complete distribution boundaries
+
+The workspace initialization establishes independently buildable distributions.
+Finish removing Synology orchestration from the generic server through the backend
+contracts proven in earlier stages. Keep client and server dependency sets separate.
+No compatibility wrapper is planned for the retired Synology client package.
+
+Coordinate the hash model and service-interface release across the client framework,
+SQLite, providers, crypt, CLI, and duld. Validate independent wheel installations,
+not only imports within the shared development environment.
+
+## Validation
+
+Use `unittest` and the existing async aiohttp patterns. Run `make test` and
+`make lint` for implementation changes. Add focused tests for:
+
+- Locator updates without public changes and atomic node/binding persistence.
+- Crash recovery around observation writes and checkpoint advancement.
+- Partial coverage, permission failures, and missing sources without false removals.
+- Moves between directories, stale reads, stale enrichment, and tombstones.
+- Existing/new client and server wire compatibility.
+- Flat hash field validation, checksum completion visibility, and mixed-algorithm
+  upload/download verification through core, CLI, and duld.
+- Algorithm persistence across cache reloads, crypt hasher wrapping, and factory
+  serialization through the CLI process pool.
+- Filesystem hard-link entry semantics, handle staleness, restart, and watcher loss.
+- Upload staging/finalization and backend error translation.
+- Cursor expiration after compaction and maintenance writer exclusion.
+
+Tests should verify behavioral guarantees rather than mirror implementation details.
+
+## Decisions still requiring review
+
+1. Finalize filesystem backend scope before adding its workspace member.
+2. Confirm separate public nodes for hard-link entries and limited continuity for
+   ambiguous entry renames.
+3. Choose the first supported filesystem/deployment requirements, including whether
+   handle-based reopening privileges are required or optional.
+4. Define feed pending-checksum visibility, especially updates to files previously
+   exposed with a complete checksum, while preserving the drive file contract.
+5. Choose maintenance locking versus routing backfill through the running server.
+6. Choose release automation and independent versus coordinated version policy
+   after the initial `0.1.0` releases.
+
+## References
+
+This plan incorporates two Claude architecture reviews. Review suggestions are
+design inputs; suspected current bugs still need focused reproduction.
+
+- Existing implementation: `packages/protocol/src/wcpan/drive/protocol/types.py`
+  and `packages/server/src/wcpan/drive/server/{services,handlers,app.py}`.
+- [Linux file handles](https://man7.org/linux/man-pages/man2/open_by_handle_at.2.html)
+- [inotify behavior and limitations](https://man7.org/linux/man-pages/man7/inotify.7.html)
+- [fanotify behavior and limitations](https://man7.org/linux/man-pages/man7/fanotify.7.html)
+- [Inode and hard-link semantics](https://man7.org/linux/man-pages/man7/inode.7.html)
