@@ -8,6 +8,7 @@
     "packages/client-sqlite/src",
     "packages/protocol/src",
     "packages/server/src",
+    "packages/server-filesystem/src",
     "packages/server-synology/src"
   ],
   "pythonVersion": "3.13",
@@ -21,6 +22,7 @@
     "packages/client-sqlite/src",
     "packages/protocol/src",
     "packages/server/src",
+    "packages/server-filesystem/src",
     "packages/server-synology/src"
   ],
   "venvPath": ".",

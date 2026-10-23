@@ -7,7 +7,7 @@ import tempfile
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -15,6 +15,7 @@ from wcpan.drive.protocol.types import MirrorStableId
 from wcpan.drive.server.app import create_app
 from wcpan.drive.server.backend import CoreServices
 from wcpan.drive.server.keys import NODE_OPERATIONS_KEY
+from wcpan.drive.server.services.operations import OperationNotSupportedError
 from wcpan.drive.server.types import BackendLocator, ServerConfig
 
 
@@ -116,3 +117,18 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master")}
         con.close()
         self.assertIn("fake_backend", tables)
+
+    async def test_unsupported_operation_is_forbidden(self) -> None:
+        self.backend.runtime.operations.create_folder = AsyncMock(
+            side_effect=OperationNotSupportedError("read-only")
+        )
+        self.backend.runtime.discovered.set()
+        async with asyncio.timeout(5):
+            while (await self.client.get("/readyz")).status != 200:
+                await asyncio.sleep(0.01)
+
+        resp = await self.client.post(
+            "/api/v1/nodes", json={"name": "x", "parent_id": "_docs"}
+        )
+
+        self.assertEqual(resp.status, 403)

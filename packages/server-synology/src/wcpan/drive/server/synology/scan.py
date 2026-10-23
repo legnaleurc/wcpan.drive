@@ -5,10 +5,9 @@ from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
 
-from wcpan.drive.protocol.lib import utc_now
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MirrorStableId
 from wcpan.drive.server.lib.bfs import parallel_bfs
-from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, mount_id
+from wcpan.drive.server.lib.mounts import mount_id, structural_records
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -29,54 +28,6 @@ class ScanAccumulator:
 
     session: ReconcileSession
     highest: int = 0
-
-
-def _make_root_record() -> NodeRecord:
-    now = utc_now()
-    return NodeRecord(
-        id=SERVER_ROOT_ID,
-        parent_id=None,
-        name="",
-        is_directory=True,
-        created_time=now,
-        modified_time=now,
-        changed_time=now,
-        mime_type="application/x-directory",
-        hash="",
-        hash_algorithm="",
-        size=0,
-        is_image=False,
-        is_video=False,
-        width=0,
-        height=0,
-        ms_duration=0,
-    )
-
-
-def _make_mount_record(name: str) -> NodeRecord:
-    now = utc_now()
-    return NodeRecord(
-        id=mount_id(name),
-        parent_id=SERVER_ROOT_ID,
-        name=name,
-        is_directory=True,
-        created_time=now,
-        modified_time=now,
-        changed_time=now,
-        mime_type="application/x-directory",
-        hash="",
-        hash_algorithm="",
-        size=0,
-        is_image=False,
-        is_video=False,
-        width=0,
-        height=0,
-        ms_duration=0,
-    )
-
-
-def _structural_records(mounts: dict[str, SynologyPath]) -> list[NodeRecord]:
-    return [_make_root_record()] + [_make_mount_record(name) for name in mounts]
 
 
 class StartupScanService:
@@ -344,7 +295,7 @@ class StartupScanService:
             _L.debug(
                 "Creating root node and %d mount node(s)", len(self._syno_paths.mounts)
             )
-            structural = _structural_records(self._syno_paths.mounts)
+            structural = structural_records(self._syno_paths.mounts)
             async with self._node_sync.observe() as read:
                 await self._node_sync.upsert_batch(
                     [NodeObservation(record=r, locator=None) for r in structural],
@@ -354,7 +305,7 @@ class StartupScanService:
             _L.info("Resuming with per-mount max_ids: %s", last_max_ids)
             # First run already emitted structural rows into `changes`; keep `nodes`
             # in sync (e.g. new mounts in config) without duplicate feed rows.
-            structural = _structural_records(self._syno_paths.mounts)
+            structural = structural_records(self._syno_paths.mounts)
             _L.debug("Ensuring %d mount node(s) exist", len(self._syno_paths.mounts))
             await self._node_sync.sync_nodes(structural)
 

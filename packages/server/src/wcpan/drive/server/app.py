@@ -8,6 +8,7 @@ from logging import getLogger
 from pathlib import Path
 
 from aiohttp import web
+from aiohttp.typedefs import Handler
 
 from .backend import Backend, BackendRuntime, CoreServices
 from .handlers.changes import get_changes, get_cursor, get_root
@@ -37,6 +38,7 @@ from .keys import (
     WRITE_QUEUE_KEY,
 )
 from .services.off_main import OffMainService
+from .services.operations import OperationNotSupportedError
 from .services.storage import StorageService, create_storage_service
 from .services.sync import NodeSyncService
 from .services.upload import create_upload_service
@@ -175,9 +177,20 @@ def _create_lifecycle(backend: Backend):
     return _app_lifecycle
 
 
+@web.middleware
+async def _unsupported_middleware(
+    request: web.Request, handler: Handler
+) -> web.StreamResponse:
+    try:
+        return await handler(request)
+    except OperationNotSupportedError as e:
+        raise web.HTTPForbidden(reason=str(e) or "Not supported by this backend")
+
+
 def create_app(config: ServerConfig, *, backend: Backend) -> web.Application:
     app = web.Application(
-        client_max_size=8 * 1024 * 1024
+        client_max_size=8 * 1024 * 1024,
+        middlewares=[_unsupported_middleware],
     )  # 8 MiB limit for JSON/form bodies; upload endpoints use iter_chunked and bypass this
     app[CONFIG_KEY] = config
     app.cleanup_ctx.append(_create_lifecycle(backend))

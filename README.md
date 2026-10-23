@@ -24,6 +24,7 @@ namespace migration; the old package names and import paths are not aliases.
 | `packages/protocol` | `wcpan-drive-protocol` | `wcpan.drive.protocol` |
 | `packages/server` | `wcpan-drive-server` | `wcpan.drive.server` |
 | `packages/server-synology` | `wcpan-drive-server-synology` | `wcpan.drive.server.synology` |
+| `packages/server-filesystem` | `wcpan-drive-server-filesystem` | `wcpan.drive.server.filesystem` |
 
 The client and server roots are namespace packages. Client framework constructors
 are available from `wcpan.drive.client.api`; types and exceptions have explicit
@@ -37,8 +38,9 @@ module paths from `wcpan.drive.google`, `.crypt`, and `.sqlite` to
 The generic server (`wcpan-drive-server`) holds the mirror, change feed, HTTP
 API, and reconciliation, and defines the contract a storage backend implements.
 It does not depend on `wcpan-synology`. The Synology backend and the
-`wcpan.drive.server` command come from `wcpan-drive-server-synology`. No
-filesystem backend is shipped yet.
+`wcpan.drive.server` command come from `wcpan-drive-server-synology`; a
+read-only local filesystem backend and the `wcpan.drive.server.filesystem`
+command come from `wcpan-drive-server-filesystem`. A server runs one backend.
 
 Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm in
 `hash_algorithm` (both empty for directories and for files without a checksum).
@@ -185,6 +187,48 @@ provided by `wcpan-synology`, which only the Synology server package needs. The 
 errors in `wcpan.drive.client.remote.exceptions` (`SynologyServerError` and its
 subclasses for access, upload, and name-too-long failures), which describe the
 HTTP client/server boundary.
+
+### Filesystem server
+
+`wcpan.drive.server.filesystem` serves local directories read-only. It uses the
+same config file shape without the `synology` section; mount sources are
+absolute host directories:
+
+```yaml
+version: 2
+database_url: "/data/mirror.db"
+mounts:
+  photos: "/srv/photos"
+local_paths: {}
+filesystem:
+  rescan_interval: 3600  # seconds between full rescans; default 3600
+```
+
+```bash
+wcpan.drive.server.filesystem --config server.yaml serve
+wcpan.drive.server.filesystem --config server.yaml gc
+wcpan.drive.server.filesystem --config server.yaml squash
+wcpan.drive.server.filesystem --config server.yaml rebind-mount photos
+```
+
+- Discovery is a full scan at startup and then every `rescan_interval`
+  seconds; there is no file watcher yet, so changes appear after the next scan.
+- Regular files and directories are mirrored; symlinks and special files are
+  skipped. Each directory entry is its own node, so hard links appear once per
+  link.
+- File checksums are MD5, computed by the server and reused while a file's
+  size and timestamps are unchanged. A file that changes while being hashed
+  keeps its previous version until the next scan.
+- Node IDs follow the object, not the path, using Linux file handles (ext4 is
+  the first supported filesystem; others fall back to inode numbers). Renames
+  and moves keep their IDs; a replaced file gets a new one.
+- Creating, renaming, moving, deleting, and uploading return 403.
+- Images and videos are probed from the mount sources unless `local_paths` maps
+  them elsewhere.
+- A mount whose source is missing, unreadable, or now on a different
+  filesystem (for example an unmounted disk) keeps its mirror instead of being
+  emptied. If the filesystem change is intended, stop the server and run
+  `rebind-mount NAME`. `gc`, `squash`, and `rebind-mount` are offline commands.
 
 ## Requirements
 

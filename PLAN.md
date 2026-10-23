@@ -630,6 +630,35 @@ upload staging to verify that those interfaces are also backend-neutral.
 Contract changes found here are made across the server and Synology packages in
 this workspace; the extraction in stage 3 does not freeze the backend interface.
 
+Decided scope for the first filesystem backend (`wcpan-drive-server-filesystem`):
+
+- Read-only. Discovery is a full traversal at startup plus periodic rescans; no
+  watcher yet. Listing and downloads work; mutations and uploads are rejected as
+  unsupported.
+- Each directory entry is its own public node; hard links share a backend handle,
+  and an ambiguous hard-link rename may appear as removal plus creation.
+- Identity comes from `name_to_handle_at()` qualified by the filesystem ID, with
+  ext4 the first supported filesystem. `open_by_handle_at()` is optional, so the
+  server runs unprivileged and reads by path, validating identity. Without handle
+  support, identity falls back to the inode number.
+- One backend per server: the configuration keeps the version 2 shape, and
+  multi-backend configuration (version 3) follows once this backend works.
+- The server computes checksums for files, since the filesystem has none.
+
+Status: the read-only backend is implemented. Discovery runs through
+`ReconcileSession` with the same ordering and confirmed removals as Synology;
+`locate` re-checks a node at its mirrored path. Node IDs are generated and bound
+to `fs_entries` (identity plus the stat signature the MD5 came from). An entry
+keeps its ID when its name and identity match under the same parent, or when its
+identity's previous path no longer names it (rename or move); otherwise it is a
+new node, which covers replacement and new hard links. Unchanged files are not
+rehashed, and a file that changes while hashed is withheld. A mount whose
+filesystem ID differs from the one recorded in `fs_mounts` is preserved until
+`rebind-mount`. Contract changes this required: `OperationNotSupportedError`
+(mapped to 403 by a middleware) and shared `structural_records`. Not yet done: a
+watcher with overflow recovery, `open_by_handle_at`, mutations and upload
+staging, and multi-backend configuration (version 3).
+
 Deliverable: both backends satisfy the common contract without filesystem code
 pretending to provide a Synology checkpoint or immutable entry locator.
 
@@ -664,12 +693,7 @@ Tests should verify behavioral guarantees rather than mirror implementation deta
 
 ## Decisions still requiring review
 
-1. Finalize filesystem backend scope before adding its workspace member.
-2. Confirm separate public nodes for hard-link entries and limited continuity for
-   ambiguous entry renames.
-3. Choose the first supported filesystem/deployment requirements, including whether
-   handle-based reopening privileges are required or optional.
-4. Choose release automation and independent versus coordinated version policy
+1. Choose release automation and independent versus coordinated version policy
    after the initial `0.1.0` releases.
 
 ## References

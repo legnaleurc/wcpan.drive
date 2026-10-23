@@ -10,6 +10,7 @@ wcpan-drive-client-remote = { workspace = true }
 wcpan-drive-client-sqlite = { workspace = true }
 wcpan-drive-protocol = { workspace = true }
 wcpan-drive-server = { workspace = true }
+wcpan-drive-server-filesystem = { workspace = true }
 wcpan-drive-server-synology = { workspace = true }
 
 [dependency-groups]

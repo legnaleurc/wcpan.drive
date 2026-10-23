@@ -24,6 +24,10 @@ class OperationUnavailableError(Exception):
     """The backend failed or returned an unusable result; a retry may succeed."""
 
 
+class OperationNotSupportedError(Exception):
+    """The backend does not support this operation, for example because it is read-only."""
+
+
 class LocateUndecidedError(Exception):
     """The backend could not tell whether a node still exists."""
 
