@@ -34,8 +34,17 @@ retained and run independently to avoid tests-package name collisions.
 ## Remaining architecture work
 
 Per-file hash algorithms are implemented. The generic server defines backend
-contracts and no longer depends on `wcpan-synology`; Synology configuration,
-discovery, operations, and the `wcpan.drive.server` command live in
-`wcpan-drive-server-synology`. The Synology locator is private backend state
-(schema 5, now 6); the wire format keeps only an empty `mutable_id` placeholder.
-No filesystem backend exists yet; the remaining work is specified in PLAN.md.
+contracts, provides the `wcpan.drive.server` command, and no longer depends on
+`wcpan-synology`; Synology configuration, discovery, and operations live in
+`wcpan-drive-server-synology`, and local directories are served by
+`wcpan-drive-server-filesystem`. Configuration version 3 names backend
+instances and mounts; version 2 files still load as one Synology instance. The
+Synology webhook route is now per instance
+(`/api/v1/backends/<name>/webhook`, `synology` for version 2 files) and is
+re-registered at startup, so only a reverse proxy that matches the exact old
+path needs updating. Install `wcpan-drive-server` alongside the backend
+packages: the backend packages no longer provide the command. Backend
+maintenance commands moved under `backend NAME`, for example
+`backend synology backfill /`. The Synology locator is private backend state
+(schema 5, now 7); the wire format keeps only an empty `mutable_id`
+placeholder. The remaining work is specified in PLAN.md.

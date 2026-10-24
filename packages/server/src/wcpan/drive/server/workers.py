@@ -46,18 +46,30 @@ async def metadata_worker(
             metadata_queue.task_done()
 
 
+class CheckpointScheduler:
+    """Debounced WAL checkpoint after writes; call it from the write worker."""
+
+    def __init__(
+        self, group: asyncio.TaskGroup, storage: StorageService, *, delay: float
+    ) -> None:
+        self._debouncer = Debouncer(group, delay)
+        self._storage = storage
+
+    def __call__(self) -> None:
+        self._debouncer.start(self._storage.checkpoint)
+
+    def cancel(self) -> None:
+        """Drop a pending checkpoint, so shutdown need not wait for its delay."""
+        self._debouncer.cancel_pending()
+
+
 def create_checkpoint_scheduler(
     group: asyncio.TaskGroup,
     storage: StorageService,
     *,
     delay: float = _WAL_CHECKPOINT_DELAY,
-) -> Callable[[], None]:
-    debouncer = Debouncer(group, delay)
-
-    def schedule_checkpoint() -> None:
-        debouncer.start(storage.checkpoint)
-
-    return schedule_checkpoint
+) -> CheckpointScheduler:
+    return CheckpointScheduler(group, storage, delay=delay)
 
 
 # Let-it-crash on write failure by design.

@@ -1,0 +1,120 @@
+"""Server config: version 3 layout, legacy version 2 files, and validation."""
+
+import unittest
+
+from wcpan.drive.server.config import (
+    CONFIG_VERSION,
+    LEGACY_BACKEND_NAME,
+    ConfigVersionError,
+    parse_config,
+)
+from wcpan.drive.server.types import MountConfig
+
+
+def _v3(**overrides):
+    config = {
+        "version": CONFIG_VERSION,
+        "server": {"database_url": "/tmp/mirror.db"},
+        "backends": {
+            "nas": {
+                "type": "wcpan.drive.server.synology.create_backend",
+                "url": "https://nas",
+            },
+            "disk": {"type": "wcpan.drive.server.filesystem.create_backend"},
+        },
+        "mounts": {
+            "photos": {"backend": "nas", "source": "/volume1/photos"},
+            "docs": {"backend": "disk", "source": "/srv/docs"},
+        },
+    }
+    config.update(overrides)
+    return config
+
+
+class TestVersion3(unittest.TestCase):
+    def test_parses_backends_and_mounts(self):
+        config = parse_config(_v3())
+        self.assertEqual(config.database_url, "/tmp/mirror.db")
+        self.assertEqual((config.host, config.port), ("127.0.0.1", 8080))
+        self.assertEqual(
+            config.backends["nas"].type, "wcpan.drive.server.synology.create_backend"
+        )
+        self.assertEqual(config.backends["nas"].settings, {"url": "https://nas"})
+        self.assertEqual(
+            config.mounts["docs"], MountConfig(backend="disk", source="/srv/docs")
+        )
+        self.assertEqual(config.mounts_of("nas"), {"photos": "/volume1/photos"})
+
+    def test_server_settings(self):
+        config = parse_config(
+            _v3(
+                server={
+                    "database_url": "/tmp/m.db",
+                    "host": "0.0.0.0",
+                    "port": 9000,
+                    "log_path": "/tmp/s.log",
+                    "upload_tmp_dir": "/tmp/up",
+                }
+            )
+        )
+        self.assertEqual((config.host, config.port), ("0.0.0.0", 9000))
+        self.assertEqual(config.log_path, "/tmp/s.log")
+        self.assertEqual(config.upload_tmp_dir, "/tmp/up")
+
+    def test_mount_must_name_a_configured_backend(self):
+        raw = _v3()
+        raw["mounts"]["x"] = {"backend": "missing", "source": "/x"}
+        with self.assertRaisesRegex(ValueError, "unknown backend"):
+            parse_config(raw)
+
+    def test_backend_needs_a_type(self):
+        raw = _v3()
+        del raw["backends"]["disk"]["type"]
+        with self.assertRaisesRegex(ValueError, "backends.disk.type"):
+            parse_config(raw)
+
+    def test_mount_names_are_single_components(self):
+        for name in ("", ".", "..", "a/b"):
+            raw = _v3()
+            raw["mounts"][name] = {"backend": "disk", "source": "/x"}
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                parse_config(raw)
+
+
+class TestLegacyVersion2(unittest.TestCase):
+    def test_reads_as_one_synology_backend(self):
+        config = parse_config(
+            {
+                "version": 2,
+                "database_url": "/tmp/mirror.db",
+                "port": 9000,
+                "synology": {"url": "https://nas", "webhook": {"callback_url": "x"}},
+                "mounts": {"photos": "/volume1/photos"},
+                "local_paths": {"/volume1": "/mnt/nas"},
+            }
+        )
+        backend = config.backends[LEGACY_BACKEND_NAME]
+        self.assertEqual(backend.type, "wcpan.drive.server.synology.create_backend")
+        self.assertEqual(backend.settings["url"], "https://nas")
+        self.assertEqual(backend.settings["local_paths"], {"/volume1": "/mnt/nas"})
+        self.assertEqual(
+            config.mounts["photos"],
+            MountConfig(backend=LEGACY_BACKEND_NAME, source="/volume1/photos"),
+        )
+        self.assertEqual(config.port, 9000)
+
+
+class TestVersionCheck(unittest.TestCase):
+    def test_missing_version_is_rejected(self):
+        raw = _v3()
+        del raw["version"]
+        with self.assertRaises(ConfigVersionError):
+            parse_config(raw)
+
+    def test_unknown_version_is_rejected(self):
+        with self.assertRaises(ConfigVersionError):
+            parse_config(_v3(version=99))
+
+    def test_non_integer_version_is_rejected(self):
+        with self.assertRaises(ConfigVersionError):
+            parse_config(_v3(version="3"))

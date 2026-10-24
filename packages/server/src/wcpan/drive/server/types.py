@@ -1,10 +1,10 @@
 """Server-internal types (not part of client / shared lib surface)."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import NewType
+from typing import Any, NewType
 
 from wcpan.drive.protocol.types import NodeRecord
 
@@ -39,6 +39,9 @@ class NodeObservation:
 
     record: NodeRecord
     locator: BackendLocator | None
+    # Backend instance that made the observation; set by its ``NodeSyncService``
+    # so storage binds the locator with that backend's schema.
+    backend: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -62,14 +65,37 @@ type MetadataQueue = asyncio.Queue[MetadataWorkItem]
 
 
 @dataclass(frozen=True, kw_only=True)
+class MountConfig:
+    # Name of the backend instance that serves this mount.
+    backend: str
+    # Source location, interpreted by that backend (a Synology path, a directory).
+    source: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class BackendConfig:
+    # Import path of the backend factory (``module.function``).
+    type: str
+    # The rest of the backend's section, parsed by the backend.
+    settings: Mapping[str, Any]
+
+
+@dataclass(frozen=True, kw_only=True)
 class ServerConfig:
-    """Backend-neutral server settings; the backend parses its own section."""
+    """Generic server settings plus the backend instances and mounts they serve."""
 
     host: str
     port: int
     database_url: str
-    # Mount label to backend source path, interpreted by the backend.
-    mounts: dict[str, str]
-    local_paths: dict[str, str]
+    backends: dict[str, BackendConfig]
+    mounts: dict[str, MountConfig]
     log_path: str | None = None
     upload_tmp_dir: str | None = None
+
+    def mounts_of(self, backend: str) -> dict[str, str]:
+        """Mount name to source for the mounts *backend* serves."""
+        return {
+            name: mount.source
+            for name, mount in self.mounts.items()
+            if mount.backend == backend
+        }

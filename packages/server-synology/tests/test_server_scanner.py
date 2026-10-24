@@ -48,8 +48,7 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
                 storage=storage,
                 write_queue=q,
                 off_main=off_main,
-                mounts=mounts,
-                local_paths={},
+                mounts={},
                 metadata_queue=asyncio.Queue(),
             )
             drain = asyncio.create_task(self._drain_writes(q))
@@ -83,7 +82,9 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor() as pool:
                 storage = StorageService(
-                    db_path, off_main=OffMainService(pool=pool), backend=SYNOLOGY_SCHEMA
+                    db_path,
+                    off_main=OffMainService(pool=pool),
+                    schemas={"synology": SYNOLOGY_SCHEMA},
                 )
                 await storage.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
@@ -102,7 +103,9 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor() as pool:
                 storage = StorageService(
-                    db_path, off_main=OffMainService(pool=pool), backend=SYNOLOGY_SCHEMA
+                    db_path,
+                    off_main=OffMainService(pool=pool),
+                    schemas={"synology": SYNOLOGY_SCHEMA},
                 )
                 await storage.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
@@ -124,7 +127,9 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor() as pool:
                 storage = StorageService(
-                    db_path, off_main=OffMainService(pool=pool), backend=SYNOLOGY_SCHEMA
+                    db_path,
+                    off_main=OffMainService(pool=pool),
+                    schemas={"synology": SYNOLOGY_SCHEMA},
                 )
                 await storage.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
@@ -151,7 +156,9 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor() as pool:
                 storage = StorageService(
-                    db_path, off_main=OffMainService(pool=pool), backend=SYNOLOGY_SCHEMA
+                    db_path,
+                    off_main=OffMainService(pool=pool),
+                    schemas={"synology": SYNOLOGY_SCHEMA},
                 )
                 await storage.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a")}

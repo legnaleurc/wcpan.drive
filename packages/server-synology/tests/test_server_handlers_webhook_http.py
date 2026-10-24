@@ -5,8 +5,7 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
-from wcpan.drive.server.synology.handlers import handle_synology_webhook
-from wcpan.drive.server.synology.keys import WEBHOOK_QUEUE_KEY
+from wcpan.drive.server.synology.handlers import webhook_handler
 
 
 class TestWebhookHttpHandler(IsolatedAsyncioTestCase):
@@ -18,9 +17,9 @@ class TestWebhookHttpHandler(IsolatedAsyncioTestCase):
         ]
         request = MagicMock(spec=web.Request)
         request.json = AsyncMock(return_value=payload)
-        request.app = {WEBHOOK_QUEUE_KEY: queue}
 
-        resp = await handle_synology_webhook(request)
+        resp = await webhook_handler(queue)(request)
+        assert isinstance(resp, web.Response)
 
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.text, "OK")

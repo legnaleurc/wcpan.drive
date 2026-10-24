@@ -1,6 +1,6 @@
 import logging
 import sqlite3
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from functools import partial
 from typing import Concatenate, Protocol
@@ -80,11 +80,13 @@ CREATE INDEX IF NOT EXISTS ix_changes_node_id ON changes(node_id);
 -- Observations withheld because media enrichment failed. The node keeps its last
 -- complete version (or stays unpublished) until a retry or newer observation.
 CREATE TABLE IF NOT EXISTS pending_enrichment (
-    node_id TEXT PRIMARY KEY
+    node_id TEXT PRIMARY KEY,
+    -- Backend instance whose observation was withheld.
+    backend TEXT NOT NULL DEFAULT ''
 );
 """
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 # Before version 4 every stored digest came from Synology Drive.
 _MIGRATE_3_TO_4 = """
@@ -106,7 +108,17 @@ DROP INDEX IF EXISTS ix_nodes_mutable_id;
 ALTER TABLE nodes DROP COLUMN mutable_id;
 """
 
-# Version 6 adds pending_enrichment, created by the DDL below.
+# Version 6 adds pending_enrichment.
+_MIGRATE_5_TO_6 = """
+CREATE TABLE pending_enrichment (node_id TEXT PRIMARY KEY);
+"""
+
+# Version 7 records the backend instance of pending enrichment. Earlier entries
+# can only come from a single Synology server, named as in legacy config files.
+_MIGRATE_6_TO_7 = """
+ALTER TABLE pending_enrichment ADD COLUMN backend TEXT NOT NULL DEFAULT '';
+UPDATE pending_enrichment SET backend = 'synology';
+"""
 _MAX_CHANGES_PER_PAGE = 1000
 
 _UPSERT_NODE_SQL = """
@@ -230,7 +242,27 @@ def _read_write(dsn: str) -> Generator[sqlite3.Connection]:
         con.close()
 
 
-def _ensure_schema(dsn: str, backend: BackendSchema | None) -> None:
+type Schemas = Mapping[str, BackendSchema]
+"""Persistence hooks by backend instance name."""
+
+
+def _distinct(schemas: Schemas) -> list[BackendSchema]:
+    """Each schema once; instances of one backend type share their tables."""
+    unique: dict[int, BackendSchema] = {}
+    for schema in schemas.values():
+        unique.setdefault(id(schema), schema)
+    return list(unique.values())
+
+
+def _schema_for(schemas: Schemas, backend: str | None) -> BackendSchema | None:
+    if backend is not None:
+        return schemas.get(backend)
+    # An untagged observation is unambiguous with a single backend schema.
+    distinct = _distinct(schemas)
+    return distinct[0] if len(distinct) == 1 else None
+
+
+def _ensure_schema(dsn: str, schemas: Schemas) -> None:
     with _read_write(dsn) as con:
         version = int(con.execute("PRAGMA user_version").fetchone()[0])
         existing_tables = {
@@ -253,8 +285,13 @@ def _ensure_schema(dsn: str, backend: BackendSchema | None) -> None:
             con.execute("PRAGMA user_version = 5")
             version = 5
         if version == 5:
+            con.executescript(_MIGRATE_5_TO_6)
             con.execute("PRAGMA user_version = 6")
             version = 6
+        if version == 6:
+            con.executescript(_MIGRATE_6_TO_7)
+            con.execute("PRAGMA user_version = 7")
+            version = 7
         if version not in (0, _SCHEMA_VERSION):
             raise SchemaVersionError(
                 "database schema version mismatch: "
@@ -263,8 +300,8 @@ def _ensure_schema(dsn: str, backend: BackendSchema | None) -> None:
         con.executescript(_DDL)
         if version == 0:
             con.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
-        if backend is not None:
-            backend.ensure_schema(con)
+        for schema in _distinct(schemas):
+            schema.ensure_schema(con)
 
 
 def _run_read[R](
@@ -288,6 +325,16 @@ def _run_write[R](
         return fn(con, *args, **kwargs)
 
 
+def _register_schema(dsn: str, schema: BackendSchema) -> None:
+    """Create a backend's tables and drop rows whose nodes went away meanwhile.
+
+    Offline ``gc`` runs without loading backends, so it cannot clean their rows.
+    """
+    with _read_write(dsn) as con:
+        schema.ensure_schema(con)
+        schema.forget_orphans(con)
+
+
 def _checkpoint(dsn: str) -> None:
     with _read_write(dsn) as con:
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -305,7 +352,7 @@ def _upsert_node_and_emit_change(dsn: str, record: NodeRecord) -> None:
 def _delete_subtree_on_connection(
     con: sqlite3.Connection,
     node_id: MirrorStableId,
-    backend: BackendSchema | None,
+    schemas: Schemas,
 ) -> None:
     """Delete node and all descendants; emit remove-changes for each.
 
@@ -332,8 +379,8 @@ def _delete_subtree_on_connection(
     # Delete from nodes and insert into changes in bulk.
     placeholders = ",".join("?" * len(to_delete))
     con.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", to_delete)
-    if backend is not None:
-        backend.forget_nodes(con, to_delete)
+    for schema in _distinct(schemas):
+        schema.forget_nodes(con, to_delete)
     con.execute(
         f"DELETE FROM pending_enrichment WHERE node_id IN ({placeholders})", to_delete
     )
@@ -344,10 +391,10 @@ def _delete_subtree_on_connection(
 
 
 def _delete_subtree_and_emit_changes(
-    dsn: str, node_id: MirrorStableId, backend: BackendSchema | None
+    dsn: str, node_id: MirrorStableId, schemas: Schemas
 ) -> None:
     with _read_write(dsn) as con:
-        _delete_subtree_on_connection(con, node_id, backend)
+        _delete_subtree_on_connection(con, node_id, schemas)
 
 
 def _node_exists(con: sqlite3.Connection, node_id: MirrorStableId) -> bool:
@@ -368,7 +415,7 @@ def _select_node_row(
 
 
 def _apply_observations(
-    dsn: str, observations: list[NodeObservation], backend: BackendSchema | None
+    dsn: str, observations: list[NodeObservation], schemas: Schemas
 ) -> set[MirrorStableId]:
     """Upsert nodes and their locators in order, skipping any whose parent is gone.
 
@@ -394,8 +441,9 @@ def _apply_observations(
                     "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
                     (str(record.id),),
                 )
-            if observation.locator is not None and backend is not None:
-                backend.bind_locator(con, record.id, observation.locator)
+            schema = _schema_for(schemas, observation.backend)
+            if observation.locator is not None and schema is not None:
+                schema.bind_locator(con, record.id, observation.locator)
             con.execute(
                 "DELETE FROM pending_enrichment WHERE node_id = ?", (str(record.id),)
             )
@@ -403,18 +451,27 @@ def _apply_observations(
     return applied
 
 
-def _mark_enrichment_pending(dsn: str, node_id: MirrorStableId) -> None:
+def _mark_enrichment_pending(
+    dsn: str, node_id: MirrorStableId, backend: str | None
+) -> None:
     with _read_write(dsn) as con:
         con.execute(
-            "INSERT OR IGNORE INTO pending_enrichment (node_id) VALUES (?)",
-            (str(node_id),),
+            """
+            INSERT INTO pending_enrichment (node_id, backend) VALUES (?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET backend = excluded.backend
+            """,
+            (str(node_id), backend or ""),
         )
 
 
-def _get_pending_enrichment(dsn: str) -> list[MirrorStableId]:
+def _get_pending_enrichment(dsn: str, backend: str | None) -> list[MirrorStableId]:
     with _read_only(dsn) as con:
         with closing(
-            con.execute("SELECT node_id FROM pending_enrichment ORDER BY node_id")
+            con.execute(
+                "SELECT node_id FROM pending_enrichment WHERE backend = ?"
+                " ORDER BY node_id",
+                (backend or "",),
+            )
         ) as cur:
             return [MirrorStableId(row["node_id"]) for row in cur.fetchall()]
 
@@ -638,12 +695,12 @@ _GC_CREATE_SQL = """
 """
 
 
-def cleanup_dangling_nodes(dsn: str, *, backend: BackendSchema | None) -> int:
+def cleanup_dangling_nodes(dsn: str, *, schemas: Schemas) -> int:
     """Delete nodes not reachable from the server root; emit removal changes.
 
     Returns the number of nodes removed.
     """
-    _ensure_schema(dsn, backend)
+    _ensure_schema(dsn, schemas)
     with _read_write(dsn) as con:
         con.execute(_GC_CREATE_SQL, (str(SERVER_ROOT_ID),))
         with closing(con.execute("SELECT COUNT(*) AS n FROM temp._dangling")) as cur:
@@ -656,18 +713,18 @@ def cleanup_dangling_nodes(dsn: str, *, backend: BackendSchema | None) -> int:
             con.execute(
                 "DELETE FROM nodes WHERE id IN (SELECT node_id FROM temp._dangling)"
             )
-        if backend is not None:
-            backend.forget_orphans(con)
+        for schema in _distinct(schemas):
+            schema.forget_orphans(con)
         con.execute("DROP TABLE IF EXISTS temp._dangling")
     return count
 
 
-def reset_change_history(dsn: str, *, backend: BackendSchema | None) -> int:
+def reset_change_history(dsn: str, *, schemas: Schemas) -> int:
     """Clear changes and insert one update row per node except the server root.
 
     Returns the number of change records inserted.
     """
-    _ensure_schema(dsn, backend)
+    _ensure_schema(dsn, schemas)
     with _read_write(dsn) as con:
         con.execute("DELETE FROM changes")
         con.execute(
@@ -745,14 +802,19 @@ class StorageService:
         dsn: str,
         *,
         off_main: OffMainService,
-        backend: BackendSchema | None = None,
+        schemas: Schemas | None = None,
     ) -> None:
         self._dsn = dsn
         self._off_main = off_main
-        self._backend = backend
+        self._schemas = dict(schemas or {})
 
     async def ensure_schema(self) -> None:
-        await self._off_main(_ensure_schema, self._dsn, self._backend)
+        await self._off_main(_ensure_schema, self._dsn, self._schemas)
+
+    async def register_schema(self, backend: str, schema: BackendSchema) -> None:
+        """Persist backend instance *backend*'s state through *schema* from now on."""
+        await self._off_main(_register_schema, self._dsn, schema)
+        self._schemas[backend] = schema
 
     async def read[**A, R](
         self,
@@ -785,21 +847,25 @@ class StorageService:
 
     async def delete_subtree_and_emit_changes(self, node_id: MirrorStableId) -> None:
         await self._off_main(
-            _delete_subtree_and_emit_changes, self._dsn, node_id, self._backend
+            _delete_subtree_and_emit_changes, self._dsn, node_id, self._schemas
         )
 
     async def apply_observations(
         self, observations: list[NodeObservation]
     ) -> set[MirrorStableId]:
         return await self._off_main(
-            _apply_observations, self._dsn, observations, self._backend
+            _apply_observations, self._dsn, observations, self._schemas
         )
 
-    async def mark_enrichment_pending(self, node_id: MirrorStableId) -> None:
-        await self._off_main(_mark_enrichment_pending, self._dsn, node_id)
+    async def mark_enrichment_pending(
+        self, node_id: MirrorStableId, backend: str | None = None
+    ) -> None:
+        await self._off_main(_mark_enrichment_pending, self._dsn, node_id, backend)
 
-    async def get_pending_enrichment(self) -> list[MirrorStableId]:
-        return await self._off_main(_get_pending_enrichment, self._dsn)
+    async def get_pending_enrichment(
+        self, backend: str | None = None
+    ) -> list[MirrorStableId]:
+        return await self._off_main(_get_pending_enrichment, self._dsn, backend)
 
     async def resolve_path_to_id(self, segments: list[str]) -> MirrorStableId | None:
         return await self._off_main(_resolve_path_to_id, self._dsn, segments)
@@ -855,12 +921,12 @@ class StorageService:
 
     async def cleanup_dangling_nodes(self) -> int:
         return await self._off_main(
-            partial(cleanup_dangling_nodes, backend=self._backend), self._dsn
+            partial(cleanup_dangling_nodes, schemas=self._schemas), self._dsn
         )
 
     async def reset_change_history(self) -> int:
         return await self._off_main(
-            partial(reset_change_history, backend=self._backend), self._dsn
+            partial(reset_change_history, schemas=self._schemas), self._dsn
         )
 
 
@@ -868,9 +934,9 @@ async def create_storage_service(
     database_url: str,
     *,
     off_main: OffMainService,
-    backend: BackendSchema | None = None,
+    schemas: Schemas | None = None,
 ) -> StorageService:
-    storage = StorageService(database_url, off_main=off_main, backend=backend)
+    storage = StorageService(database_url, off_main=off_main, schemas=schemas)
     _L.info("initializing database: %s", database_url)
     await storage.ensure_schema()
     return storage

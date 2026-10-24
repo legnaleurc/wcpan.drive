@@ -26,12 +26,7 @@ from logging import getLogger
 from wcpan.drive.protocol.lib import guess_mime_type
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
-from wcpan.drive.server.lib.mounts import (
-    SERVER_ROOT_ID,
-    mount_id,
-    mount_name,
-    structural_records,
-)
+from wcpan.drive.server.lib.mounts import mount_id, mount_name
 from wcpan.drive.server.services.operations import LocateUndecidedError
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
 from wcpan.drive.server.services.storage import StorageService
@@ -146,18 +141,6 @@ class FilesystemScanner:
         self._blocking = blocking
         self._watcher = watcher
         self._pass_lock = asyncio.Lock()
-
-    async def ensure_structure(self) -> None:
-        """Create the root and mount nodes; feed rows only on the first run."""
-        records = structural_records(self._paths.mounts)
-        if await self._storage.get_node_by_id(SERVER_ROOT_ID) is None:
-            async with self._node_sync.observe() as read:
-                await self._node_sync.upsert_batch(
-                    [NodeObservation(record=r, locator=None) for r in records],
-                    read=read,
-                )
-        else:
-            await self._node_sync.sync_nodes(records)
 
     async def scan(self) -> None:
         """One full pass over every mount."""
@@ -347,7 +330,8 @@ class FilesystemScanner:
         if known != fsid:
             _L.error(
                 "Mount %r source %s is on a different filesystem than before;"
-                " keeping its mirror. Run `rebind-mount %s` if this is intended.",
+                " keeping its mirror. If intended, run `backend <instance>"
+                " rebind-mount %s`.",
                 name,
                 root,
                 name,
@@ -425,11 +409,12 @@ class FilesystemScanner:
         for candidate in await self._store.nodes_by_identity(entry.identity):
             if candidate in claimed:
                 continue
-            claimed.add(candidate)
+            # The check awaits the disk; the candidate's own folder may claim it
+            # by name meanwhile, which takes precedence over a move.
             previous = await self._moved_from(candidate, entry)
-            if previous is not None:
+            if previous is not None and candidate not in claimed:
+                claimed.add(candidate)
                 return candidate, previous
-            claimed.discard(candidate)
 
         node_id = new_node_id()
         claimed.add(node_id)

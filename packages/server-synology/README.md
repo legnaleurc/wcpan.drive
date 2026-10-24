@@ -1,5 +1,7 @@
 # wcpan-drive-server-synology
 
-Synology adapter for wcpan.drive.server.
+Synology Drive backend for wcpan.drive.server. Install it alongside
+`wcpan-drive-server` and name it in the config as
+`type: wcpan.drive.server.synology`.
 
-See the workspace README for configuration and migration details.
+See the workspace README for configuration details.

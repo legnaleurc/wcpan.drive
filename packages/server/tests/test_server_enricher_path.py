@@ -5,8 +5,18 @@ from unittest import TestCase
 
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.services.paths import (
+    MountSource,
+    map_by_prefix,
+)
+from wcpan.drive.server.services.paths import (
     _resolve_local_path as resolve_local_path,
 )
+
+
+def _mount(
+    name: str, source: str, local_paths: dict[str, str]
+) -> dict[str, MountSource]:
+    return {name: MountSource(source=source, local_path=map_by_prefix(local_paths))}
 
 
 def _node(
@@ -43,10 +53,9 @@ class TestResolveLocalPath(TestCase):
         file_rec = _node("fid", "readme.txt", "folder_id")
         folder_rec = _node("folder_id", "Projects", "_docs", is_directory=True)
         cache = {"folder_id": folder_rec}
-        mounts = {"docs": "/volume1/docs"}
-        local_paths = {"/volume1/docs": "/mnt/nas/docs"}
+        mounts = _mount("docs", "/volume1/docs", {"/volume1/docs": "/mnt/nas/docs"})
         # when
-        path = resolve_local_path(mounts, local_paths, file_rec, cache)
+        path = resolve_local_path(mounts, file_rec, cache)
         # then
         self.assertEqual(path, Path("/mnt/nas/docs/Projects/readme.txt"))
 
@@ -54,10 +63,9 @@ class TestResolveLocalPath(TestCase):
         # given
         file_rec = _node("fid", "a.txt", "missing_parent")
         cache: dict[str, NodeRecord | None] = {}
-        mounts = {"docs": "/volume1/docs"}
-        local_paths = {"/volume1/docs": "/mnt/x"}
+        mounts = _mount("docs", "/volume1/docs", {"/volume1/docs": "/mnt/x"})
         # when
-        path = resolve_local_path(mounts, local_paths, file_rec, cache)
+        path = resolve_local_path(mounts, file_rec, cache)
         # then
         self.assertIsNone(path)
 
@@ -66,10 +74,9 @@ class TestResolveLocalPath(TestCase):
         file_rec = _node("fid", "a.txt", "folder_id")
         folder_rec = _node("folder_id", "x", "_docs", is_directory=True)
         cache = {"folder_id": folder_rec}
-        mounts = {"docs": "/volume1/docs"}
-        local_paths = {"/other/prefix": "/mnt/other"}
+        mounts = _mount("docs", "/volume1/docs", {"/other/prefix": "/mnt/other"})
         # when
-        path = resolve_local_path(mounts, local_paths, file_rec, cache)
+        path = resolve_local_path(mounts, file_rec, cache)
         # then
         self.assertIsNone(path)
 
@@ -78,12 +85,10 @@ class TestResolveLocalPath(TestCase):
         file_rec = _node("fid", "f.txt", "folder_id")
         folder_rec = _node("folder_id", "sub", "_share", is_directory=True)
         cache = {"folder_id": folder_rec}
-        mounts = {"share": "/vol/share"}
-        local_paths = {
-            "/vol": "/mnt/root",
-            "/vol/share": "/mnt/share",
-        }
+        mounts = _mount(
+            "share", "/vol/share", {"/vol": "/mnt/root", "/vol/share": "/mnt/share"}
+        )
         # when
-        path = resolve_local_path(mounts, local_paths, file_rec, cache)
+        path = resolve_local_path(mounts, file_rec, cache)
         # then
         self.assertEqual(path, Path("/mnt/share/sub/f.txt"))

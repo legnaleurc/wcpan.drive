@@ -20,6 +20,7 @@ from wcpan.drive.server.filesystem.scan import FilesystemScanner
 from wcpan.drive.server.filesystem.store import FILESYSTEM_SCHEMA, FilesystemStore
 from wcpan.drive.server.filesystem.watch import DirectoryWatcher
 from wcpan.drive.server.lib.mounts import mount_id
+from wcpan.drive.server.services.mounts import ensure_mount_nodes
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -51,7 +52,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         self.storage = StorageService(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
-            backend=FILESYSTEM_SCHEMA,
+            schemas={"fs": FILESYSTEM_SCHEMA},
         )
         await self.storage.ensure_schema()
         self.write_queue = create_write_queue()
@@ -60,8 +61,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             storage=self.storage,
             write_queue=self.write_queue,
             off_main=OffMainService(pool=self.pool),
-            mounts={"docs": str(self.source)},
-            local_paths={},
+            mounts={},
             metadata_queue=self.metadata_queue,
         )
         self.tasks = [
@@ -102,7 +102,9 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             blocking=blocking,
             read_only=self.read_only,
         )
-        await self.scanner.ensure_structure()
+        await ensure_mount_nodes(
+            ["docs"], storage=self.storage, node_sync=self.node_sync
+        )
 
     async def asyncTearDown(self) -> None:
         if self.watcher is not None:

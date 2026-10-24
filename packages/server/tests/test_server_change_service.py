@@ -105,7 +105,7 @@ class _FakeStorage:
         self._observations: list[list[NodeRecord]] = []
         self._pending: set[str] = set()
 
-    async def mark_enrichment_pending(self, node_id: str) -> None:
+    async def mark_enrichment_pending(self, node_id: str, backend: str | None) -> None:
         self._pending.add(node_id)
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
@@ -141,7 +141,6 @@ def _obs(record: NodeRecord) -> NodeObservation:
 def _make_service(
     storage: _FakeStorage | None = None,
     *,
-    local_paths: dict[str, str] | None = None,
     metadata_queue: asyncio.Queue | None = None,
 ) -> tuple[NodeSyncService, _FakeStorage, asyncio.Queue]:
     storage = storage or _FakeStorage()
@@ -152,7 +151,6 @@ def _make_service(
         write_queue=wq,
         off_main=off_main,  # type: ignore[arg-type]
         mounts={},
-        local_paths=local_paths or {},
         metadata_queue=metadata_queue or asyncio.Queue(),
     )
     return cs, storage, wq
@@ -164,16 +162,6 @@ def _make_service(
 
 
 class TestNodeSyncServiceInit(IsolatedAsyncioTestCase):
-    def test_local_paths_property(self):
-        cs, _, _ = _make_service()
-        self.assertEqual(cs.local_paths, {})
-
-        mq: asyncio.Queue = asyncio.Queue()
-        cs2, _, _ = _make_service(local_paths={"/a": "/b"}, metadata_queue=mq)
-        self.assertEqual(cs2.local_paths, {"/a": "/b"})
-
-
-class TestNodeSyncServiceUpsert(IsolatedAsyncioTestCase):
     async def test_enqueues_write(self):
         cs, storage, wq = _make_service()
         record = _make_record()
@@ -289,9 +277,9 @@ class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
             await cs.upsert_file_batch([], read=read)
         self.assertEqual(wq.qsize(), 0)
 
-    async def test_with_local_paths_routes_to_metadata_queue(self):
+    async def test_incomplete_media_routes_to_metadata_queue(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, storage, wq = _make_service(local_paths={"/a": "/b"}, metadata_queue=mq)
+        cs, storage, wq = _make_service(metadata_queue=mq)
         records = [_make_record("new-file", is_image=True)]
         async with cs.observe() as read:
             await cs.upsert_file_batch([_obs(r) for r in records], read=read)
@@ -301,16 +289,14 @@ class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
         self.assertEqual(item.observation.record.id, "new-file")
         self.assertTrue(item.force_refresh)
 
-    async def test_with_local_paths_skips_complete_media(self):
+    async def test_complete_media_skips_metadata_queue(self):
         mq: asyncio.Queue = asyncio.Queue()
         storage = _FakeStorage()
         # Pre-populate DB with record that has complete dims
         storage._nodes["img1"] = _make_record(
             "img1", is_image=True, width=100, height=200
         )
-        cs, storage, wq = _make_service(
-            storage, local_paths={"/a": "/b"}, metadata_queue=mq
-        )
+        cs, storage, wq = _make_service(storage, metadata_queue=mq)
         records = [_make_record("img1", is_image=True)]
         async with cs.observe() as read:
             await cs.upsert_file_batch([_obs(r) for r in records], read=read)
@@ -319,26 +305,10 @@ class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
         self.assertGreaterEqual(wq.qsize(), 1)
 
 
-class TestNodeSyncServiceSyncNodes(IsolatedAsyncioTestCase):
-    async def test_empty_is_noop(self):
-        cs, _, wq = _make_service()
-        await cs.sync_nodes([])
-        self.assertEqual(wq.qsize(), 0)
-
-    async def test_enqueues_bulk_upsert(self):
-        cs, storage, wq = _make_service()
-        records = [_make_record("a"), _make_record("b")]
-        await cs.sync_nodes(records)
-        self.assertEqual(wq.qsize(), 1)
-        op = wq.get_nowait()
-        await op()
-        self.assertEqual(len(storage._bulk), 2)
-
-
 class TestNodeSyncServiceReconcile(IsolatedAsyncioTestCase):
     async def test_reconcile_insert(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, _, _ = _make_service(local_paths={"/a": "/b"}, metadata_queue=mq)
+        cs, _, _ = _make_service(metadata_queue=mq)
         record = _make_record("new")
         async with cs.observe() as read:
             await cs.reconcile_insert(_obs(record), read=read)
@@ -354,7 +324,7 @@ class TestNodeSyncServiceReconcile(IsolatedAsyncioTestCase):
 
     async def test_reconcile_update_with_complete_dims(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, storage, wq = _make_service(local_paths={"/a": "/b"}, metadata_queue=mq)
+        cs, storage, wq = _make_service(metadata_queue=mq)
         existing = _make_record("n1", is_image=True, width=100, height=200)
         from_api = _make_record("n1", is_image=True)
         async with cs.observe() as read:
@@ -365,7 +335,7 @@ class TestNodeSyncServiceReconcile(IsolatedAsyncioTestCase):
 
     async def test_reconcile_update_without_complete_dims(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, storage, wq = _make_service(local_paths={"/a": "/b"}, metadata_queue=mq)
+        cs, storage, wq = _make_service(metadata_queue=mq)
         existing = _make_record("n1", is_image=True, width=0, height=0)
         from_api = _make_record("n1", is_image=True)
         async with cs.observe() as read:
@@ -390,7 +360,7 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
 
     async def test_wait_enrichment_drained_waits(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, _, wq = _make_service(local_paths={"/a": "/b"}, metadata_queue=mq)
+        cs, _, wq = _make_service(metadata_queue=mq)
         # Both queues are empty, so join completes immediately
         await cs.wait_enrichment_drained()
 

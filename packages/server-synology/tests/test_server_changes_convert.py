@@ -195,7 +195,6 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
         local_path_svc = LocalPathService(
             storage=MagicMock(),
             mounts={},
-            local_paths={"docs": "/tmp"},
         )
         enricher = MediaEnrichService(local_path_service=local_path_svc)
         with patch(
@@ -234,7 +233,6 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
                 local_path_svc = LocalPathService(
                     storage=MagicMock(),
                     mounts={},
-                    local_paths={"docs": "/tmp"},
                 )
                 enricher = MediaEnrichService(
                     local_path_service=local_path_svc,
@@ -283,7 +281,6 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
                 local_path_svc = LocalPathService(
                     storage=MagicMock(),
                     mounts={},
-                    local_paths={"docs": "/tmp"},
                 )
                 enricher = MediaEnrichService(
                     local_path_service=local_path_svc,
@@ -318,7 +315,6 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
                 write_queue=wq,
                 off_main=off_main,
                 mounts={},
-                local_paths={"docs": "/tmp"},
                 metadata_queue=mq,
             )
             info = {

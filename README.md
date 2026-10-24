@@ -37,10 +37,11 @@ module paths from `wcpan.drive.google`, `.crypt`, and `.sqlite` to
 
 The generic server (`wcpan-drive-server`) holds the mirror, change feed, HTTP
 API, and reconciliation, and defines the contract a storage backend implements.
-It does not depend on `wcpan-synology`. The Synology backend and the
-`wcpan.drive.server` command come from `wcpan-drive-server-synology`; a
-local filesystem backend and the `wcpan.drive.server.filesystem`
-command come from `wcpan-drive-server-filesystem`. A server runs one backend.
+It provides the `wcpan.drive.server` command and does not depend on any
+backend. Backends are separate packages, loaded by the module name in the
+config: `wcpan-drive-server-synology` (Synology Drive) and
+`wcpan-drive-server-filesystem` (local directories). One server can serve
+mounts from several backend instances.
 
 Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm in
 `hash_algorithm` (both empty for directories and for files without a checksum).
@@ -50,11 +51,12 @@ a file; it raises `UnsupportedHashAlgorithmError` instead of guessing. The clien
 service API version is 6. Existing client SQLite snapshots (schema 6) are
 rejected and must be rebuilt or migrated manually to schema 7.
 
-The server database is at schema 6 and migrates older databases (schema 3 to 5)
+The server database is at schema 7 and migrates older databases (schema 3 to 6)
 automatically at startup. Schema 4 marks existing Synology digests as `md4`;
 schema 5 moves each node's Synology `file_id` out of the public node table into
 backend-owned locator storage; schema 6 adds a table of files whose media probe
-failed. Node IDs and the change feed are preserved. The
+failed; schema 7 records which backend instance each of those belongs to.
+Node IDs and the change feed are preserved. The
 migration cannot be undone in place, so stop the server and copy the database
 file, together with any `-wal` and `-shm` files, before upgrading; restore that
 copy to roll back.
@@ -88,10 +90,13 @@ can overlap. Root tests retain the original cross-package regression suite.
 pip install wcpan-drive-client-remote
 ```
 
-For the server component:
+For the server, install the core with the backends your config uses, or run it
+with `uvx`:
 
 ```bash
-pip install wcpan-drive-server-synology
+pip install wcpan-drive-server wcpan-drive-server-synology
+uvx --with=wcpan-drive-server-synology --with=wcpan-drive-server-filesystem \
+    wcpan.drive.server --config server.yaml serve
 ```
 
 ## Usage
@@ -111,106 +116,104 @@ async with create_service(server_url="http://localhost:8080") as file_service:
 
 ### Server
 
-The server mirrors a Synology Drive instance locally via `wcpan-synology` and a
-webhook-driven update pipeline. Configure it with a YAML file (see
-`server.example.yaml`):
+The server keeps a SQLite mirror of one or more storage backends and serves it
+over HTTP. Configure it with a YAML file (see `server.example.yaml`):
 
 ```bash
-# Copy and edit the example config
 cp server.example.yaml server.yaml
-
-# Start the server
 wcpan.drive.server --config server.yaml serve
 
-# Other subcommands
+# Offline maintenance; run only while the server is stopped
 wcpan.drive.server --config server.yaml gc
-wcpan.drive.server --config server.yaml backfill /
 wcpan.drive.server --config server.yaml squash
+
+# Commands of one backend instance, parsed by that backend
+wcpan.drive.server --config server.yaml backend nas backfill /photos
+wcpan.drive.server --config server.yaml backend disk rebind-mount documents
+wcpan.drive.server --config server.yaml backend nas --help
 ```
 
-At startup, the server:
-
-- connects to Synology Drive through DSM's WebStation API using
-  `wcpan-synology`
-- registers a webhook at `CALLBACK_URL/api/v1/synology-webhook`
-- serves a local HTTP API for the client integration
-- keeps a SQLite-backed mirror in sync through scans, webhook events, and
-  explicit backfill commands
-
-`backfill PATH` operates on the server's virtual mirror paths. `/` is the
-server root; mounted Synology paths appear underneath it by mount label.
-
-`gc`, `backfill`, and `squash` are offline maintenance commands. Run them only
-while the server is stopped; they write the same database and are not
-coordinated with a running server.
+`backend --help` lists the configured instances. A backend's `--help` and
+argument errors never connect to its source. `gc`, `squash`, and backend
+commands write the same database without coordinating with a running server.
 
 #### Config file
 
 ```yaml
-version: 2
-host: "0.0.0.0"
-port: 8080
-database_url: "sqlite:////data/mirror.db"
-synology:
-  url: "https://nas.example.com:5001"
-  username: "your-drive-user"
-  password: "your-password"
-  webhook:
-    callback_url: "https://my-server.example.com"
+version: 3
+server:
+  host: "0.0.0.0"          # default 127.0.0.1
+  port: 8080               # default 8080
+  database_url: "/data/mirror.db"
+  # log_path: "/var/log/wcpan-drive-server.log"
+  # upload_tmp_dir: "/tmp/wcpan-uploads"
+backends:
+  nas:
+    type: wcpan.drive.server.synology.create_backend
+    url: "https://nas.example.com:5001"
+    username: "your-drive-user"
+    password: "your-password"
+    webhook:
+      callback_url: "https://my-server.example.com"
+    local_paths:
+      "/volume1/photos": "/mnt/nas/photos"
+  disk:
+    type: wcpan.drive.server.filesystem.create_backend
 mounts:
-  photos: "/volume1/photos"
-local_paths: {}
+  photos:
+    backend: nas
+    source: "/volume1/photos"
+  documents:
+    backend: disk
+    source: "/srv/documents"
 ```
 
-`version` is the config schema version and must match the version supported by
-the current binary. The current binary accepts only version `2`. `local_paths`
-is currently required by the config schema; use `{}` when local media probing
-is not needed. `synology.webhook.app_id` defaults to `wcpan-drive-server-synology`. See
-`server.example.yaml` for the full set of options.
+- `backends` names backend instances. `type` is the import path of the
+  backend's factory (`module.function`); its package must be installed. The other keys are that backend's settings.
+- `mounts` are single-component names (`photos` appears as `/photos`), each
+  served by one backend instance from its `source`.
+- Moving a node between mounts of different backends is refused (403); within
+  one backend it is up to that backend.
+- `local_paths` (per backend) maps source path prefixes to host paths for
+  probing image and video dimensions. When probing a reachable file fails, the
+  change is withheld: a new file stays hidden and a changed file keeps its
+  previous version. Each server start retries withheld files.
 
-Important fields:
+Version 2 files, which configured a single Synology server with top-level
+`synology`, `mounts`, and `local_paths`, are still accepted and read as one
+backend named `synology`.
 
-- `database_url`: SQLite database location for the local mirror
-- `synology.url`: DSM / Synology Drive base URL
-- `mounts`: virtual mount label to Synology path mapping
-- `local_paths`: optional Synology-path to local-filesystem mapping for media
-  probing; required by the current schema, so use `{}` if unused. When probing
-  a reachable image or video fails, the change is withheld: a new file stays
-  hidden and a changed file keeps its previous version. Each server start
-  retries withheld files.
-- `synology.webhook.callback_url`: externally reachable base URL used for
-  webhook registration
-- `synology.otp_code`: optional 2FA code when the Synology account requires it
+Node IDs from different backends share one namespace: filesystem IDs are random
+hex and Synology IDs are its permanent links, so collisions are not expected.
 
-Synology API behavior, reference types, and Synology-side exceptions are
-provided by `wcpan-synology`, which only the Synology server package needs. The client never raises `wcpan.synology` exceptions; it raises the
-errors in `wcpan.drive.client.remote.exceptions` (`SynologyServerError` and its
-subclasses for access, upload, and name-too-long failures), which describe the
-HTTP client/server boundary.
+#### Synology backend
 
-### Filesystem server
+Settings: `url`, `username`, `password`, optional `otp_code`, `webhook`
+(`callback_url`, optional `app_id`, default `wcpan-drive-server-synology`), and
+optional `local_paths`. Each instance:
 
-`wcpan.drive.server.filesystem` serves local directories. It uses the
-same config file shape without the `synology` section; mount sources are
-absolute host directories:
+- connects to Synology Drive through DSM's WebStation API using
+  `wcpan-synology`
+- registers a webhook at `CALLBACK_URL/api/v1/backends/NAME/webhook`, where
+  `NAME` is the backend instance name
+- keeps its mounts in sync through a startup scan, webhook events, and the
+  `backend NAME backfill PATH` command
+
+`backfill PATH` takes a virtual mirror path (`/` is the server root, then mount
+names and folders) and reconciles this instance's mounts under it.
+
+#### Filesystem backend
+
+Serves local directories; mount sources are absolute host directories.
+Settings, all optional:
 
 ```yaml
-version: 2
-database_url: "/data/mirror.db"
-mounts:
-  photos: "/srv/photos"
-local_paths: {}
-filesystem:
-  rescan_interval: 3600  # seconds between full rescans; default 3600
-  watch: true            # follow changes with inotify; default true
-  read_only: false       # reject every change through the server; default false
-```
-
-```bash
-wcpan.drive.server.filesystem --config server.yaml serve
-wcpan.drive.server.filesystem --config server.yaml gc
-wcpan.drive.server.filesystem --config server.yaml squash
-wcpan.drive.server.filesystem --config server.yaml rebind-mount photos
+  disk:
+    type: wcpan.drive.server.filesystem.create_backend
+    rescan_interval: 3600  # seconds between full rescans; default 3600
+    watch: true            # follow changes with inotify; default true
+    read_only: false       # reject every change through the server; default false
+    # local_paths:         # default: probe media at the source paths
 ```
 
 - Discovery is a full scan at startup, then inotify: a changed directory is
@@ -245,7 +248,7 @@ wcpan.drive.server.filesystem --config server.yaml rebind-mount photos
 - A mount whose source is missing, unreadable, or now on a different
   filesystem (for example an unmounted disk) keeps its mirror instead of being
   emptied. If the filesystem change is intended, stop the server and run
-  `rebind-mount NAME`. `gc`, `squash`, and `rebind-mount` are offline commands.
+  `backend NAME rebind-mount MOUNT`.
 
 ## Requirements
 

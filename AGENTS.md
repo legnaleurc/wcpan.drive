@@ -64,7 +64,7 @@ If you need detailed implementation behavior, read the relevant module instead o
 
 ## Configuration Notes
 
-The YAML config schema is split: generic settings in `packages/server/src/wcpan/drive/server/config.py` (parsed into `ServerConfig` in `server/types.py`) and the `synology` section in `packages/server-synology/src/wcpan/drive/server/synology/config.py`. The example config is `server.example.yaml`.
+The YAML config schema is defined in `packages/server/src/wcpan/drive/server/config.py` (parsed into `ServerConfig` in `server/types.py`); each backend parses its own settings in its package's `config.py`. Backends are async factories loaded from the import path in `type` (see `server/backend.py`). The example config is `server.example.yaml`, checked by `tests/test_example_config.py`.
 
 Do not duplicate config fields or semantics here; update `README.md`, `server.example.yaml`, and tests when behavior
 changes.

@@ -1,20 +1,23 @@
 """The local filesystem as a ``Backend`` of the generic server."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from logging import getLogger
+from pathlib import Path
+from typing import Any
 
-from aiohttp import web
-from wcpan.drive.server.backend import CoreServices
+from wcpan.drive.server.backend import BackendContext, CoreServices
+from wcpan.drive.server.services.paths import map_by_prefix
 
 from .blocking import Blocking
-from .config import FilesystemConfig
+from .commands import command_parser, rebind_mount
+from .config import FilesystemConfig, check_mounts, parse_filesystem_config
 from .operations import FilesystemOperations, FilesystemUploader
 from .paths import NodePaths
 from .scan import FilesystemScanner
-from .store import FILESYSTEM_SCHEMA, FilesystemSchema, FilesystemStore
+from .store import FILESYSTEM_SCHEMA, FilesystemStore
 from .watch import DirectoryWatcher
 
 
@@ -59,7 +62,6 @@ class FilesystemRuntime:
         # Events during the startup scan are kept and handled once it finishes.
         if self._watcher is not None:
             self._watcher.start()
-        await self._scanner.ensure_structure()
         await self._scanner.scan()
         await self._core.node_sync.retry_pending_enrichment(locate=self._scanner.locate)
         await self._core.node_sync.wait_enrichment_drained()
@@ -99,22 +101,78 @@ class FilesystemRuntime:
             _L.exception("%s failed; later changes or rescans will retry", what)
 
 
+@asynccontextmanager
+async def create_backend(
+    context: BackendContext, **settings: Any
+) -> AsyncGenerator["FilesystemBackend", None]:
+    """Backend factory for ``type: wcpan.drive.server.filesystem.create_backend``."""
+    config = parse_filesystem_config(settings)
+    mounts = check_mounts(context.mounts)
+    await context.core.storage.register_schema(context.name, FILESYSTEM_SCHEMA)
+    backend = FilesystemBackend(context=context, config=config, mounts=mounts)
+    if context.offline:
+        yield backend
+        return
+    async with backend.serving():
+        yield backend
+
+
 class FilesystemBackend:
-    def __init__(self, *, config: FilesystemConfig, mounts: dict[str, str]) -> None:
+    """Local directories, serving the mounts assigned to this instance."""
+
+    def __init__(
+        self,
+        *,
+        context: BackendContext,
+        config: FilesystemConfig,
+        mounts: dict[str, str],
+    ) -> None:
+        self._context = context
         self._config = config
         self._mounts = mounts
+        self._local_path = (
+            map_by_prefix(config.local_paths)
+            if config.local_paths is not None
+            else Path
+        )
+        self._runtime: FilesystemRuntime | None = None
 
     @property
-    def schema(self) -> FilesystemSchema:
-        return FILESYSTEM_SCHEMA
+    def name(self) -> str:
+        return self._context.name
 
-    def add_routes(self, app: web.Application) -> None:
-        pass
+    @property
+    def mounts(self) -> dict[str, str]:
+        return self._mounts
+
+    def local_path(self, source_path: str) -> Path | None:
+        return self._local_path(source_path)
+
+    @property
+    def operations(self) -> FilesystemOperations:
+        return self._require_runtime().operations
+
+    @property
+    def uploader(self) -> FilesystemUploader:
+        return self._require_runtime().uploader
+
+    async def run_until_ready(self) -> None:
+        await self._require_runtime().run_until_ready()
+
+    async def run(self) -> None:
+        await self._require_runtime().run()
+
+    async def command(self, argv: Sequence[str]) -> None:
+        args = command_parser(self.name).parse_args(list(argv))
+        if args.command == "rebind-mount":
+            fsid = await rebind_mount(
+                self._context.core.storage, self._mounts, args.mount
+            )
+            print(f"Mount {args.mount!r} now expects filesystem {fsid}.")
 
     @asynccontextmanager
-    async def start(
-        self, app: web.Application, core: CoreServices
-    ) -> AsyncGenerator[FilesystemRuntime, None]:
+    async def serving(self) -> AsyncGenerator[None, None]:
+        core = self._context.core
         executor = ThreadPoolExecutor(
             max_workers=_IO_WORKERS, thread_name_prefix="wcpan-fs"
         )
@@ -132,7 +190,7 @@ class FilesystemBackend:
                 watcher=watcher,
             )
             read_only = self._config.read_only
-            yield FilesystemRuntime(
+            self._runtime = FilesystemRuntime(
                 operations=FilesystemOperations(
                     scanner=scanner,
                     storage=core.storage,
@@ -154,7 +212,14 @@ class FilesystemBackend:
                 rescan_interval=self._config.rescan_interval,
                 core=core,
             )
+            yield
         finally:
+            self._runtime = None
             if watcher is not None:
                 watcher.close()
             executor.shutdown(wait=False, cancel_futures=True)
+
+    def _require_runtime(self) -> FilesystemRuntime:
+        if self._runtime is None:
+            raise RuntimeError(f"backend {self.name!r} is not serving")
+        return self._runtime

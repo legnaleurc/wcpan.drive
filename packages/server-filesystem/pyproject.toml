@@ -11,11 +11,8 @@ dependencies = [
     "dacite>=1.9.2,<2.0.0",
     "wcpan-drive-protocol>=0.1.0,<0.2.0",
     "wcpan-drive-server>=0.1.0,<0.2.0",
-    "wcpan-logging>=2.1.0,<3.0.0",
 ]
 
-[project.scripts]
-"wcpan.drive.server.filesystem" = "wcpan.drive.server.filesystem.main:main"
 
 [build-system]
 requires = ["hatchling"]

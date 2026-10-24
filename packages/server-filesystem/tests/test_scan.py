@@ -10,6 +10,7 @@ from unittest.mock import patch
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.filesystem.blocking import Blocking
 from wcpan.drive.server.filesystem.scan import FilesystemScanner
+from wcpan.drive.server.services.mounts import ensure_mount_nodes
 from wcpan.drive.server.services.operations import (
     OperationNotSupportedError,
     OperationUnavailableError,
@@ -175,7 +176,9 @@ class TestIdentity(ScanTestCase):
             paths=self.paths,
             blocking=Blocking(executor=self.io_pool),
         )
-        await self.scanner.ensure_structure()
+        await ensure_mount_nodes(
+            ["docs"], storage=self.storage, node_sync=self.node_sync
+        )
         await self.scan()
 
         self.assertEqual(await self.node_id("a/f.txt"), before)

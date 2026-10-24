@@ -14,7 +14,11 @@ dependencies = [
     "pyyaml>=6.0,<7.0",
     "pymediainfo>=7.0.1,<8.0.0",
     "wcpan-drive-protocol>=0.1.0,<0.2.0",
+    "wcpan-logging>=2.1.0,<3.0.0",
 ]
+
+[project.scripts]
+"wcpan.drive.server" = "wcpan.drive.server.main:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -24,7 +24,7 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
         self.storage = StorageService(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
-            backend=SYNOLOGY_SCHEMA,
+            schemas={"synology": SYNOLOGY_SCHEMA},
         )
         self.store = SynologyStore(storage=self.storage)
         await self.storage.ensure_schema()
@@ -83,7 +83,7 @@ class TestSetMountState(IsolatedAsyncioTestCase):
         self.storage = StorageService(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
-            backend=SYNOLOGY_SCHEMA,
+            schemas={"synology": SYNOLOGY_SCHEMA},
         )
         self.store = SynologyStore(storage=self.storage)
         await self.storage.ensure_schema()
@@ -137,14 +137,14 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
 
     async def test_new_db_sets_user_version(self) -> None:
         await StorageService(
-            self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+            self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         ).ensure_schema()
 
         con = sqlite3.connect(self.db_path)
         version = con.execute("PRAGMA user_version").fetchone()[0]
         con.close()
 
-        self.assertEqual(version, 6)
+        self.assertEqual(version, 7)
 
     async def test_version_3_db_is_migrated(self) -> None:
         con = sqlite3.connect(self.db_path)
@@ -174,7 +174,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.close()
 
         await StorageService(
-            self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+            self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         ).ensure_schema()
 
         con = sqlite3.connect(self.db_path)
@@ -186,11 +186,49 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         locators = dict(con.execute("SELECT node_id, file_id FROM synology_locators"))
         con.close()
 
-        self.assertEqual(version, 6)
+        self.assertEqual(version, 7)
         self.assertEqual(rows["f1"], ("abc", "md4"))
         self.assertEqual(rows["f2"], ("", ""))
         self.assertEqual(rows["d1"], ("", ""))
         self.assertEqual(locators, {"f1": "m1", "f2": "m2", "d1": "m3"})
+
+    async def test_version_6_pending_entries_belong_to_legacy_backend(self) -> None:
+        con = sqlite3.connect(self.db_path)
+        con.executescript(
+            """
+            CREATE TABLE nodes (
+                id TEXT PRIMARY KEY, parent_id TEXT,
+                name TEXT NOT NULL, is_directory INTEGER NOT NULL DEFAULT 0,
+                created_time INTEGER NOT NULL, modified_time INTEGER NOT NULL,
+                changed_time INTEGER NOT NULL,
+                mime_type TEXT NOT NULL DEFAULT '', hash TEXT NOT NULL DEFAULT '',
+                hash_algorithm TEXT NOT NULL DEFAULT '',
+                size INTEGER NOT NULL DEFAULT 0,
+                is_image INTEGER NOT NULL DEFAULT 0,
+                is_video INTEGER NOT NULL DEFAULT 0,
+                width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0,
+                ms_duration INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE changes (
+                change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT NOT NULL,
+                is_removed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE pending_enrichment (node_id TEXT PRIMARY KEY);
+            INSERT INTO pending_enrichment (node_id) VALUES ('pending-1');
+            PRAGMA user_version = 6;
+            """
+        )
+        con.commit()
+        con.close()
+
+        storage = StorageService(self.db_path, off_main=self.off_main)
+        await storage.ensure_schema()
+
+        self.assertEqual(
+            await storage.get_pending_enrichment("synology"), ["pending-1"]
+        )
+        self.assertEqual(await storage.get_pending_enrichment("other"), [])
 
     async def test_version_4_db_moves_locators_out_of_nodes(self) -> None:
         con = sqlite3.connect(self.db_path)
@@ -231,7 +269,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.close()
 
         storage = StorageService(
-            self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+            self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         )
         await storage.ensure_schema()
 
@@ -239,7 +277,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         version = con.execute("PRAGMA user_version").fetchone()[0]
         columns = {row[1] for row in con.execute("PRAGMA table_info(nodes)")}
         con.close()
-        self.assertEqual(version, 6)
+        self.assertEqual(version, 7)
         self.assertNotIn("mutable_id", columns)
 
         # Public IDs and the change feed survive; virtual nodes get no locator.
@@ -260,7 +298,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
 
     async def test_existing_db_with_matching_version_is_accepted(self) -> None:
         storage = StorageService(
-            self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+            self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         )
         await storage.ensure_schema()
         await storage.ensure_schema()
@@ -273,7 +311,9 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
 
         with self.assertRaises(SchemaVersionError):
             await StorageService(
-                self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+                self.db_path,
+                off_main=self.off_main,
+                schemas={"synology": SYNOLOGY_SCHEMA},
             ).ensure_schema()
 
     async def test_existing_db_with_wrong_version_is_rejected(self) -> None:
@@ -284,5 +324,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
 
         with self.assertRaises(SchemaVersionError):
             await StorageService(
-                self.db_path, off_main=self.off_main, backend=SYNOLOGY_SCHEMA
+                self.db_path,
+                off_main=self.off_main,
+                schemas={"synology": SYNOLOGY_SCHEMA},
             ).ensure_schema()

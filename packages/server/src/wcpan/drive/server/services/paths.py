@@ -1,11 +1,13 @@
 """Path services over the mirror.
 
 - ``LocalPathService``    — resolve node records to host-filesystem paths
-                            (holds *storage*, *mounts*, *local_paths*)
+                            (holds *storage* and per-mount *MountSource*)
 - ``VirtualPathService``  — resolve client-facing virtual paths to node IDs
                             (holds *storage*)
 """
 
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
@@ -13,6 +15,30 @@ from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from ..lib.mounts import SERVER_ROOT_ID, is_virtual, mount_name
 from ..types import VirtualPath
 from .storage import StorageService
+
+
+@dataclass(frozen=True, kw_only=True)
+class MountSource:
+    """A mount's source, and how its backend maps source paths to host paths."""
+
+    source: str
+    local_path: Callable[[str], Path | None]
+
+
+def map_by_prefix(local_paths: Mapping[str, str]) -> Callable[[str], Path | None]:
+    """Map source paths to host paths by the longest matching prefix."""
+
+    def local_path(source_path: str) -> Path | None:
+        best = max(
+            (p for p in local_paths if source_path.startswith(p)),
+            key=len,
+            default=None,
+        )
+        if best is None:
+            return None
+        return Path(local_paths[best] + source_path[len(best) :])
+
+    return local_path
 
 
 # ---------------------------------------------------------------------------
@@ -31,17 +57,14 @@ class LocalPathService:
         self,
         *,
         storage: StorageService,
-        mounts: dict[str, str],
-        local_paths: dict[str, str],
+        mounts: Mapping[str, MountSource],
     ) -> None:
         self._storage = storage
         self._mounts = mounts
-        self._local_paths = local_paths
 
     async def resolve_local_path(self, record: NodeRecord) -> Path | None:
         """Reconstruct the local filesystem path for *record*, or ``None``."""
-        local_paths = self._local_paths
-        if not local_paths:
+        if not self._mounts:
             return None
         node_cache: dict[str, NodeRecord | None]
         if not record.parent_id or is_virtual(record.parent_id):
@@ -50,7 +73,7 @@ class LocalPathService:
             ancestors = await self._storage.get_ancestors(record.parent_id)
             node_cache = {a.id: a for a in ancestors}
 
-        return _resolve_local_path(self._mounts, local_paths, record, node_cache)
+        return _resolve_local_path(self._mounts, record, node_cache)
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +130,7 @@ def _virtual_path_segments(virtual_path: VirtualPath) -> list[str]:
 
 
 def _resolve_local_path(
-    mounts: dict[str, str],
-    local_paths: dict[str, str],
+    mounts: Mapping[str, MountSource],
     record: NodeRecord,
     node_cache: dict[str, NodeRecord | None],
 ) -> Path | None:
@@ -129,21 +151,9 @@ def _resolve_local_path(
     if mname is None:
         return None
 
-    source = mounts.get(mname)
-    if source is None:
+    mount = mounts.get(mname)
+    if mount is None:
         return None
 
     relative = "/".join(reversed(parts))
-    full_source_path = source.rstrip("/") + "/" + relative
-
-    # Apply longest-prefix match from local_paths
-    best_prefix = ""
-    for prefix in local_paths:
-        if full_source_path.startswith(prefix) and len(prefix) > len(best_prefix):
-            best_prefix = prefix
-
-    if not best_prefix:
-        return None
-
-    local_str = local_paths[best_prefix] + full_source_path[len(best_prefix) :]
-    return Path(local_str)
+    return mount.local_path(mount.source.rstrip("/") + "/" + relative)

@@ -57,7 +57,7 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         self.storage = StorageService(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
-            backend=SYNOLOGY_SCHEMA,
+            schemas={"synology": SYNOLOGY_SCHEMA},
         )
         self.store = SynologyStore(storage=self.storage)
         await self.storage.ensure_schema()
@@ -133,7 +133,8 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         await self.storage.bulk_upsert_nodes([_node("d", "missing-parent")])
 
         self.assertEqual(
-            cleanup_dangling_nodes(self.db_path, backend=SYNOLOGY_SCHEMA), 1
+            cleanup_dangling_nodes(self.db_path, schemas={"synology": SYNOLOGY_SCHEMA}),
+            1,
         )
 
         self.assertEqual(await self.store.get_locators([MirrorStableId("d")]), {})

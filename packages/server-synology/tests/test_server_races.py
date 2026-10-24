@@ -120,7 +120,7 @@ class _RaceTestCase(IsolatedAsyncioTestCase):
         self.pool = ThreadPoolExecutor(2)
         off_main = OffMainService(pool=self.pool)
         self.storage = StorageService(
-            self.db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+            self.db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         )
         await self.storage.ensure_schema()
         await self.storage.bulk_upsert_nodes(
@@ -136,8 +136,7 @@ class _RaceTestCase(IsolatedAsyncioTestCase):
             storage=self.storage,
             write_queue=self.write_queue,
             off_main=off_main,
-            mounts=self.mounts,
-            local_paths={},
+            mounts={},
             metadata_queue=self.metadata_queue,
         )
         self.tasks = [

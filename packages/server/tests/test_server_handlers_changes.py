@@ -97,7 +97,6 @@ def _make_app(storage: _FakeStorage) -> web.Application:
         write_queue=wq,
         off_main=off_main,
         mounts={},
-        local_paths={},
         metadata_queue=asyncio.Queue(),
     )  # type: ignore[arg-type]
 

@@ -139,7 +139,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -165,7 +165,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))
@@ -216,7 +215,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -254,7 +253,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))
@@ -304,7 +302,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -333,7 +331,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))
@@ -381,7 +378,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -410,7 +407,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))
@@ -459,7 +455,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -489,7 +485,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))
@@ -536,7 +531,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -569,7 +564,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))
@@ -620,7 +614,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -683,7 +677,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))
@@ -733,7 +726,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -756,7 +749,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))
@@ -807,7 +799,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
                 storage = StorageService(
-                    db_path, off_main=off_main, backend=SYNOLOGY_SCHEMA
+                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
                 await storage.ensure_schema()
                 await storage.bulk_upsert_nodes(
@@ -853,7 +845,6 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
-                    local_paths={},
                     metadata_queue=mq,
                 )
                 drain = asyncio.create_task(self._drain_writes(q))

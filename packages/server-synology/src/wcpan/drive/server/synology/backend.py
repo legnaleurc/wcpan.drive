@@ -1,137 +1,198 @@
-"""Synology Drive as a ``Backend`` of the generic server."""
+"""Synology Drive as a backend of the generic server."""
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from logging import getLogger
+from pathlib import Path
+from typing import Any
 
-from aiohttp import web
-from wcpan.drive.server.backend import CoreServices
+from wcpan.drive.server.backend import BackendContext
+from wcpan.drive.server.services.paths import map_by_prefix
 from wcpan.synology import SynologyClient, SynologyPath
 
-from .config import SynologyConfig, create_synology_client
-from .handlers import handle_synology_webhook
-from .keys import (
-    MOUNT_REGISTRY_KEY,
-    SYNOLOGY_DRIVE_API_KEY,
-    SYNOLOGY_PATH_KEY,
-    WEBHOOK_QUEUE_KEY,
-)
-from .mounts import create_mount_registry
+from .backfill import BackfillService
+from .commands import command_parser, print_stats
+from .config import SynologyConfig, create_synology_client, parse_synology_config
+from .handlers import webhook_handler
+from .mounts import MountRegistry, create_mount_registry
 from .operations import SynologyNodeOperations
 from .paths import SynologyPathService
 from .scan import StartupScanService
-from .store import SYNOLOGY_SCHEMA, SynologySchema, SynologyStore
+from .store import SYNOLOGY_SCHEMA, SynologyStore
 from .upload import SynologyUploader
-from .webhook import WebhookQueue, WebhookService, create_webhook_queue
+from .webhook import WebhookService, create_webhook_queue
 
 
 _L = getLogger(__name__)
 
 
-class SynologyRuntime:
-    def __init__(
-        self,
-        *,
-        operations: SynologyNodeOperations,
-        uploader: SynologyUploader,
-        startup_scan: StartupScanService,
-        webhook_service: WebhookService,
-        webhook_queue: WebhookQueue,
-    ) -> None:
-        self._operations = operations
-        self._uploader = uploader
-        self._startup_scan = startup_scan
-        self._webhook_service = webhook_service
-        self._webhook_queue = webhook_queue
-        self._scan_done = asyncio.Event()
+@dataclass(frozen=True, kw_only=True)
+class _Connection:
+    drive_api: SynologyClient
+    store: SynologyStore
+    registry: MountRegistry
+    syno_paths: SynologyPathService
 
-    @property
-    def operations(self) -> SynologyNodeOperations:
-        return self._operations
 
-    @property
-    def uploader(self) -> SynologyUploader:
-        return self._uploader
+@dataclass(frozen=True, kw_only=True)
+class _Serving:
+    operations: SynologyNodeOperations
+    uploader: SynologyUploader
+    startup_scan: StartupScanService
+    webhook_service: WebhookService
 
-    async def run_until_ready(self) -> None:
-        """Startup scan, then the webhooks that arrived meanwhile."""
-        await self._startup_scan.run_until_ready(self._scan_done)
-        await self._webhook_queue.join()
 
-    async def run(self) -> None:
-        async with asyncio.TaskGroup() as group:
-            await self._webhook_service.run(self._webhook_queue, group, self._scan_done)
+@asynccontextmanager
+async def create_backend(
+    context: BackendContext, **settings: Any
+) -> AsyncGenerator["SynologyBackend", None]:
+    """Backend factory for ``type: wcpan.drive.server.synology.create_backend``.
+
+    Serving connects here; offline, ``command`` connects once its arguments parse.
+    """
+    config = parse_synology_config(settings)
+    await context.core.storage.register_schema(context.name, SYNOLOGY_SCHEMA)
+    backend = SynologyBackend(context=context, config=config)
+    if context.offline:
+        yield backend
+        return
+    async with backend.serving():
+        yield backend
 
 
 class SynologyBackend:
-    def __init__(
-        self, *, config: SynologyConfig, mounts: dict[str, SynologyPath]
-    ) -> None:
+    """One Synology Drive server, serving the mounts assigned to it."""
+
+    def __init__(self, *, context: BackendContext, config: SynologyConfig) -> None:
+        self._context = context
         self._config = config
-        self._mounts = mounts
+        self._mounts = {
+            name: SynologyPath(source) for name, source in context.mounts.items()
+        }
+        self._local_path = map_by_prefix(config.local_paths)
+        self._webhook_queue = create_webhook_queue()
+        self._scan_done = asyncio.Event()
+        self._serving: _Serving | None = None
 
     @property
-    def schema(self) -> SynologySchema:
-        return SYNOLOGY_SCHEMA
+    def name(self) -> str:
+        return self._context.name
 
-    def add_routes(self, app: web.Application) -> None:
-        app.router.add_post("/api/v1/synology-webhook", handle_synology_webhook)
+    @property
+    def config(self) -> SynologyConfig:
+        return self._config
+
+    @property
+    def mounts(self) -> dict[str, SynologyPath]:
+        return self._mounts
+
+    def local_path(self, source_path: str) -> Path | None:
+        return self._local_path(source_path)
+
+    @property
+    def operations(self) -> SynologyNodeOperations:
+        return self._require_serving().operations
+
+    @property
+    def uploader(self) -> SynologyUploader:
+        return self._require_serving().uploader
+
+    async def run_until_ready(self) -> None:
+        """Startup scan, then the webhooks that arrived meanwhile."""
+        await self._require_serving().startup_scan.run_until_ready(self._scan_done)
+        await self._webhook_queue.join()
+
+    async def run(self) -> None:
+        webhook_service = self._require_serving().webhook_service
+        async with asyncio.TaskGroup() as group:
+            await webhook_service.run(self._webhook_queue, group, self._scan_done)
+
+    async def command(self, argv: Sequence[str]) -> None:
+        args = command_parser(self.name).parse_args(list(argv))
+        if args.command == "backfill":
+            async with self.connect() as c:
+                service = BackfillService(
+                    drive_api=c.drive_api,
+                    storage=self._context.core.storage,
+                    store=c.store,
+                    syno_paths=c.syno_paths,
+                    node_sync=self._context.core.node_sync,
+                )
+                stats = await service.run_virtual_path(
+                    args.path.strip(), dry_run=args.dry_run
+                )
+            print_stats(stats)
 
     @asynccontextmanager
-    async def start(
-        self, app: web.Application, core: CoreServices
-    ) -> AsyncGenerator[SynologyRuntime, None]:
+    async def connect(self) -> AsyncGenerator[_Connection, None]:
+        """Log in and resolve the mount roots."""
+        async with create_synology_client(self._config) as drive_api:
+            store = SynologyStore(storage=self._context.core.storage)
+            registry = await create_mount_registry(self._mounts, drive_api=drive_api)
+            yield _Connection(
+                drive_api=drive_api,
+                store=store,
+                registry=registry,
+                syno_paths=SynologyPathService(registry=registry, store=store),
+            )
+
+    @asynccontextmanager
+    async def serving(self) -> AsyncGenerator[None, None]:
+        """Connect, receive webhooks, and build the services the server uses."""
+        core = self._context.core
         async with AsyncExitStack() as stack:
-            drive_api = await stack.enter_async_context(
-                create_synology_client(self._config)
+            c = await stack.enter_async_context(self.connect())
+            path = self._context.routes.add(
+                "POST", "webhook", webhook_handler(self._webhook_queue)
             )
-            store = SynologyStore(storage=core.storage)
-            mount_registry = await create_mount_registry(
-                self._mounts, drive_api=drive_api
+            await stack.enter_async_context(
+                _managed_webhook(
+                    c.drive_api, self._config, url=f"{self._config.public_url}{path}"
+                )
             )
-            syno_paths = SynologyPathService(registry=mount_registry, store=store)
-            await stack.enter_async_context(_managed_webhook(drive_api, self._config))
-
-            webhook_queue = create_webhook_queue()
-            app[SYNOLOGY_DRIVE_API_KEY] = drive_api
-            app[MOUNT_REGISTRY_KEY] = mount_registry
-            app[SYNOLOGY_PATH_KEY] = syno_paths
-            app[WEBHOOK_QUEUE_KEY] = webhook_queue
-
-            yield SynologyRuntime(
+            self._serving = _Serving(
                 operations=SynologyNodeOperations(
-                    drive_api=drive_api,
-                    syno_paths=syno_paths,
+                    drive_api=c.drive_api,
+                    syno_paths=c.syno_paths,
                     node_sync=core.node_sync,
                 ),
                 uploader=SynologyUploader(
-                    drive_api=drive_api,
-                    syno_paths=syno_paths,
+                    drive_api=c.drive_api,
+                    syno_paths=c.syno_paths,
                     node_sync=core.node_sync,
                 ),
                 startup_scan=StartupScanService(
-                    drive_api=drive_api,
+                    drive_api=c.drive_api,
                     storage=core.storage,
-                    store=store,
-                    syno_paths=syno_paths,
+                    store=c.store,
+                    syno_paths=c.syno_paths,
                     node_sync=core.node_sync,
                 ),
                 webhook_service=WebhookService(
-                    drive_api=drive_api,
+                    drive_api=c.drive_api,
                     storage=core.storage,
-                    store=store,
+                    store=c.store,
                     node_sync=core.node_sync,
-                    syno_paths=syno_paths,
-                    mount_registry=mount_registry,
+                    syno_paths=c.syno_paths,
+                    mount_registry=c.registry,
                 ),
-                webhook_queue=webhook_queue,
             )
+            try:
+                yield
+            finally:
+                self._serving = None
+
+    def _require_serving(self) -> _Serving:
+        if self._serving is None:
+            raise RuntimeError(f"backend {self.name!r} is not serving")
+        return self._serving
 
 
 @asynccontextmanager
 async def _managed_webhook(
-    drive_api: SynologyClient, config: SynologyConfig
+    drive_api: SynologyClient, config: SynologyConfig, *, url: str
 ) -> AsyncGenerator[None, None]:
     stale = await drive_api.list_webhooks(app_id=config.webhook_app_id)
     for hook in stale:
@@ -141,10 +202,7 @@ async def _managed_webhook(
             )
         except Exception:
             _L.warning("Failed to remove stale webhook %s", hook.get("webhook_id"))
-    webhook_id = await drive_api.create_webhook(
-        url=f"{config.public_url}/api/v1/synology-webhook",
-        app_id=config.webhook_app_id,
-    )
+    webhook_id = await drive_api.create_webhook(url=url, app_id=config.webhook_app_id)
     _L.info("Webhook registered: id=%s", webhook_id)
     try:
         yield

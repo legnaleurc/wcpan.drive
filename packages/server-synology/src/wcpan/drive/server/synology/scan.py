@@ -7,7 +7,7 @@ from logging import getLogger
 
 from wcpan.drive.protocol.types import MirrorStableId
 from wcpan.drive.server.lib.bfs import parallel_bfs
-from wcpan.drive.server.lib.mounts import mount_id, structural_records
+from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -283,31 +283,18 @@ class StartupScanService:
         return per_mount_highest, pre_scan_max_ids
 
     async def run_initial_scan(self) -> None:
-        """First full scan or resume: align nodes + change feed before serving."""
-        last_max_ids = await self._store.get_mount_max_ids(self._syno_paths.mounts)
-        is_first_run = not any(last_max_ids.values())
+        """First full scan or resume: align nodes + change feed before serving.
 
-        if is_first_run:
+        The root and mount nodes already exist; the core creates them.
+        """
+        last_max_ids = await self._store.get_mount_max_ids(self._syno_paths.mounts)
+        if not any(last_max_ids.values()):
             _L.info(
                 "First run: performing full scan of %d mount(s)",
                 len(self._syno_paths.mounts),
             )
-            _L.debug(
-                "Creating root node and %d mount node(s)", len(self._syno_paths.mounts)
-            )
-            structural = structural_records(self._syno_paths.mounts)
-            async with self._node_sync.observe() as read:
-                await self._node_sync.upsert_batch(
-                    [NodeObservation(record=r, locator=None) for r in structural],
-                    read=read,
-                )
         else:
             _L.info("Resuming with per-mount max_ids: %s", last_max_ids)
-            # First run already emitted structural rows into `changes`; keep `nodes`
-            # in sync (e.g. new mounts in config) without duplicate feed rows.
-            structural = structural_records(self._syno_paths.mounts)
-            _L.debug("Ensuring %d mount node(s) exist", len(self._syno_paths.mounts))
-            await self._node_sync.sync_nodes(structural)
 
         _, pre_scan_max_ids = await self._scan_all_mounts(last_max_ids)
         await self._node_sync.retry_pending_enrichment(

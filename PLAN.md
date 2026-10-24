@@ -407,7 +407,8 @@ blocked thread, so pool saturation and shutdown need explicit behavior.
 ## Compatibility and configuration
 
 Use separate server settings, named backend instances, and virtual mount names.
-The following is a proposed schema, not an implemented configuration change:
+Implemented as configuration version 3 (see status below); `type` names the
+backend factory, for example `wcpan.drive.server.synology.create_backend`:
 
 ```yaml
 version: 3
@@ -420,7 +421,7 @@ server:
 
 backends:
   nas:
-    type: synology
+    type: wcpan.drive.server.synology
     url: "https://nas.example.com:5001"
     username: "feed-user"
     password: "..."
@@ -431,7 +432,7 @@ backends:
       "/volume1/photos": "/mnt/photos"
 
   disk:
-    type: filesystem
+    type: wcpan.drive.server.filesystem
     watch: auto
 
 mounts:
@@ -460,8 +461,38 @@ requirement. A filesystem-only deployment does not need a callback URL.
 Backend instance names identify persistent source instances. Changes to a mount's
 backend or source require an explicit reconfiguration policy and checkpoint
 invalidation. Locators, handles, `max_id`, and other discovery progress belong in
-the database, never in configuration. Version 3 is proposed as the successor to
-the existing version 2 schema.
+the database, never in configuration. Version 3 succeeds the version 2 schema.
+
+Status: implemented. `wcpan-drive-server` owns the `wcpan.drive.server` command.
+Each instance's `type` is the import path of an async context manager factory,
+like the client's service factories, called as `factory(context, **settings)`.
+The context carries the instance name, its mounts, the core services, a route
+registry, and an `offline` flag. The factory registers its schema (the core
+creates its tables and drops rows orphaned by an offline `gc`), registers its
+routes, and connects when serving; offline it only parses settings. Routes are
+served under one core route, `/api/v1/backends/<name>/<path>`, because the
+router is frozen before factories run. Maintenance commands are addressed as
+`backend NAME ARGS...`: the core passes the arguments to the instance's
+`command`, which parses them itself and connects only once they parse, so
+`--help` never reaches the source. Backend packages ship no scripts, so
+`uvx --with=wcpan-drive-server-synology --with=wcpan-drive-server-filesystem
+wcpan.drive.server serve` runs both. Version 2 files load as one Synology
+instance named `synology`.
+
+The core now creates the root and mount nodes (publishing mounts added later),
+routes operations and uploads to the backend serving a node's mount
+(`BackendRouter`; moves between backends are refused), starts every instance,
+and becomes ready once all have finished initial discovery. Each instance writes
+through `NodeSyncService.for_backend(name)`, which tags observations so storage
+binds locators with that instance's `BackendSchema`; pending enrichment records
+its instance (schema 7) so each backend retries only its own. `local_paths`
+moved into backend settings; the core asks the backend for each mount's host
+paths. Synology webhooks use the per-instance route
+`/api/v1/backends/<name>/webhook`.
+
+Not done: an explicit policy when a mount changes backend or source beyond the
+existing checkpoint and filesystem-identity checks; node IDs rely on each
+backend minting globally unique IDs rather than an enforced namespace.
 
 - Preserve existing client imports, HTTP routes, error behavior, and CLI behavior
   during the internal refactor unless a separately reviewed migration requires change.
@@ -654,7 +685,7 @@ identity's previous path no longer names it (rename or move); otherwise it is a
 new node, which covers replacement and new hard links. Unchanged files are not
 rehashed, and a file that changes while hashed is withheld. A mount whose
 filesystem ID differs from the one recorded in `fs_mounts` is preserved until
-`rebind-mount`. Contract changes this required: `OperationNotSupportedError`
+`backend NAME rebind-mount MOUNT`. Contract changes this required: `OperationNotSupportedError`
 (mapped to 403 by a middleware) and shared `structural_records`.
 
 The inotify watcher is implemented. Each directory is watched before it is
@@ -678,7 +709,8 @@ identity, size, and mtime are unchanged, so renames do not rehash. Contract
 change: `OperationInvalidError` (400). `filesystem.read_only` restores the
 read-only behaviour.
 
-Not yet done: `open_by_handle_at` and multi-backend configuration (version 3).
+Not yet done: `open_by_handle_at`. Multi-backend configuration (version 3) is
+done; see Compatibility and configuration.
 
 Deliverable: both backends satisfy the common contract without filesystem code
 pretending to provide a Synology checkpoint or immutable entry locator.

@@ -4,6 +4,7 @@ import asyncio
 import tempfile
 import unicodedata
 from pathlib import Path
+from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,10 +35,6 @@ from wcpan.drive.server.services.upload import (
     UploadSessionStore,
 )
 from wcpan.drive.server.synology.convert import SynologyLocator
-from wcpan.drive.server.synology.keys import (
-    SYNOLOGY_DRIVE_API_KEY,
-    SYNOLOGY_PATH_KEY,
-)
 from wcpan.drive.server.synology.mounts import MountRegistry
 from wcpan.drive.server.synology.operations import SynologyNodeOperations
 from wcpan.drive.server.synology.paths import SynologyPathService
@@ -48,6 +45,11 @@ from wcpan.synology import (
     SynologyUploadConflictError,
     SynologyUploadError,
 )
+
+
+# Test-local slots for the Synology fakes; the backend no longer uses app keys.
+SYNOLOGY_DRIVE_API_KEY: web.AppKey[Any] = web.AppKey("synology_drive_api")
+SYNOLOGY_PATH_KEY: web.AppKey[Any] = web.AppKey("synology_path")
 
 
 _EPOCH = 0
@@ -176,7 +178,6 @@ def _make_app(storage: _FakeStorage) -> web.Application:
         write_queue=wq,
         off_main=off_main,
         mounts={},
-        local_paths={},
         metadata_queue=asyncio.Queue(),
     )  # type: ignore[arg-type]
     drive_api = MagicMock()

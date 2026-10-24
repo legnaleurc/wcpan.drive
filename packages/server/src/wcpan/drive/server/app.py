@@ -1,16 +1,34 @@
 """aiohttp application factory, routes, and startup/shutdown lifecycle."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Coroutine, Generator
+from collections.abc import (
+    AsyncGenerator,
+    Callable,
+    Coroutine,
+    Generator,
+    Iterable,
+    Mapping,
+)
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
 
 from aiohttp import web
 from aiohttp.typedefs import Handler
 
-from .backend import Backend, BackendRuntime, CoreServices
+from .backend import (
+    BACKEND_ROUTE_PREFIX,
+    Backend,
+    BackendContext,
+    BackendRoutes,
+    CoreServices,
+    LazyLocalPaths,
+    dispatch_backend_route,
+    enter_backend,
+    load_factory,
+)
 from .handlers.changes import get_changes, get_cursor, get_root
 from .handlers.health import get_livez, get_readyz, put_null
 from .handlers.nodes import (
@@ -37,8 +55,11 @@ from .keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
+from .services.mounts import ensure_mount_nodes
 from .services.off_main import OffMainService
 from .services.operations import OperationInvalidError, OperationNotSupportedError
+from .services.paths import MountSource
+from .services.routing import BackendRouter
 from .services.storage import StorageService, create_storage_service
 from .services.sync import NodeSyncService
 from .services.upload import create_upload_service
@@ -83,94 +104,153 @@ async def managed_off_main() -> AsyncGenerator[OffMainService, None]:
         yield off_main
 
 
+@dataclass(frozen=True, kw_only=True)
+class Core:
+    storage: StorageService
+    node_sync: NodeSyncService
+    write_queue: WriteQueue
+    metadata_queue: MetadataQueue
+    off_main: OffMainService
+    local_paths: LazyLocalPaths
+
+
 @asynccontextmanager
-async def _managed_background_tasks(
-    app: web.Application,
-    runtime: BackendRuntime,
-    storage: StorageService,
-    write_queue: WriteQueue,
-    node_sync: NodeSyncService,
-    metadata_queue: MetadataQueue,
-) -> AsyncGenerator[None, None]:
-    app[READY_KEY] = False
+async def managed_core(
+    config: ServerConfig,
+    *,
+    off_main: OffMainService,
+    after_write: Callable[[], None] | None = None,
+) -> AsyncGenerator[Core, None]:
+    """Storage, the write and metadata workers, and ``NodeSyncService``.
 
-    async def _flip_ready() -> None:
-        await runtime.run_until_ready()
-        app[READY_KEY] = True
-        _L.info("Server ready")
-
+    Backend schemas are registered later, by each factory. Also used by
+    offline commands, which run with the server stopped.
+    """
+    storage = await create_storage_service(config.database_url, off_main=off_main)
+    write_queue = create_write_queue()
+    metadata_queue = create_metadata_queue()
+    local_paths = LazyLocalPaths({n: m.backend for n, m in config.mounts.items()})
+    node_sync = NodeSyncService(
+        storage=storage,
+        write_queue=write_queue,
+        off_main=off_main,
+        mounts={
+            name: MountSource(source=m.source, local_path=local_paths.for_mount(name))
+            for name, m in config.mounts.items()
+        },
+        metadata_queue=metadata_queue,
+    )
     async with AsyncExitStack() as stack:
         group = await stack.enter_async_context(asyncio.TaskGroup())
-        schedule_checkpoint = create_checkpoint_scheduler(group, storage)
+        if after_write is None:
+            checkpoints = create_checkpoint_scheduler(group, storage)
+            stack.callback(checkpoints.cancel)
+            after_write = checkpoints
         await stack.enter_async_context(
-            _background(group, write_worker(write_queue, schedule_checkpoint))
+            _background(group, write_worker(write_queue, after_write))
         )
         for _ in range(METADATA_WORKER_COUNT):
             await stack.enter_async_context(
                 _background(
                     group,
-                    metadata_worker(
-                        metadata_queue,
-                        node_sync.process_metadata_item,
-                    ),
+                    metadata_worker(metadata_queue, node_sync.process_metadata_item),
                 )
             )
-        await stack.enter_async_context(_background(group, _flip_ready()))
-        await stack.enter_async_context(
-            _background(group, app[UPLOAD_SERVICE_KEY].cleanup_expired_sessions())
+        yield Core(
+            storage=storage,
+            node_sync=node_sync,
+            write_queue=write_queue,
+            metadata_queue=metadata_queue,
+            off_main=off_main,
+            local_paths=local_paths,
         )
-        await stack.enter_async_context(_background(group, runtime.run()))
-        yield
 
 
-def _create_lifecycle(backend: Backend):
+@asynccontextmanager
+async def entered_backends(
+    config: ServerConfig,
+    core: Core,
+    *,
+    offline: bool,
+    names: Iterable[str] | None = None,
+    routes: Mapping[str, BackendRoutes] | None = None,
+) -> AsyncGenerator[dict[str, Backend], None]:
+    """Enter the factories of *names* (default: every configured instance)."""
+    selected = list(config.backends) if names is None else list(names)
+    async with AsyncExitStack() as stack:
+        backends: dict[str, Backend] = {}
+        for name in selected:
+            settings = config.backends[name]
+            context = BackendContext(
+                name=name,
+                mounts=config.mounts_of(name),
+                core=CoreServices(
+                    storage=core.storage,
+                    node_sync=core.node_sync.for_backend(name),
+                    off_main=core.off_main,
+                ),
+                routes=routes[name] if routes is not None else BackendRoutes(name=name),
+                offline=offline,
+            )
+            factory = load_factory(settings.type)
+            try:
+                backend = await stack.enter_async_context(
+                    enter_backend(factory, context, settings.settings)
+                )
+            except ValueError as e:
+                raise ValueError(f"backends.{name}: {e}") from e
+            core.local_paths.bind(name, backend)
+            backends[name] = backend
+        yield backends
+
+
+def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
     async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         config: ServerConfig = app[CONFIG_KEY]
+        app[READY_KEY] = False
         async with AsyncExitStack() as stack:
             off_main = await stack.enter_async_context(managed_off_main())
-            storage = await create_storage_service(
-                config.database_url, off_main=off_main, backend=backend.schema
+            core = await stack.enter_async_context(
+                managed_core(config, off_main=off_main)
             )
-            write_queue = create_write_queue()
-            app[STORAGE_KEY] = storage
+            app[STORAGE_KEY] = core.storage
             app[OFF_MAIN_KEY] = off_main
-            app[WRITE_QUEUE_KEY] = write_queue
+            app[WRITE_QUEUE_KEY] = core.write_queue
+            app[CHANGE_SERVICE_KEY] = core.node_sync
 
-            metadata_queue = create_metadata_queue()
-            node_sync = NodeSyncService(
-                storage=storage,
-                write_queue=write_queue,
-                off_main=off_main,
-                mounts=config.mounts,
-                local_paths=config.local_paths,
-                metadata_queue=metadata_queue,
+            await ensure_mount_nodes(
+                config.mounts, storage=core.storage, node_sync=core.node_sync
             )
-            app[CHANGE_SERVICE_KEY] = node_sync
-
-            runtime = await stack.enter_async_context(
-                backend.start(
-                    app,
-                    CoreServices(
-                        storage=storage, node_sync=node_sync, off_main=off_main
-                    ),
-                )
+            backends = await stack.enter_async_context(
+                entered_backends(config, core, offline=False, routes=routes)
             )
-            app[NODE_OPERATIONS_KEY] = runtime.operations
+            router = BackendRouter(
+                storage=core.storage,
+                mount_backends={n: m.backend for n, m in config.mounts.items()},
+                operations={n: b.operations for n, b in backends.items()},
+                uploaders={n: b.uploader for n, b in backends.items()},
+            )
+            app[NODE_OPERATIONS_KEY] = router
             tmp_dir = Path(config.upload_tmp_dir) if config.upload_tmp_dir else None
-            app[UPLOAD_SERVICE_KEY] = stack.enter_context(
-                create_upload_service(tmp_dir=tmp_dir, uploader=runtime.uploader)
+            upload_service = stack.enter_context(
+                create_upload_service(tmp_dir=tmp_dir, uploader=router)
             )
+            app[UPLOAD_SERVICE_KEY] = upload_service
 
+            async def _flip_ready() -> None:
+                async with asyncio.TaskGroup() as group:
+                    for backend in backends.values():
+                        group.create_task(backend.run_until_ready())
+                app[READY_KEY] = True
+                _L.info("Server ready")
+
+            group = await stack.enter_async_context(asyncio.TaskGroup())
+            await stack.enter_async_context(_background(group, _flip_ready()))
             await stack.enter_async_context(
-                _managed_background_tasks(
-                    app,
-                    runtime,
-                    storage,
-                    write_queue,
-                    node_sync,
-                    metadata_queue,
-                )
+                _background(group, upload_service.cleanup_expired_sessions())
             )
+            for backend in backends.values():
+                await stack.enter_async_context(_background(group, backend.run()))
 
             yield
 
@@ -189,16 +269,24 @@ async def _operation_errors_middleware(
         raise web.HTTPBadRequest(reason=str(e))
 
 
-def create_app(config: ServerConfig, *, backend: Backend) -> web.Application:
+def create_app(config: ServerConfig) -> web.Application:
+    """The server for *config*; backend factories run when the app starts."""
     app = web.Application(
         client_max_size=8 * 1024 * 1024,
         middlewares=[_operation_errors_middleware],
     )  # 8 MiB limit for JSON/form bodies; upload endpoints use iter_chunked and bypass this
     app[CONFIG_KEY] = config
-    app.cleanup_ctx.append(_create_lifecycle(backend))
+    routes = {name: BackendRoutes(name=name) for name in config.backends}
+    app.cleanup_ctx.append(_create_lifecycle(routes))
 
     _add_routes(app)
-    backend.add_routes(app)
+
+    async def backend_route(request: web.Request) -> web.StreamResponse:
+        return await dispatch_backend_route(request, routes)
+
+    app.router.add_route(
+        "*", f"{BACKEND_ROUTE_PREFIX}/{{backend}}/{{path:.*}}", backend_route
+    )
     return app
 
 

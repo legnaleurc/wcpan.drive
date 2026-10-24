@@ -13,67 +13,17 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from wcpan.drive.protocol.types import MirrorStableId
 from wcpan.drive.server.app import create_app
-from wcpan.drive.server.backend import CoreServices
-from wcpan.drive.server.keys import NODE_OPERATIONS_KEY
+from wcpan.drive.server.keys import NODE_OPERATIONS_KEY, STORAGE_KEY
 from wcpan.drive.server.services.operations import (
     OperationInvalidError,
     OperationNotSupportedError,
 )
-from wcpan.drive.server.types import BackendLocator, ServerConfig
+from wcpan.drive.server.types import BackendConfig, MountConfig, ServerConfig
+
+from . import _fake_backend
 
 
-class _FakeSchema:
-    def ensure_schema(self, con: sqlite3.Connection) -> None:
-        con.execute("CREATE TABLE IF NOT EXISTS fake_backend (x INTEGER)")
-
-    def bind_locator(
-        self, con: sqlite3.Connection, node_id: MirrorStableId, locator: BackendLocator
-    ) -> None:
-        pass
-
-    def forget_nodes(self, con: sqlite3.Connection, node_ids: Sequence[str]) -> None:
-        pass
-
-    def forget_orphans(self, con: sqlite3.Connection) -> None:
-        pass
-
-
-class _FakeRuntime:
-    def __init__(self) -> None:
-        self.operations = MagicMock()
-        self.uploader = MagicMock()
-        self.discovered = asyncio.Event()
-        self.running = asyncio.Event()
-
-    async def run_until_ready(self) -> None:
-        await self.discovered.wait()
-
-    async def run(self) -> None:
-        self.running.set()
-        await asyncio.Event().wait()
-
-
-class _FakeBackend:
-    def __init__(self) -> None:
-        self.runtime = _FakeRuntime()
-        self.core: CoreServices | None = None
-
-    @property
-    def schema(self) -> _FakeSchema:
-        return _FakeSchema()
-
-    def add_routes(self, app: web.Application) -> None:
-        async def hook(_request: web.Request) -> web.Response:
-            return web.Response(text="backend")
-
-        app.router.add_post("/api/v1/fake-hook", hook)
-
-    @asynccontextmanager
-    async def start(
-        self, app: web.Application, core: CoreServices
-    ) -> AsyncGenerator[_FakeRuntime, None]:
-        self.core = core
-        yield self.runtime
+_FACTORY = "tests._fake_backend.create_backend"
 
 
 class TestCreateApp(IsolatedAsyncioTestCase):
@@ -81,17 +31,24 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         os.unlink(self.db_path)
-        self.backend = _FakeBackend()
         config = ServerConfig(
             host="127.0.0.1",
             port=0,
             database_url=self.db_path,
-            mounts={},
-            local_paths={},
+            backends={
+                "fake": BackendConfig(type=_FACTORY, settings={}),
+                "other": BackendConfig(type=_FACTORY, settings={}),
+            },
+            mounts={
+                "docs": MountConfig(backend="fake", source="/docs"),
+                "pics": MountConfig(backend="other", source="/pics"),
+            },
         )
-        self.app = create_app(config, backend=self.backend)
+        self.app = create_app(config)
         self.client = TestClient(TestServer(self.app))
         await self.client.start_server()
+        self.backend = _fake_backend.instances["fake"]
+        self.other = _fake_backend.instances["other"]
 
     async def asyncTearDown(self) -> None:
         await self.client.close()
@@ -101,34 +58,70 @@ class TestCreateApp(IsolatedAsyncioTestCase):
 
     async def test_backend_is_started_and_serves_after_discovery(self) -> None:
         async with asyncio.timeout(5):
-            await self.backend.runtime.running.wait()
-        self.assertIsNotNone(self.backend.core)
-        self.assertIs(self.app[NODE_OPERATIONS_KEY], self.backend.runtime.operations)
+            await self.backend.running.wait()
+        self.assertEqual(self.backend.context.mounts, {"docs": "/docs"})
+        self.assertFalse(self.backend.context.offline)
 
         resp = await self.client.get("/readyz")
         self.assertEqual(resp.status, 503)
 
-        self.backend.runtime.discovered.set()
-        async with asyncio.timeout(5):
-            while (await self.client.get("/readyz")).status != 200:
-                await asyncio.sleep(0.01)
+        await self.ready()
 
-        resp = await self.client.post("/api/v1/fake-hook")
-        self.assertEqual(await resp.text(), "backend")
+        resp = await self.client.post("/api/v1/backends/fake/hook")
+        self.assertEqual(await resp.text(), "fake")
+        resp = await self.client.post("/api/v1/backends/other/hook")
+        self.assertEqual(await resp.text(), "other")
+        resp = await self.client.post("/api/v1/backends/missing/hook")
+        self.assertEqual(resp.status, 404)
 
         con = sqlite3.connect(self.db_path)
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master")}
         con.close()
         self.assertIn("fake_backend", tables)
 
-    async def test_unsupported_operation_is_forbidden(self) -> None:
-        self.backend.runtime.operations.create_folder = AsyncMock(
-            side_effect=OperationNotSupportedError("read-only")
-        )
-        self.backend.runtime.discovered.set()
+    async def ready(self) -> None:
+        self.backend.discovered.set()
+        self.other.discovered.set()
         async with asyncio.timeout(5):
             while (await self.client.get("/readyz")).status != 200:
                 await asyncio.sleep(0.01)
+
+    async def test_ready_waits_for_every_backend(self) -> None:
+        self.backend.discovered.set()
+        await asyncio.sleep(0.05)
+        self.assertEqual((await self.client.get("/readyz")).status, 503)
+        self.other.discovered.set()
+        async with asyncio.timeout(5):
+            while (await self.client.get("/readyz")).status != 200:
+                await asyncio.sleep(0.01)
+
+    async def test_core_creates_root_and_mount_nodes(self) -> None:
+        await self.ready()
+        storage = self.app[STORAGE_KEY]
+        for node_id in ("_", "_docs", "_pics"):
+            self.assertIsNotNone(await storage.get_node_by_id(MirrorStableId(node_id)))
+
+    async def test_operations_go_to_the_mount_backend(self) -> None:
+        record = MagicMock()
+        record.id = "made"
+        record.name = "x"
+        for b in (self.backend, self.other):
+            b.operations.create_folder = AsyncMock(
+                side_effect=OperationInvalidError(b is self.other and "other" or "fake")
+            )
+        await self.ready()
+        resp = await self.client.post(
+            "/api/v1/nodes", json={"name": "x", "parent_id": "_pics"}
+        )
+        self.assertEqual(resp.status, 400)
+        self.assertEqual(resp.reason, "other")
+        self.backend.operations.create_folder.assert_not_awaited()
+
+    async def test_unsupported_operation_is_forbidden(self) -> None:
+        self.backend.operations.create_folder = AsyncMock(
+            side_effect=OperationNotSupportedError("read-only")
+        )
+        await self.ready()
 
         resp = await self.client.post(
             "/api/v1/nodes", json={"name": "x", "parent_id": "_docs"}
@@ -137,13 +130,10 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         self.assertEqual(resp.status, 403)
 
     async def test_invalid_operation_is_bad_request(self) -> None:
-        self.backend.runtime.operations.create_folder = AsyncMock(
+        self.backend.operations.create_folder = AsyncMock(
             side_effect=OperationInvalidError("bad name")
         )
-        self.backend.runtime.discovered.set()
-        async with asyncio.timeout(5):
-            while (await self.client.get("/readyz")).status != 200:
-                await asyncio.sleep(0.01)
+        await self.ready()
 
         resp = await self.client.post(
             "/api/v1/nodes", json={"name": "x", "parent_id": "_docs"}

@@ -1,9 +1,9 @@
 """Central service for persisting node changes from scan, webhook, and API sources."""
 
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from copy import copy
 from dataclasses import replace
-from functools import partial
 from logging import getLogger
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
@@ -19,7 +19,7 @@ from .enricher import MediaEnrichmentError, MediaEnrichService
 from .off_main import OffMainService
 from .operations import Locate, LocateUndecidedError
 from .ordering import ObservationOrder
-from .paths import LocalPathService
+from .paths import LocalPathService, MountSource
 from .storage import StorageService
 
 
@@ -40,8 +40,8 @@ _L = getLogger(__name__)
 class NodeSyncService:
     """Central gateway for persisting node changes.
 
-    Accepts infrastructure (storage, write_queue, off_main, mounts, local_paths)
-    and exposes a narrow interface of reusable primitives. Internally handles
+    Accepts infrastructure (storage, write_queue, off_main, mounts) and exposes
+    a narrow interface of reusable primitives. Internally handles
     media enrichment, write-queue enqueuing, and storage method dispatch so
     callers are not aware of those concerns.
 
@@ -49,6 +49,10 @@ class NodeSyncService:
     applied only if no observation from a later-started read was applied to the
     node first, so a slow listing or enrichment cannot overwrite a newer
     observation or resurrect a node removed meanwhile.
+
+    Each backend instance writes through its own view (``for_backend``), which
+    tags observations so storage binds their locators with that backend's
+    schema. Views share the ordering, queues, and enrichment.
     """
 
     def __init__(
@@ -57,29 +61,30 @@ class NodeSyncService:
         storage: StorageService,
         write_queue: WriteQueue,
         off_main: OffMainService,
-        mounts: dict[str, str],
-        local_paths: dict[str, str],
+        mounts: Mapping[str, MountSource],
         metadata_queue: MetadataQueue,
     ) -> None:
         self._storage = storage
         self._write_queue = write_queue
-        self._mounts = mounts
-        self._local_paths = local_paths
         self._metadata_queue = metadata_queue
         self._order = ObservationOrder()
-        local_path_service = LocalPathService(
-            storage=storage,
-            mounts=mounts,
-            local_paths=local_paths,
-        )
+        self._backend: str | None = None
+        local_path_service = LocalPathService(storage=storage, mounts=mounts)
         self._enricher = MediaEnrichService(
             local_path_service=local_path_service,
             off_main=off_main,
         )
 
-    @property
-    def local_paths(self) -> dict[str, str]:
-        return self._local_paths
+    def for_backend(self, name: str) -> "NodeSyncService":
+        """A view whose observations are tagged as coming from backend *name*."""
+        view = copy(self)
+        view._backend = name
+        return view
+
+    def _own(self, observation: NodeObservation) -> NodeObservation:
+        if self._backend is None or observation.backend is not None:
+            return observation
+        return replace(observation, backend=self._backend)
 
     @asynccontextmanager
     async def observe(self) -> AsyncGenerator[ReadSeq, None]:
@@ -150,6 +155,7 @@ class NodeSyncService:
         Used by: API (create, update, upload), webhook (delayed per-file upsert).
         """
         self._order.hold(read)
+        observation = self._own(observation)
         enriched = await self._try_enrich(observation, force_refresh=False, read=read)
         if enriched is None:
             self._order.release(read)
@@ -200,6 +206,7 @@ class NodeSyncService:
             self._order.hold(read)
         enriched: list[tuple[NodeObservation, ReadSeq]] = []
         for o in observations:
+            o = self._own(o)
             if (
                 e := await self._try_enrich(o, force_refresh=False, read=read)
             ) is not None:
@@ -224,12 +231,14 @@ class NodeSyncService:
                 record.name,
                 e.path,
             )
-            await self._mark_enrichment_pending(record.id, read=read)
+            await self._mark_enrichment_pending(
+                record.id, observation.backend, read=read
+            )
             return None
         return replace(observation, record=enriched)
 
     async def _mark_enrichment_pending(
-        self, node_id: MirrorStableId, *, read: ReadSeq
+        self, node_id: MirrorStableId, backend: str | None, *, read: ReadSeq
     ) -> None:
         """Persist retry work unless a later read already observed the node."""
         self._order.hold(read)
@@ -237,7 +246,7 @@ class NodeSyncService:
         async def mark() -> None:
             try:
                 if self._order.admits(node_id, read):
-                    await self._storage.mark_enrichment_pending(node_id)
+                    await self._storage.mark_enrichment_pending(node_id, backend)
             finally:
                 self._order.release(read)
 
@@ -250,13 +259,13 @@ class NodeSyncService:
 
         Waits for prior write-queue work so ``get_ancestors`` in the metadata worker
         sees parent rows from the preceding ``upsert_batch`` for this BFS level.
-        When ``local_paths`` is unset, applies files directly without probing.
 
         Records whose existing DB row already has complete media dimensions are
         written directly, skipping the expensive metadata queue.
         """
         if not observations:
             return
+        observations = [self._own(o) for o in observations]
         for _ in observations:
             self._order.hold(read)
         mq = self._metadata_queue
@@ -278,23 +287,14 @@ class NodeSyncService:
         if skip_batch:
             await self._put_upserts(skip_batch)
 
-    async def sync_nodes(self, records: list[NodeRecord]) -> None:
-        """Enqueue bulk_upsert_nodes — upserts without emitting change rows.
-
-        Used by: scanner on resume, to keep structural nodes (root, mounts) in sync
-        with config without duplicating change-feed entries from the first run.
-        """
-        if not records:
-            return
-        await self._write_queue.put(partial(self._storage.bulk_upsert_nodes, records))
-
     async def retry_pending_enrichment(self, *, locate: Locate) -> None:
         """Re-observe nodes whose enrichment failed and enqueue them again.
 
-        A node the backend no longer has is removed, which also clears its entry.
+        Only this view's backend entries are retried. A node the backend no
+        longer has is removed, which also clears its entry.
         Used by: scanner, after the startup scan.
         """
-        for node_id in await self._storage.get_pending_enrichment():
+        for node_id in await self._storage.get_pending_enrichment(self._backend):
             async with self.observe() as read:
                 try:
                     current = await locate(node_id)
@@ -306,7 +306,9 @@ class NodeSyncService:
                     continue
                 self._order.hold(read)
                 await self._metadata_queue.put(
-                    MetadataWorkItem(observation=current, force_refresh=True, read=read)
+                    MetadataWorkItem(
+                        observation=self._own(current), force_refresh=True, read=read
+                    )
                 )
 
     # --- Reconcile / backfill ---
@@ -315,6 +317,7 @@ class NodeSyncService:
         self, from_api: NodeObservation, *, read: ReadSeq
     ) -> None:
         self._order.hold(read)
+        from_api = self._own(from_api)
         if from_api.record.is_directory:
             # Write in listing order so children never arrive before their parent.
             await self._put_upserts([(from_api, read)])
@@ -327,6 +330,7 @@ class NodeSyncService:
         self, from_api: NodeObservation, existing: NodeRecord, *, read: ReadSeq
     ) -> None:
         self._order.hold(read)
+        from_api = self._own(from_api)
         if _has_complete_media_dims(existing):
             await self._put_upserts([(from_api, read)])
             return

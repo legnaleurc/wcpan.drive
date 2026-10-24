@@ -1,14 +1,12 @@
-"""Synology section of the server config and the API client built from it."""
+"""Synology backend settings and the API client built from them."""
 
+from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
 
 from dacite import Config, DaciteError, from_dict
-from wcpan.drive.server.config import load_raw_config, parse_config
-from wcpan.drive.server.types import ServerConfig
-from wcpan.synology import SynologyClient, SynologyPath, create_client
+from wcpan.synology import SynologyClient, create_client
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,11 +22,7 @@ class RawSynologyConfig:
     password: str
     webhook: RawWebhookConfig
     otp_code: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _RawSynologySection:
-    synology: RawSynologyConfig
+    local_paths: dict[str, str] = field(default_factory=dict[str, str])
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -39,13 +33,18 @@ class SynologyConfig:
     public_url: str
     webhook_app_id: str
     otp_code: str | None = None
+    # Synology path prefix to host path, for local media probing.
+    local_paths: dict[str, str] = field(default_factory=dict[str, str])
 
 
-def parse_synology_config(raw: Any) -> SynologyConfig:
+def parse_synology_config(settings: Mapping[str, Any]) -> SynologyConfig:
+    """Parse one Synology backend section (without its ``type``)."""
     try:
         parsed = from_dict(
-            data_class=_RawSynologySection, data=raw, config=Config(strict=False)
-        ).synology
+            data_class=RawSynologyConfig,
+            data=dict(settings),
+            config=Config(strict=False),
+        )
     except DaciteError as e:
         raise ValueError(str(e)) from e
     return SynologyConfig(
@@ -55,17 +54,8 @@ def parse_synology_config(raw: Any) -> SynologyConfig:
         public_url=parsed.webhook.callback_url,
         webhook_app_id=parsed.webhook.app_id,
         otp_code=parsed.otp_code,
+        local_paths=dict(parsed.local_paths),
     )
-
-
-def load_config(config_path: Path) -> tuple[ServerConfig, SynologyConfig]:
-    """Parse the generic settings first, so a version mismatch is reported first."""
-    raw = load_raw_config(config_path)
-    return parse_config(raw), parse_synology_config(raw)
-
-
-def synology_mounts(config: ServerConfig) -> dict[str, SynologyPath]:
-    return {name: SynologyPath(path) for name, path in config.mounts.items()}
 
 
 def create_synology_client(
