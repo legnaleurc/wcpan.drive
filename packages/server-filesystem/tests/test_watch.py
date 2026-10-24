@@ -123,6 +123,7 @@ class TestRuntime(_WatchTestCase):
     def runtime(self) -> FilesystemRuntime:
         return FilesystemRuntime(
             operations=self.operations,
+            uploader=self.uploader,
             scanner=self.scanner,
             watcher=self.watcher,
             rescan_interval=3600,

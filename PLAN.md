@@ -632,9 +632,9 @@ this workspace; the extraction in stage 3 does not freeze the backend interface.
 
 Decided scope for the first filesystem backend (`wcpan-drive-server-filesystem`):
 
-- Read-only. Discovery is a full traversal at startup plus periodic rescans; no
-  watcher yet. Listing and downloads work; mutations and uploads are rejected as
-  unsupported.
+- Started read-only, with discovery by full traversal at startup plus periodic
+  rescans; the watcher and writes followed (see status below). Deletes are
+  permanent.
 - Each directory entry is its own public node; hard links share a backend handle,
   and an ambiguous hard-link rename may appear as removal plus creation.
 - Identity comes from `name_to_handle_at()` qualified by the filesystem ID, with
@@ -645,7 +645,7 @@ Decided scope for the first filesystem backend (`wcpan-drive-server-filesystem`)
   multi-backend configuration (version 3) follows once this backend works.
 - The server computes checksums for files, since the filesystem has none.
 
-Status: the read-only backend is implemented. Discovery runs through
+Status: the backend is implemented, first read-only. Discovery runs through
 `ReconcileSession` with the same ordering and confirmed removals as Synology;
 `locate` re-checks a node at its mirrored path. Node IDs are generated and bound
 to `fs_entries` (identity plus the stat signature the MD5 came from). An entry
@@ -667,8 +667,18 @@ that is gone or replaced is swapped for its parent. Passes are serialized so two
 listings cannot mint two IDs for one new entry. Queue overflow triggers a full
 rescan; directories that cannot be watched rely on the periodic rescan.
 
-Not yet done: `open_by_handle_at`, mutations and upload staging, and
-multi-backend configuration (version 3).
+Writes are implemented: create folder, rename, move, permanent delete, and
+uploads. Each runs while scan passes are held off and is recorded (write queue
+flushed) before they resume, so a pass that lists the result matches the same
+node. Renames and upload finalization use `renameat2(RENAME_NOREPLACE)`; a
+rename or delete first checks that the mirrored path still names the known
+object. Uploads stage `.wcpan-upload-*` files in the destination folder,
+hashed while written, and scans skip them. Checksums are now reused while
+identity, size, and mtime are unchanged, so renames do not rehash. Contract
+change: `OperationInvalidError` (400). `filesystem.read_only` restores the
+read-only behaviour.
+
+Not yet done: `open_by_handle_at` and multi-backend configuration (version 3).
 
 Deliverable: both backends satisfy the common contract without filesystem code
 pretending to provide a Synology checkpoint or immutable entry locator.

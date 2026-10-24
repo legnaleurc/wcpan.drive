@@ -17,7 +17,8 @@ import asyncio
 import os
 import stat
 import uuid
-from collections.abc import Iterable
+from collections.abc import AsyncGenerator, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
@@ -40,7 +41,14 @@ from wcpan.drive.server.types import NodeObservation
 from .blocking import Blocking
 from .handles import filesystem_id
 from .paths import NodePaths
-from .reading import HASH_ALGORITHM, Entry, hash_file, list_directory, stat_entry
+from .reading import (
+    HASH_ALGORITHM,
+    Entry,
+    hash_file,
+    list_directory,
+    same_content,
+    stat_entry,
+)
 from .store import EntryState, FilesystemStore
 from .watch import DirectoryWatcher
 
@@ -51,12 +59,14 @@ type _Folder = tuple[MirrorStableId, str]
 
 
 @dataclass(frozen=True, slots=True)
-class _Previous:
+class Previous:
+    """What a node was last observed as."""
+
     record: NodeRecord
     state: EntryState
 
 
-def _new_node_id() -> MirrorStableId:
+def new_node_id() -> MirrorStableId:
     # Hex never starts with the virtual ID prefix.
     return MirrorStableId(uuid.uuid4().hex)
 
@@ -228,6 +238,58 @@ class FilesystemScanner:
                 )
                 await session.commit_removals()
 
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncGenerator[None, None]:
+        """Hold off passes while a write changes the tree and records it.
+
+        Otherwise a pass could list the new entry first and give it another ID.
+        """
+        async with self._pass_lock:
+            yield
+
+    async def current(self, node_id: MirrorStableId) -> tuple[Entry, Previous] | None:
+        """*node_id* at its mirrored path, if that path still names the same object."""
+        path = await self._paths.path_of(node_id)
+        record = await self._storage.get_node_by_id(node_id)
+        state = (await self._store.get_entries([node_id])).get(node_id)
+        if path is None or record is None or state is None:
+            return None
+        try:
+            entry = await self._blocking(stat_entry, path)
+        except OSError:
+            return None
+        if entry is None or entry.identity != state.identity:
+            return None
+        return entry, Previous(record, state)
+
+    async def checksum(self, entry: Entry, previous: Previous | None) -> str | None:
+        """The file checksum, reused from *previous* while content is unchanged.
+
+        ``""`` for directories; ``None`` when the file changed while hashed.
+        """
+        if entry.is_directory:
+            return ""
+        if (
+            previous is not None
+            and previous.record.hash
+            and same_content(previous.state, entry.state)
+        ):
+            return previous.record.hash
+        return await self._blocking(hash_file, entry.path, entry.state)
+
+    @staticmethod
+    def observation(
+        entry: Entry, node_id: MirrorStableId, parent_id: MirrorStableId, hash_: str
+    ) -> NodeObservation:
+        return NodeObservation(
+            record=_record(entry, node_id, parent_id, hash_),
+            locator=entry.state.to_locator(),
+        )
+
+    async def folder_path(self, folder_id: MirrorStableId) -> str | None:
+        """The directory of a mount or mirrored folder, or ``None`` if unusable."""
+        return await self._folder_path(folder_id)
+
     async def _folder_path(self, folder_id: MirrorStableId) -> str | None:
         """The directory to list, or ``None`` when it cannot be read safely."""
         name = mount_name(folder_id)
@@ -253,7 +315,7 @@ class FilesystemScanner:
             raise LocateUndecidedError(str(e)) from e
         if entry is None or entry.identity != state.identity:
             return None
-        previous = _Previous(record, state)
+        previous = Previous(record, state)
         observation = await self._observe(entry, node_id, record.parent_id, previous)
         if observation is not None:
             return observation
@@ -351,14 +413,14 @@ class FilesystemScanner:
         by_name: dict[str, NodeRecord],
         states: dict[MirrorStableId, EntryState],
         claimed: set[MirrorStableId],
-    ) -> tuple[MirrorStableId, _Previous | None]:
+    ) -> tuple[MirrorStableId, Previous | None]:
         """The node ID for *entry*, and what that node was last observed as."""
         same_name = by_name.get(entry.name)
         if same_name is not None and same_name.id not in claimed:
             state = states.get(same_name.id)
             if state is not None and state.identity == entry.identity:
                 claimed.add(same_name.id)
-                return same_name.id, _Previous(same_name, state)
+                return same_name.id, Previous(same_name, state)
 
         for candidate in await self._store.nodes_by_identity(entry.identity):
             if candidate in claimed:
@@ -369,13 +431,13 @@ class FilesystemScanner:
                 return candidate, previous
             claimed.discard(candidate)
 
-        node_id = _new_node_id()
+        node_id = new_node_id()
         claimed.add(node_id)
         return node_id, None
 
     async def _moved_from(
         self, candidate: MirrorStableId, entry: Entry
-    ) -> _Previous | None:
+    ) -> Previous | None:
         """*candidate*'s last observation, if its old path no longer names *entry*."""
         record = await self._storage.get_node_by_id(candidate)
         state = (await self._store.get_entries([candidate])).get(candidate)
@@ -389,40 +451,30 @@ class FilesystemScanner:
                 current = None
             if current is not None and current.identity == entry.identity:
                 return None  # still in place: entry is another hard link
-        return _Previous(record, state)
+        return Previous(record, state)
 
     async def _observe(
         self,
         entry: Entry,
         node_id: MirrorStableId,
         parent_id: MirrorStableId,
-        previous: _Previous | None,
+        previous: Previous | None,
     ) -> NodeObservation | None:
         """An observation to apply, or ``None`` when nothing changed or it is withheld.
 
-        File checksums are reused while the stat signature is unchanged. A file
-        that changes while being hashed is withheld, keeping its last complete
-        version visible until a later pass.
+        File checksums are reused while the content is unchanged. A file that
+        changes while being hashed is withheld, keeping its last complete version
+        visible until a later pass.
         """
         state = entry.state
-        hash_ = ""
-        if not entry.is_directory:
-            if (
-                previous is not None
-                and previous.state == state
-                and previous.record.hash
-            ):
-                hash_ = previous.record.hash
-            else:
-                try:
-                    digest = await self._blocking(hash_file, entry.path, state)
-                except OSError as e:
-                    _L.warning("Cannot read %s; withholding it: %s", entry.path, e)
-                    return None
-                if digest is None:
-                    _L.debug("%s changed while hashing; withholding it", entry.path)
-                    return None
-                hash_ = digest
+        try:
+            hash_ = await self.checksum(entry, previous)
+        except OSError as e:
+            _L.warning("Cannot read %s; withholding it: %s", entry.path, e)
+            return None
+        if hash_ is None:
+            _L.debug("%s changed while hashing; withholding it", entry.path)
+            return None
         record = _record(entry, node_id, parent_id, hash_)
         if (
             previous is not None

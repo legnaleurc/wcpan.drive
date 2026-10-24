@@ -44,7 +44,7 @@ def main() -> None:
         help="Log level (default: INFO)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("serve", help="Run the read-only filesystem mirror server")
+    subparsers.add_parser("serve", help="Run the filesystem mirror server")
     subparsers.add_parser(
         "gc", help="Remove dangling nodes unreachable from the server root"
     )

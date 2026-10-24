@@ -15,7 +15,10 @@ from wcpan.drive.protocol.types import MirrorStableId
 from wcpan.drive.server.app import create_app
 from wcpan.drive.server.backend import CoreServices
 from wcpan.drive.server.keys import NODE_OPERATIONS_KEY
-from wcpan.drive.server.services.operations import OperationNotSupportedError
+from wcpan.drive.server.services.operations import (
+    OperationInvalidError,
+    OperationNotSupportedError,
+)
 from wcpan.drive.server.types import BackendLocator, ServerConfig
 
 
@@ -132,3 +135,18 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(resp.status, 403)
+
+    async def test_invalid_operation_is_bad_request(self) -> None:
+        self.backend.runtime.operations.create_folder = AsyncMock(
+            side_effect=OperationInvalidError("bad name")
+        )
+        self.backend.runtime.discovered.set()
+        async with asyncio.timeout(5):
+            while (await self.client.get("/readyz")).status != 200:
+                await asyncio.sleep(0.01)
+
+        resp = await self.client.post(
+            "/api/v1/nodes", json={"name": "x", "parent_id": "_docs"}
+        )
+
+        self.assertEqual(resp.status, 400)

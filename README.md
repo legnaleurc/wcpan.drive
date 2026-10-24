@@ -39,7 +39,7 @@ The generic server (`wcpan-drive-server`) holds the mirror, change feed, HTTP
 API, and reconciliation, and defines the contract a storage backend implements.
 It does not depend on `wcpan-synology`. The Synology backend and the
 `wcpan.drive.server` command come from `wcpan-drive-server-synology`; a
-read-only local filesystem backend and the `wcpan.drive.server.filesystem`
+local filesystem backend and the `wcpan.drive.server.filesystem`
 command come from `wcpan-drive-server-filesystem`. A server runs one backend.
 
 Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm in
@@ -190,7 +190,7 @@ HTTP client/server boundary.
 
 ### Filesystem server
 
-`wcpan.drive.server.filesystem` serves local directories read-only. It uses the
+`wcpan.drive.server.filesystem` serves local directories. It uses the
 same config file shape without the `synology` section; mount sources are
 absolute host directories:
 
@@ -203,6 +203,7 @@ local_paths: {}
 filesystem:
   rescan_interval: 3600  # seconds between full rescans; default 3600
   watch: true            # follow changes with inotify; default true
+  read_only: false       # reject every change through the server; default false
 ```
 
 ```bash
@@ -223,12 +224,22 @@ wcpan.drive.server.filesystem --config server.yaml rebind-mount photos
   skipped. Each directory entry is its own node, so hard links appear once per
   link.
 - File checksums are MD5, computed by the server and reused while a file's
-  size and timestamps are unchanged. A file that changes while being hashed
+  size and modification time are unchanged (a rename does not rehash). A file that changes while being hashed
   keeps its previous version until the next scan.
 - Node IDs follow the object, not the path, using Linux file handles (ext4 is
   the first supported filesystem; others fall back to inode numbers). Renames
   and moves keep their IDs; a replaced file gets a new one.
-- Creating, renaming, moving, deleting, and uploading return 403.
+- Clients can create folders, rename, move, delete, and upload. Deletes are
+  permanent; deleting a folder removes its contents. Renames, moves, and
+  uploads never replace an existing entry: a taken name returns 409 with the
+  existing node where possible. Invalid names (empty, `.`, `..`, or containing
+  `/`) return 400, and permission errors return 403. A node whose path now
+  names a different file is not renamed or deleted (503); retry after the next
+  scan. Moves across filesystems are not supported.
+- Uploads are written to a hidden `.wcpan-upload-*` file in the destination
+  folder and renamed into place when complete; interrupted uploads are removed,
+  and these files are never mirrored.
+- With `read_only: true`, every change returns 403.
 - Images and videos are probed from the mount sources unless `local_paths` maps
   them elsewhere.
 - A mount whose source is missing, unreadable, or now on a different

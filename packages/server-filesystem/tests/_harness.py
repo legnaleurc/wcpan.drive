@@ -11,7 +11,10 @@ from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
 from wcpan.drive.server.filesystem.blocking import Blocking
-from wcpan.drive.server.filesystem.operations import FilesystemOperations
+from wcpan.drive.server.filesystem.operations import (
+    FilesystemOperations,
+    FilesystemUploader,
+)
 from wcpan.drive.server.filesystem.paths import NodePaths
 from wcpan.drive.server.filesystem.scan import FilesystemScanner
 from wcpan.drive.server.filesystem.store import FILESYSTEM_SCHEMA, FilesystemStore
@@ -36,6 +39,7 @@ logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
 
 class ScanTestCase(IsolatedAsyncioTestCase):
     watch = False
+    read_only = False
 
     async def asyncSetUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="wcpan_fs_"))
@@ -83,7 +87,20 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             watcher=self.watcher,
         )
         self.operations = FilesystemOperations(
-            paths=self.paths, store=self.store, blocking=blocking
+            scanner=self.scanner,
+            storage=self.storage,
+            node_sync=self.node_sync,
+            paths=self.paths,
+            store=self.store,
+            blocking=blocking,
+            read_only=self.read_only,
+        )
+        self.uploader = FilesystemUploader(
+            scanner=self.scanner,
+            storage=self.storage,
+            node_sync=self.node_sync,
+            blocking=blocking,
+            read_only=self.read_only,
         )
         await self.scanner.ensure_structure()
 

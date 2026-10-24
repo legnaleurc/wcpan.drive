@@ -260,7 +260,11 @@ class TestOperations(ScanTestCase):
         with self.assertRaises(OperationUnavailableError):
             await self.read(record)
 
-    async def test_mutations_are_not_supported(self) -> None:
+
+class TestReadOnly(ScanTestCase):
+    read_only = True
+
+    async def test_changes_are_not_supported(self) -> None:
         self.write("f.txt", b"x")
         await self.scan()
         record = await self.node("f.txt")
@@ -272,3 +276,6 @@ class TestOperations(ScanTestCase):
             await self.operations.update(record, name="other", parent_id=None)
         with self.assertRaises(OperationNotSupportedError):
             await self.operations.delete(record)
+        with self.assertRaises(OperationNotSupportedError):
+            await self.uploader.find_conflict(DOCS, "g.txt")
+        self.assertTrue((self.source / "f.txt").exists())

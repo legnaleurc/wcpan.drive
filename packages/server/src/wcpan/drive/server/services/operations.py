@@ -28,6 +28,10 @@ class OperationNotSupportedError(Exception):
     """The backend does not support this operation, for example because it is read-only."""
 
 
+class OperationInvalidError(Exception):
+    """The request cannot be applied as given, for example an invalid name."""
+
+
 class LocateUndecidedError(Exception):
     """The backend could not tell whether a node still exists."""
 

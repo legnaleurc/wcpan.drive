@@ -31,6 +31,7 @@ class FilesystemRuntime:
         self,
         *,
         operations: FilesystemOperations,
+        uploader: FilesystemUploader,
         scanner: FilesystemScanner,
         watcher: DirectoryWatcher | None,
         rescan_interval: float,
@@ -38,7 +39,7 @@ class FilesystemRuntime:
         settle_delay: float = _SETTLE_DELAY,
     ) -> None:
         self._operations = operations
-        self._uploader = FilesystemUploader()
+        self._uploader = uploader
         self._scanner = scanner
         self._watcher = watcher
         self._rescan_interval = rescan_interval
@@ -122,18 +123,33 @@ class FilesystemBackend:
             blocking = Blocking(executor=executor)
             store = FilesystemStore(storage=core.storage)
             paths = NodePaths(storage=core.storage, mounts=self._mounts)
+            scanner = FilesystemScanner(
+                storage=core.storage,
+                store=store,
+                node_sync=core.node_sync,
+                paths=paths,
+                blocking=blocking,
+                watcher=watcher,
+            )
+            read_only = self._config.read_only
             yield FilesystemRuntime(
                 operations=FilesystemOperations(
-                    paths=paths, store=store, blocking=blocking
-                ),
-                scanner=FilesystemScanner(
+                    scanner=scanner,
                     storage=core.storage,
-                    store=store,
                     node_sync=core.node_sync,
                     paths=paths,
+                    store=store,
                     blocking=blocking,
-                    watcher=watcher,
+                    read_only=read_only,
                 ),
+                uploader=FilesystemUploader(
+                    scanner=scanner,
+                    storage=core.storage,
+                    node_sync=core.node_sync,
+                    blocking=blocking,
+                    read_only=read_only,
+                ),
+                scanner=scanner,
                 watcher=watcher,
                 rescan_interval=self._config.rescan_interval,
                 core=core,

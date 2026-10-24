@@ -13,6 +13,9 @@ from .store import EntryState
 HASH_ALGORITHM = "md5"
 """Server-computed checksum for files; the filesystem provides none."""
 
+STAGING_PREFIX = ".wcpan-upload-"
+"""Uploads in progress, staged next to their destination; never mirrored."""
+
 _CHUNK_SIZE = 1024 * 1024
 
 
@@ -78,6 +81,8 @@ def list_directory(path: str) -> list[Entry]:
     entries: list[Entry] = []
     with os.scandir(path) as it:
         for dirent in it:
+            if dirent.name.startswith(STAGING_PREFIX):
+                continue
             try:
                 entry = stat_entry(dirent.path)
             except FileNotFoundError:
@@ -106,6 +111,15 @@ def hash_file(path: str, expected: EntryState) -> str | None:
     return digest.hexdigest()
 
 
+def same_content(a: EntryState, b: EntryState) -> bool:
+    """Whether a checksum taken under *a* still describes *b*.
+
+    Renames and metadata changes update ctime but not content, so ctime is not
+    compared; writing content updates mtime.
+    """
+    return (a.identity, a.size, a.mtime_ns) == (b.identity, b.size, b.mtime_ns)
+
+
 def _unchanged(st: os.stat_result, expected: EntryState) -> bool:
     return (st.st_size, st.st_mtime_ns, st.st_ctime_ns) == (
         expected.size,
@@ -131,3 +145,7 @@ def open_verified(path: str, identity: FileIdentity) -> BinaryIO:
         f.close()
         raise
     return f
+
+
+def new_digest() -> "hashlib._Hash":  # pyright: ignore[reportPrivateUsage]
+    return hashlib.md5(usedforsecurity=False)
