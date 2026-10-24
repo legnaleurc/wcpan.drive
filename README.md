@@ -30,7 +30,6 @@ The client and server roots are namespace packages. Client framework constructor
 are available from `wcpan.drive.client.api`; types and exceptions have explicit
 modules. Extensions remain separately installable. The server does not depend on
 the client framework; both the server and remote provider use the protocol package.
-The Synology distribution supplies the `wcpan.drive.server` command.
 The client CLI command is `wcpan.drive.client.cli`. Update configured provider
 module paths from `wcpan.drive.google`, `.crypt`, and `.sqlite` to
 `wcpan.drive.client.google`, `.crypt`, and `.sqlite`, respectively.

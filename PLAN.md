@@ -3,10 +3,9 @@
 Status: the uv workspace and namespace migration are initialized at version
 `0.1.0`. The flat `hash`/`hash_algorithm` model and per-node hasher selection are
 implemented in this repository (protocol, server, and all client packages; client
-service API version 6). Stages 1 and 2 are complete. duld migration and the
-generic backend architecture below remain planned. The Synology adapter
-is extracted from the generic server at the end of stage 3, before the filesystem
-prototype.
+service API version 6). Stages 1 to 4 are complete: the generic server, the
+Synology and filesystem backends, and config version 3. Stage 5 waits only on
+publishing the `0.1.0` distributions; see its status.
 
 ## Objective
 
@@ -723,6 +722,19 @@ framework, SQLite, providers, crypt, and CLI. Remaining work: migrate duld, keep
 client and server dependency sets separate, and validate independent wheel
 installations, not only imports within the shared development environment. No
 compatibility wrapper is planned for the retired Synology client package.
+
+Status: duld is migrated on its `wcpan-drive-client` branch: imports move to
+`wcpan.drive.client`, `.client.cli`, and dependencies to `wcpan-drive-client`,
+`-client-cli`, `-client-remote`, and `-client-sqlite` (replacing
+`wcpan-drive-synology`). Its `uv.lock` cannot be updated until these are
+published, and deployed drive configs must name the new provider modules
+(`wcpan.drive.client.remote.create_service`, `wcpan.drive.client.sqlite.create_service`).
+
+Validated with wheels from `uv build --all-packages --no-sources` installed into
+clean environments: duld's dependencies install no server packages, and the
+server with the filesystem backend installs no client packages. duld's tests
+pass there, and its drive backend created a folder, uploaded, synced, and
+verified an `md5` digest against that server.
 
 ## Validation
 
