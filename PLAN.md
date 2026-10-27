@@ -380,7 +380,7 @@ helpers move bytes; their callers perform checksum verification afterward.
 Coordinated changes are required outside this repository:
 
 - `wcpan-drive-client`: add `hash_algorithm` to `Node`; make
-  `FileService.get_hasher_factory(node)` accept file context. Single-source Drive
+  `Backend.get_hasher_factory(node)` accept file context. Single-source Drive
   forwards it; multi-source Drive forwards the unscoped node to its service.
 - Provider clients: populate the algorithm and select a compatible per-file
   factory. Google can keep its fixed MD5 implementation; the feed client selects
@@ -727,7 +727,8 @@ Status: duld is migrated on its `wcpan-drive-client` branch: imports move to
 `-client-cli`, `-client-remote`, and `-client-sqlite` (replacing
 `wcpan-drive-synology`). Its `uv.lock` cannot be updated until these are
 published, and deployed drive configs must name the new provider modules
-(`wcpan.drive.client.remote.create_service`, `wcpan.drive.client.sqlite.create_service`).
+(`wcpan.drive.client.remote.create_backend`, `wcpan.drive.client.sqlite.create_cache`)
+in a version 4 CLI config with `backend` and `cache` keys.
 
 Validated with wheels from `uv build --all-packages --no-sources` installed into
 clean environments: duld's dependencies install no server packages, and the
