@@ -23,6 +23,7 @@ namespace migration; the old package names and import paths are not aliases.
 | `packages/client-config` | `wcpan-drive-client-config` | `wcpan.drive.client.config` |
 | `packages/client-media` | `wcpan-drive-client-media` | `wcpan.drive.client.media` |
 | `packages/client-cli` | `wcpan-drive-client-cli` | `wcpan.drive.client.cli` |
+| `packages/plugin` | `wcpan-drive-plugin` | `wcpan.drive.plugin` |
 | `packages/protocol` | `wcpan-drive-protocol` | `wcpan.drive.protocol` |
 | `packages/server` | `wcpan-drive-server` | `wcpan.drive.server` |
 | `packages/server-synology` | `wcpan-drive-server-synology` | `wcpan.drive.server.synology` |
@@ -45,6 +46,12 @@ backend. Backends are separate packages, loaded by the module name in the
 config: `wcpan-drive-server-synology` (Synology Drive) and
 `wcpan-drive-server-filesystem` (local directories). One server can serve
 mounts from several backend instances.
+
+Client providers and server backends are plugins (`wcpan-drive-plugin`): each
+factory's keyword-only parameters are its config settings, checked against
+their types when the config is loaded, and each package registers its factories
+as entry points so `init` can generate a starting config. Server backend
+settings are flat keys, except mappings such as `local_paths`.
 
 Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm in
 `hash_algorithm` (both empty for directories and for files without a checksum).
@@ -123,7 +130,10 @@ The server keeps a SQLite mirror of one or more storage backends and serves it
 over HTTP. Configure it with a YAML file (see `server.example.yaml`):
 
 ```bash
-cp server.example.yaml server.yaml
+# Generate a starting config for installed backends, then fill in the
+# settings marked required (or copy server.example.yaml)
+wcpan.drive.server init --list
+wcpan.drive.server init --plugin synology --plugin filesystem > server.yaml
 wcpan.drive.server --config server.yaml serve
 
 # Offline maintenance; run only while the server is stopped
@@ -156,8 +166,7 @@ backends:
     url: "https://nas.example.com:5001"
     username: "your-drive-user"
     password: "your-password"
-    webhook:
-      callback_url: "https://my-server.example.com"
+    webhook_callback_url: "https://my-server.example.com"
     local_paths:
       "/volume1/photos": "/mnt/nas/photos"
   disk:
@@ -186,18 +195,24 @@ Version 2 files, which configured a single Synology server with top-level
 `synology`, `mounts`, and `local_paths`, are still accepted and read as one
 backend named `synology`.
 
+Backend settings are checked against the backend factory before it starts:
+unknown, missing, or mistyped settings are errors.
+
 Node IDs from different backends share one namespace: filesystem IDs are random
 hex and Synology IDs are its permanent links, so collisions are not expected.
 
 #### Synology backend
 
-Settings: `url`, `username`, `password`, optional `otp_code`, `webhook`
-(`callback_url`, optional `app_id`, default `wcpan-drive-server-synology`), and
-optional `local_paths`. Each instance:
+Settings: `url`, `username`, `password`, `webhook_callback_url`, optional
+`webhook_app_id` (default `wcpan-drive-server-synology`), optional `otp_code`,
+and optional `local_paths`. Version 3 configs with a nested `webhook` section
+(`callback_url`, `app_id`) are rejected; rename its keys to
+`webhook_callback_url` and `webhook_app_id`. Version 2 files are converted.
+Each instance:
 
 - connects to Synology Drive through DSM's WebStation API using
   `wcpan-synology`
-- registers a webhook at `CALLBACK_URL/api/v1/backends/NAME/webhook`, where
+- registers a webhook at `WEBHOOK_CALLBACK_URL/api/v1/backends/NAME/webhook`, where
   `NAME` is the backend instance name
 - keeps its mounts in sync through a startup scan, webhook events, and the
   `backend NAME backfill PATH` command

@@ -7,15 +7,20 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from wcpan.drive.server.backend import BackendContext, BackendRoutes, CoreServices
+from wcpan.drive.server.backend import (
+    BackendContext,
+    BackendRoutes,
+    CoreServices,
+    enter_backend,
+)
 from wcpan.drive.server.filesystem import create_backend
-from wcpan.drive.server.filesystem.config import check_mounts, parse_filesystem_config
+from wcpan.drive.server.filesystem.config import FilesystemConfig, check_mounts
 from wcpan.drive.server.filesystem.handles import filesystem_id
 
 
 class TestFilesystemSettings(TestCase):
     def test_defaults(self) -> None:
-        config = parse_filesystem_config({})
+        config = FilesystemConfig()
         self.assertEqual(config.rescan_interval, 3600.0)
         self.assertTrue(config.watch)
         self.assertFalse(config.read_only)
@@ -23,7 +28,7 @@ class TestFilesystemSettings(TestCase):
 
     def test_rescan_interval_must_be_positive(self) -> None:
         with self.assertRaises(ValueError):
-            parse_filesystem_config({"rescan_interval": 0})
+            FilesystemConfig(rescan_interval=0)
 
     def test_mounts_must_be_absolute(self) -> None:
         with self.assertRaises(ValueError):
@@ -53,6 +58,18 @@ def _context(mounts: dict[str, str]) -> BackendContext:
 
 
 class TestFactory(IsolatedAsyncioTestCase):
+    async def test_settings_are_checked(self) -> None:
+        context = _context({"docs": "/srv/docs"})
+        async with enter_backend(
+            create_backend, context, {"rescan_interval": 60, "watch": False}
+        ):
+            pass
+        with self.assertRaisesRegex(ValueError, "watch must be bool"):
+            enter_backend(create_backend, context, {"watch": "no"})
+        with self.assertRaisesRegex(ValueError, "rescan_interval must be positive"):
+            async with enter_backend(create_backend, context, {"rescan_interval": 0}):
+                pass
+
     async def test_creates_instance_with_normalized_mounts(self) -> None:
         async with create_backend(
             _context({"docs": "/srv/docs/"}), rescan_interval=60

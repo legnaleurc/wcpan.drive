@@ -9,6 +9,11 @@ Backend maintenance commands are addressed to one instance and parsed by it::
 
     wcpan.drive.server --config server.yaml backend nas backfill /photos
     wcpan.drive.server --config server.yaml backend nas --help
+
+``init`` prints a starting config for installed backend plugins, without
+reading any config::
+
+    wcpan.drive.server init --plugin synology --plugin filesystem > server.yaml
 """
 
 import argparse
@@ -22,11 +27,13 @@ from pathlib import Path
 from typing import cast
 
 from aiohttp import web
+from wcpan.drive.plugin import factory_path, list_plugins
 from wcpan.logging import ConfigBuilder
 
 from .app import create_app, entered_backends, managed_core, managed_off_main
-from .backend import load_factory
+from .backend import BACKEND_PLUGIN_GROUP, load_factory
 from .config import ConfigVersionError, load_config
+from .scaffold import create_config_scaffold
 from .services.mirror import (
     SchemaVersionError,
     cleanup_dangling_nodes,
@@ -61,6 +68,22 @@ def _parser(config: ServerConfig | None) -> argparse.ArgumentParser:
     )
     subparsers.add_parser(
         "squash", help="[DANGER] Reset change history to a single update per node"
+    )
+    init = subparsers.add_parser(
+        "init",
+        help="Print a starting config for installed backend plugins",
+        description="Required settings are left empty to fill in; "
+        "the config file is not read.",
+    )
+    init.add_argument(
+        "--plugin",
+        "-p",
+        action="append",
+        default=[],
+        help="Backend plugin by name, module, or factory path; repeatable",
+    )
+    init.add_argument(
+        "--list", action="store_true", help="List installed backend plugins"
     )
     instances = {name: b.type for name, b in config.backends.items()} if config else {}
     backend = subparsers.add_parser(
@@ -109,12 +132,28 @@ async def run_backend_command(
         await core.node_sync.wait_enrichment_drained()
 
 
+def _init(args: argparse.Namespace) -> None:
+    if args.list:
+        for ep in list_plugins([BACKEND_PLUGIN_GROUP]):
+            print(f"{ep.name}\t{factory_path(ep)}")
+        return
+    try:
+        print(create_config_scaffold(args.plugin), end="")
+    except ValueError as e:
+        _fail(e)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     # Find the config first, without handling --help, so help can list the
     # configured backend instances.
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", default=_DEFAULT_CONFIG)
+    pre.add_argument("--log-level")
+    pre.add_argument("command", nargs="?")
     known, _ = pre.parse_known_args(argv)
+    if known.command == "init":
+        _init(_parser(None).parse_args(argv))
+        return
     config_path = Path(known.config)
     if not config_path.exists():
         # Still parse, so --help works without a config.

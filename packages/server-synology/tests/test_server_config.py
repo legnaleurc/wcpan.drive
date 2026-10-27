@@ -6,9 +6,14 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from wcpan.drive.server.backend import BackendContext, BackendRoutes, CoreServices
+from wcpan.drive.server.backend import (
+    BackendContext,
+    BackendRoutes,
+    CoreServices,
+    enter_backend,
+)
 from wcpan.drive.server.synology import create_backend
-from wcpan.drive.server.synology.config import parse_synology_config
+from wcpan.drive.server.synology.config import SynologyConfig
 
 
 def _settings(**overrides):
@@ -16,25 +21,32 @@ def _settings(**overrides):
         "url": "https://nas.example",
         "username": "user",
         "password": "secret",
-        "webhook": {"callback_url": "https://public.example"},
+        "webhook_callback_url": "https://public.example",
     }
     settings.update(overrides)
     return settings
 
 
-class TestSettings(unittest.TestCase):
-    def test_defaults(self):
-        config = parse_synology_config(_settings())
+class TestSettings(unittest.IsolatedAsyncioTestCase):
+    async def _config(self, **settings: object) -> SynologyConfig:
+        with patch(f"{_BACKEND}.SynologyBackend") as backend:
+            async with enter_backend(create_backend, _context(offline=True), settings):
+                pass
+        return backend.call_args.kwargs["config"]
+
+    async def test_defaults(self):
+        config = await self._config(**_settings())
         self.assertEqual(config.webhook_app_id, "wcpan-drive-server-synology")
         self.assertIsNone(config.otp_code)
         self.assertEqual(config.local_paths, {})
 
-    def test_maps_nested_settings(self):
-        config = parse_synology_config(
-            _settings(
+    async def test_maps_settings(self):
+        config = await self._config(
+            **_settings(
                 url="https://nas.example:5001",
                 otp_code="123456",
-                webhook={"callback_url": "https://callback.example", "app_id": "app-2"},
+                webhook_callback_url="https://callback.example",
+                webhook_app_id="app-2",
                 local_paths={"/volume1": "/mnt/nas"},
             )
         )
@@ -44,19 +56,18 @@ class TestSettings(unittest.TestCase):
         self.assertEqual(config.otp_code, "123456")
         self.assertEqual(config.local_paths, {"/volume1": "/mnt/nas"})
 
-    def test_missing_fields_are_rejected(self):
-        for field, pattern in (
-            ("url", "url"),
-            ("webhook", "webhook"),
-        ):
+    def test_missing_settings_are_rejected(self):
+        for field in ("url", "webhook_callback_url"):
             settings = _settings()
             del settings[field]
-            with self.subTest(field=field), self.assertRaisesRegex(ValueError, pattern):
-                parse_synology_config(settings)
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                enter_backend(create_backend, _context(offline=True), settings)
 
-    def test_missing_callback_url_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "webhook.callback_url"):
-            parse_synology_config(_settings(webhook={}))
+    def test_nested_webhook_is_rejected(self):
+        settings = _settings(webhook={"callback_url": "https://public.example"})
+        del settings["webhook_callback_url"]
+        with self.assertRaisesRegex(ValueError, "unknown settings: webhook"):
+            enter_backend(create_backend, _context(offline=True), settings)
 
 
 def _context(*, offline: bool, mounts: dict[str, str] | None = None) -> BackendContext:
@@ -89,11 +100,6 @@ class TestFactory(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
                     await backend.command(["--help"])
         context.core.mirror.register_schema.assert_awaited_once()
-
-    async def test_invalid_settings_are_rejected(self):
-        with self.assertRaises(ValueError):
-            async with create_backend(_context(offline=True)):
-                pass
 
     async def test_backfill_connects_and_reconciles_this_instance(self):
         stats = dict.fromkeys(

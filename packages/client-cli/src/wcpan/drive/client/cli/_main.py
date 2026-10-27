@@ -12,6 +12,7 @@ from ._cmd.auth import add_auth_command
 from ._cmd.download import add_download_command
 from ._cmd.find import add_find_command
 from ._cmd.info import add_info_command
+from ._cmd.init import add_init_command
 from ._cmd.lib import add_help_message
 from ._cmd.list_ import add_list_command
 from ._cmd.mkdir import add_mkdir_command
@@ -38,6 +39,8 @@ async def amain(args: list[str]) -> int:
     dictConfig(ConfigBuilder().add("wcpan", level="D").to_dict())
 
     kwargs = _parse_args(args)
+    if kwargs.offline_action:
+        return kwargs.offline_action(kwargs)
     if not kwargs.action:
         kwargs.fallback_action()
         return 0
@@ -61,12 +64,12 @@ def _parse_args(args: list[str]) -> Namespace:
     parser.add_argument(
         "--config",
         "-c",
-        required=True,
-        help=("specify configuration file path"),
+        help=("specify configuration file path; required except for init"),
     )
 
     commands = parser.add_subparsers()
 
+    add_init_command(commands)
     add_auth_command(commands)
     add_sync_command(commands)
     add_find_command(commands)
@@ -83,7 +86,10 @@ def _parse_args(args: list[str]) -> Namespace:
     add_shell_command(commands)
 
     add_help_message(parser)
+    parser.set_defaults(offline_action=None)
 
     kwargs = parser.parse_args(args)
+    if kwargs.action and not kwargs.config:
+        parser.error("the following arguments are required: --config/-c")
 
     return kwargs

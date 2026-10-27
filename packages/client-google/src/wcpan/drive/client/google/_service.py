@@ -2,7 +2,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from logging import getLogger
 from pathlib import Path
-from typing import override
+from typing import Annotated, override
 
 from wcpan.drive.client.exceptions import (
     NodeExistsError,
@@ -32,7 +32,11 @@ _L = getLogger(__name__)
 
 
 @asynccontextmanager
-async def create_backend(*, client_secret: str, oauth_token: str):
+async def create_backend(
+    *,
+    client_secret: Annotated[str, "Path to the OAuth client secret JSON."],
+    oauth_token: Annotated[str, "Path to the OAuth token file."],
+):
     storage = OAuth2Storage(
         client_secret=Path(client_secret), oauth_token=Path(oauth_token)
     )

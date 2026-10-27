@@ -12,6 +12,7 @@ members = [
     "wcpan-drive-client-media",
     "wcpan-drive-client-remote",
     "wcpan-drive-client-sqlite",
+    "wcpan-drive-plugin",
     "wcpan-drive-protocol",
     "wcpan-drive-server",
     "wcpan-drive-server-filesystem",
@@ -758,6 +759,7 @@ dependencies = [
     { name = "wcpan-drive-client" },
     { name = "wcpan-drive-client-config" },
     { name = "wcpan-drive-client-media" },
+    { name = "wcpan-drive-plugin" },
     { name = "wcpan-logging" },
     { name = "wcpan-queue" },
 ]
@@ -769,6 +771,7 @@ requires-dist = [
     { name = "wcpan-drive-client", editable = "packages/client" },
     { name = "wcpan-drive-client-config", editable = "packages/client-config" },
     { name = "wcpan-drive-client-media", editable = "packages/client-media" },
+    { name = "wcpan-drive-plugin", editable = "packages/plugin" },
     { name = "wcpan-logging", specifier = ">=2.0.3,<3.0.0" },
     { name = "wcpan-queue", specifier = ">=7.2.1,<8.0.0" },
 ]
@@ -780,12 +783,14 @@ source = { editable = "packages/client-config" }
 dependencies = [
     { name = "pyyaml" },
     { name = "wcpan-drive-client" },
+    { name = "wcpan-drive-plugin" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
     { name = "wcpan-drive-client", editable = "packages/client" },
+    { name = "wcpan-drive-plugin", editable = "packages/plugin" },
 ]
 
 [[package]]
@@ -866,6 +871,17 @@ dependencies = [
 requires-dist = [{ name = "wcpan-drive-client", editable = "packages/client" }]
 
 [[package]]
+name = "wcpan-drive-plugin"
+version = "0.1.0"
+source = { editable = "packages/plugin" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pyyaml", specifier = ">=6.0.1,<7.0.0" }]
+
+[[package]]
 name = "wcpan-drive-protocol"
 version = "0.1.0"
 source = { editable = "packages/protocol" }
@@ -879,6 +895,7 @@ dependencies = [
     { name = "dacite" },
     { name = "pymediainfo" },
     { name = "pyyaml" },
+    { name = "wcpan-drive-plugin" },
     { name = "wcpan-drive-protocol" },
     { name = "wcpan-logging" },
 ]
@@ -889,6 +906,7 @@ requires-dist = [
     { name = "dacite", specifier = ">=1.9.2,<2.0.0" },
     { name = "pymediainfo", specifier = ">=7.0.1,<8.0.0" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
+    { name = "wcpan-drive-plugin", editable = "packages/plugin" },
     { name = "wcpan-drive-protocol", editable = "packages/protocol" },
     { name = "wcpan-logging", specifier = ">=2.1.0,<3.0.0" },
 ]
@@ -899,7 +917,6 @@ version = "0.1.0"
 source = { editable = "packages/server-filesystem" }
 dependencies = [
     { name = "aiohttp" },
-    { name = "dacite" },
     { name = "wcpan-drive-protocol" },
     { name = "wcpan-drive-server" },
 ]
@@ -907,7 +924,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.0,<4.0.0" },
-    { name = "dacite", specifier = ">=1.9.2,<2.0.0" },
     { name = "wcpan-drive-protocol", editable = "packages/protocol" },
     { name = "wcpan-drive-server", editable = "packages/server" },
 ]
@@ -918,7 +934,6 @@ version = "0.1.0"
 source = { editable = "packages/server-synology" }
 dependencies = [
     { name = "aiohttp" },
-    { name = "dacite" },
     { name = "wcpan-drive-protocol" },
     { name = "wcpan-drive-server" },
     { name = "wcpan-synology" },
@@ -927,7 +942,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.0,<4.0.0" },
-    { name = "dacite", specifier = ">=1.9.2,<2.0.0" },
     { name = "wcpan-drive-protocol", editable = "packages/protocol" },
     { name = "wcpan-drive-server", editable = "packages/server" },
     { name = "wcpan-synology", specifier = ">=0.2.0,<0.3.0" },

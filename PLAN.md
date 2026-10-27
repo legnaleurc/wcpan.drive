@@ -31,6 +31,7 @@ published, with its own dependencies and version. The root is not published.
 | `wcpan-drive-client-config` | `wcpan.drive.client.config` | YAML drive configuration loader |
 | `wcpan-drive-client-media` | `wcpan.drive.client.media` | Local MIME type and media probing |
 | `wcpan-drive-client-cli` | `wcpan.drive.client.cli` | Client command line; no public library API |
+| `wcpan-drive-plugin` | `wcpan.drive.plugin` | Plugin discovery and factory settings (check, scaffold) for client and server |
 | `wcpan-drive-protocol` | `wcpan.drive.protocol` | Lightweight HTTP wire models and serialization |
 | `wcpan-drive-server` | `wcpan.drive.server` | Mirror, HTTP server, reconciliation, and backend extension contracts |
 | `wcpan-drive-server-synology` | `wcpan.drive.server.synology` | Synology adapter |

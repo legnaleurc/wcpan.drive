@@ -11,6 +11,7 @@ dependencies = [
     "wcpan-drive-client>=0.1.0,<0.2.0",
     "wcpan-drive-client-config>=0.1.0,<0.2.0",
     "wcpan-drive-client-media>=0.1.0,<0.2.0",
+    "wcpan-drive-plugin>=0.1.0,<0.2.0",
     "wcpan-logging>=2.0.3,<3.0.0",
     "wcpan-queue>=7.2.1,<8.0.0",
     "prompt-toolkit>=3.0.0,<4.0.0",

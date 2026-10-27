@@ -6,14 +6,14 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from logging import getLogger
 from pathlib import Path
-from typing import Any
+from typing import Annotated
 
 from wcpan.drive.server.backend import BackendContext, CoreServices
 from wcpan.drive.server.services.paths import map_by_prefix
 
 from .blocking import Blocking
 from .commands import command_parser, rebind_mount
-from .config import FilesystemConfig, check_mounts, parse_filesystem_config
+from .config import FilesystemConfig, check_mounts
 from .operations import FilesystemOperations, FilesystemUploader
 from .paths import NodePaths
 from .scan import FilesystemScanner
@@ -103,10 +103,24 @@ class FilesystemRuntime:
 
 @asynccontextmanager
 async def create_backend(
-    context: BackendContext, **settings: Any
+    context: BackendContext,
+    *,
+    rescan_interval: Annotated[float, "Seconds between full rescans."] = 3600.0,
+    watch: Annotated[bool, "Follow changes with inotify."] = True,
+    read_only: Annotated[bool, "Reject every change through the server."] = False,
+    local_paths: Annotated[
+        dict[str, str] | None,
+        "Source path prefix -> host path for media probing\n"
+        "(default: probe the source paths themselves).",
+    ] = None,
 ) -> AsyncGenerator["FilesystemBackend", None]:
     """Backend factory for ``type: wcpan.drive.server.filesystem.create_backend``."""
-    config = parse_filesystem_config(settings)
+    config = FilesystemConfig(
+        rescan_interval=rescan_interval,
+        watch=watch,
+        read_only=read_only,
+        local_paths=local_paths,
+    )
     mounts = check_mounts(context.mounts)
     await context.core.mirror.register_schema(context.name, FILESYSTEM_SCHEMA)
     backend = FilesystemBackend(context=context, config=config, mounts=mounts)

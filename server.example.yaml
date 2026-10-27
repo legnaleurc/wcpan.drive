@@ -1,5 +1,7 @@
 # Example configuration for wcpan.drive.server.
-# Copy to server.yaml (or another path) and adjust values.
+# Copy to server.yaml (or another path) and adjust values, or generate a
+# starting config for the backends you install:
+#   wcpan.drive.server init --plugin synology --plugin filesystem > server.yaml
 #
 # Run (install the backend packages this file names):
 #   wcpan.drive.server --config /path/to/server.yaml serve
@@ -36,13 +38,12 @@ backends:
     password: "your-password"
     # Optional: TOTP code if the account uses 2FA (when required by the API).
     # otp_code: "123456"
-    webhook:
-      # Externally reachable base URL of this server; the webhook is
-      # registered at <callback_url>/api/v1/backends/<backend name>/webhook.
-      callback_url: "https://my-server.example.com"
-      # Stable identifier for this app's webhook registration
-      # (default: wcpan-drive-server-synology).
-      # app_id: "wcpan-drive-server-synology"
+    # Externally reachable base URL of this server; the webhook is
+    # registered at <webhook_callback_url>/api/v1/backends/<backend name>/webhook.
+    webhook_callback_url: "https://my-server.example.com"
+    # Stable identifier for this app's webhook registration
+    # (default: wcpan-drive-server-synology).
+    # webhook_app_id: "wcpan-drive-server-synology"
     # Optional: Synology path prefix -> host path, for media metadata probing.
     # local_paths:
     #   "/volume1/photos": "/mnt/nas/photos"

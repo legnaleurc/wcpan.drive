@@ -4,16 +4,22 @@ import io
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from importlib.metadata import EntryPoint
 from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from wcpan.drive.server.config import parse_config
 from wcpan.drive.server.main import main
 
 from . import _fake_backend
 
 
 _FACTORY = "tests._fake_backend.create_backend"
+_PLUGINS = [
+    EntryPoint("typed", "tests._fake_backend:create_typed_backend", "x"),
+    EntryPoint("open", "tests._fake_backend:create_backend", "x"),
+]
 
 
 def _config(tmp: str, **backend: object) -> str:
@@ -28,16 +34,20 @@ def _config(tmp: str, **backend: object) -> str:
     return str(path)
 
 
+def _run_main(argv: list[str]) -> tuple[int | None, str, str]:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code: int | None = None
+    with redirect_stderr(stderr), redirect_stdout(stdout):
+        try:
+            main(argv)
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else 1
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
 class TestMain(unittest.TestCase):
     def run_main(self, argv: list[str]) -> tuple[int | None, str, str]:
-        stdout, stderr = io.StringIO(), io.StringIO()
-        code: int | None = None
-        with redirect_stderr(stderr), redirect_stdout(stdout):
-            try:
-                main(argv)
-            except SystemExit as e:
-                code = e.code if isinstance(e.code, int) else 1
-        return code, stdout.getvalue(), stderr.getvalue()
+        return _run_main(argv)
 
     def test_version_mismatch_stops_before_any_command(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,3 +120,75 @@ class TestMain(unittest.TestCase):
     def test_help_works_without_config(self):
         code, _, _ = self.run_main(["--config", "/nonexistent.yaml", "--help"])
         self.assertEqual(code, 0)
+
+    def test_settings_are_checked_against_the_factory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _config(
+                tmp, type="tests._fake_backend.create_typed_backend", depth="2"
+            )
+            code, _, err = self.run_main(["--config", path, "backend", "one", "x"])
+        self.assertEqual(code, 1)
+        self.assertIn("backends.one: missing settings: root", err)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _config(
+                tmp,
+                type="tests._fake_backend.create_typed_backend",
+                root="/srv",
+                depth="2",
+            )
+            code, _, err = self.run_main(["--config", path, "backend", "one", "x"])
+        self.assertEqual(code, 1)
+        self.assertIn("backends.one: depth must be int", err)
+
+
+class TestInit(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(
+            patch(
+                "wcpan.drive.plugin._discovery.entry_points",
+                lambda group: _PLUGINS,
+            )
+        )
+
+    def run_main(self, argv: list[str]) -> tuple[int | None, str, str]:
+        return _run_main(argv)
+
+    def test_lists_installed_plugins(self):
+        code, out, _ = self.run_main(["init", "--list"])
+        self.assertIsNone(code)
+        self.assertEqual(
+            out.splitlines(),
+            [
+                "open\ttests._fake_backend.create_backend",
+                "typed\ttests._fake_backend.create_typed_backend",
+            ],
+        )
+
+    def test_scaffold_loads_once_required_values_are_filled(self):
+        # A config that does not exist or is broken is never read.
+        code, out, _ = self.run_main(
+            ["--config", "/nonexistent.yaml", "init", "-p", "typed", "-p", "open"]
+        )
+        self.assertIsNone(code)
+        self.assertIn("    root:  # required\n", out)
+        self.assertIn("    # depth: 1\n", out)
+        raw = yaml.safe_load(out)
+        self.assertIsNone(raw["backends"]["typed"]["root"])
+        raw["server"]["database_url"] = "/tmp/mirror.db"
+        raw["backends"]["typed"]["root"] = "/srv"
+        for mount in raw["mounts"].values():
+            mount["source"] = "/srv"
+        config = parse_config(raw)
+        self.assertEqual(set(config.backends), {"typed", "open"})
+        self.assertEqual(config.backends["typed"].settings, {"root": "/srv"})
+        self.assertEqual(config.mounts["open"].backend, "open")
+
+    def test_unknown_plugin_is_reported(self):
+        code, _, err = self.run_main(["init", "-p", "nothing"])
+        self.assertEqual(code, 1)
+        self.assertIn("is its package installed", err)
+
+    def test_duplicate_plugin_is_rejected(self):
+        code, _, err = self.run_main(["init", "-p", "typed", "-p", "typed"])
+        self.assertEqual(code, 1)
+        self.assertIn("given twice", err)

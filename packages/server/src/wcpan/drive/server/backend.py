@@ -2,10 +2,14 @@
 
 A backend is an async context manager factory, named in the config by its import
 path (``type: wcpan.drive.server.synology.create_backend``) like the client's
-service factories. The core calls it as ``factory(context, **settings)`` for each
-configured instance; the factory registers its schema and routes through
-``context``, connects to its source, and yields a ``Backend``. Several instances,
-of the same or different backends, can serve different mounts of one server.
+service factories. Its keyword-only parameters are its settings, as for client
+plugins (see ``wcpan.drive.plugin``); packages register factories under the
+``wcpan.drive.server.backend`` entry point group for ``init``. The core checks
+the configured settings against them and calls ``factory(context, **settings)``
+for each configured instance; the factory registers its schema and routes
+through ``context``, connects to its source, and yields a ``Backend``. Several
+instances, of the same or different backends, can serve different mounts of one
+server.
 
 In offline mode (maintenance commands, server stopped) a factory must not
 connect or start background work; its ``command`` connects only if the parsed
@@ -21,6 +25,7 @@ from typing import Any, Protocol, cast
 
 from aiohttp import web
 from aiohttp.typedefs import Handler
+from wcpan.drive.plugin import check_settings
 
 from .services.mirror import MirrorStore
 from .services.off_main import OffMainService
@@ -30,6 +35,7 @@ from .services.upload import Uploader
 
 
 BACKEND_ROUTE_PREFIX = "/api/v1/backends"
+BACKEND_PLUGIN_GROUP = "wcpan.drive.server.backend"
 
 
 def backend_route(backend: str, path: str) -> str:
@@ -119,7 +125,10 @@ class Backend(Protocol):
 
 
 type BackendFactory = Callable[..., AbstractAsyncContextManager[Backend]]
-"""Called as ``factory(context, **settings)``; raises ``ValueError`` for bad settings."""
+"""Called as ``factory(context, **settings)``; raises ``ValueError`` for bad settings.
+
+Settings are keyword-only parameters, annotated with ``Annotated[T, "help"]``.
+"""
 
 
 def load_factory(path: str) -> BackendFactory:
@@ -142,7 +151,12 @@ def load_factory(path: str) -> BackendFactory:
 def enter_backend(
     factory: BackendFactory, context: BackendContext, settings: Mapping[str, Any]
 ) -> AbstractAsyncContextManager[Backend]:
-    return factory(context, **settings)
+    """Enter *factory* with *settings* checked against its parameters.
+
+    Raises:
+        ValueError: For an unknown, missing, or mistyped setting.
+    """
+    return factory(context, **check_settings(factory, settings))
 
 
 class LazyLocalPaths:

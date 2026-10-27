@@ -88,7 +88,10 @@ class TestLegacyVersion2(unittest.TestCase):
                 "version": 2,
                 "database_url": "/tmp/mirror.db",
                 "port": 9000,
-                "synology": {"url": "https://nas", "webhook": {"callback_url": "x"}},
+                "synology": {
+                    "url": "https://nas",
+                    "webhook": {"callback_url": "x", "app_id": "app"},
+                },
                 "mounts": {"photos": "/volume1/photos"},
                 "local_paths": {"/volume1": "/mnt/nas"},
             }
@@ -96,6 +99,9 @@ class TestLegacyVersion2(unittest.TestCase):
         backend = config.backends[LEGACY_BACKEND_NAME]
         self.assertEqual(backend.type, "wcpan.drive.server.synology.create_backend")
         self.assertEqual(backend.settings["url"], "https://nas")
+        self.assertNotIn("webhook", backend.settings)
+        self.assertEqual(backend.settings["webhook_callback_url"], "x")
+        self.assertEqual(backend.settings["webhook_app_id"], "app")
         self.assertEqual(backend.settings["local_paths"], {"/volume1": "/mnt/nas"})
         self.assertEqual(
             config.mounts["photos"],

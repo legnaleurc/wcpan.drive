@@ -11,7 +11,7 @@ from wcpan.drive.client.types import Drive, SourceConfig
 from yaml import safe_load
 
 
-_VERSION = 4
+VERSION = 4
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -51,7 +51,7 @@ async def create_drive_from_config(path: Path) -> AsyncGenerator[Drive]:
 def _parse_main(data: object) -> list[_Source]:
     main = _require_dict(data, "config")
     version = main.get("version")
-    if version != _VERSION:
+    if version != VERSION:
         raise ValueError(f"unsupported config version: {version!r}")
     sources = _require_list(main.get("sources"), "sources")
     if not sources:

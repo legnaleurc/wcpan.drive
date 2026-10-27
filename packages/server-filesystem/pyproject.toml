@@ -8,11 +8,12 @@ requires-python = ">=3.13,<4.0"
 authors = [{ name = "Wei-Cheng Pan", email = "legnaleurc@gmail.com" }]
 dependencies = [
     "aiohttp>=3.13.0,<4.0.0",
-    "dacite>=1.9.2,<2.0.0",
     "wcpan-drive-protocol>=0.1.0,<0.2.0",
     "wcpan-drive-server>=0.1.0,<0.2.0",
 ]
 
+[project.entry-points."wcpan.drive.server.backend"]
+filesystem = "wcpan.drive.server.filesystem:create_backend"
 
 [build-system]
 requires = ["hatchling"]

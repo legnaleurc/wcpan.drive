@@ -1,6 +1,7 @@
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import PurePath
+from typing import Annotated
 
 from wcpan.drive.client.exceptions import NodeNotFoundError
 from wcpan.drive.client.types import Cache, ChangeAction, Node
@@ -23,7 +24,7 @@ from ._outer import (
 
 
 @asynccontextmanager
-async def create_cache(*, dsn: str):
+async def create_cache(*, dsn: Annotated[str, "Path to the SQLite cache file."]):
     with ProcessPoolExecutor() as pool:
         bg = OffMainProcess(dsn=dsn, pool=pool)
         await bg(initialize)

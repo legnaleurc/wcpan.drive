@@ -7,17 +7,6 @@ paths unless ``local_paths`` maps them elsewhere.
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
-
-from dacite import Config, DaciteError, from_dict
-
-
-@dataclass(frozen=True, slots=True)
-class RawFilesystemConfig:
-    rescan_interval: float = 3600.0
-    watch: bool = True
-    read_only: bool = False
-    local_paths: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -32,25 +21,9 @@ class FilesystemConfig:
     # source paths themselves.
     local_paths: dict[str, str] | None = None
 
-
-def parse_filesystem_config(settings: Mapping[str, Any]) -> FilesystemConfig:
-    """Parse one filesystem backend section (without its ``type``)."""
-    try:
-        parsed = from_dict(
-            data_class=RawFilesystemConfig,
-            data=dict(settings),
-            config=Config(strict=False, cast=[float]),
-        )
-    except DaciteError as e:
-        raise ValueError(str(e)) from e
-    if parsed.rescan_interval <= 0:
-        raise ValueError("rescan_interval must be positive")
-    return FilesystemConfig(
-        rescan_interval=parsed.rescan_interval,
-        watch=parsed.watch,
-        read_only=parsed.read_only,
-        local_paths=parsed.local_paths,
-    )
+    def __post_init__(self) -> None:
+        if self.rescan_interval <= 0:
+            raise ValueError("rescan_interval must be positive")
 
 
 def check_mounts(mounts: Mapping[str, str]) -> dict[str, str]:

@@ -6,7 +6,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
-from typing import Any
+from typing import Annotated
 
 from wcpan.drive.server.backend import BackendContext
 from wcpan.drive.server.services.paths import map_by_prefix
@@ -14,7 +14,7 @@ from wcpan.synology import SynologyClient, SynologyPath
 
 from .backfill import BackfillService
 from .commands import command_parser, print_stats
-from .config import SynologyConfig, create_synology_client, parse_synology_config
+from .config import DEFAULT_WEBHOOK_APP_ID, SynologyConfig, create_synology_client
 from .handlers import webhook_handler
 from .mounts import MountRegistry, create_mount_registry
 from .operations import SynologyNodeOperations
@@ -46,13 +46,42 @@ class _Serving:
 
 @asynccontextmanager
 async def create_backend(
-    context: BackendContext, **settings: Any
+    context: BackendContext,
+    *,
+    url: Annotated[
+        str, "Synology DSM / Drive API base URL (scheme + host + port if needed)."
+    ],
+    username: Annotated[str, "Synology Drive user."],
+    password: Annotated[str, "Password of that user."],
+    webhook_callback_url: Annotated[
+        str,
+        "Externally reachable base URL of this server; the webhook is\n"
+        "registered at <webhook_callback_url>/api/v1/backends/<name>/webhook.",
+    ],
+    webhook_app_id: Annotated[
+        str, "Stable identifier for this app's webhook registration."
+    ] = DEFAULT_WEBHOOK_APP_ID,
+    otp_code: Annotated[
+        str | None, "TOTP code, if the account uses 2FA (when required by the API)."
+    ] = None,
+    local_paths: Annotated[
+        dict[str, str] | None,
+        "Synology path prefix -> host path, for media metadata probing.",
+    ] = None,
 ) -> AsyncGenerator["SynologyBackend", None]:
     """Backend factory for ``type: wcpan.drive.server.synology.create_backend``.
 
     Serving connects here; offline, ``command`` connects once its arguments parse.
     """
-    config = parse_synology_config(settings)
+    config = SynologyConfig(
+        url=url,
+        username=username,
+        password=password,
+        public_url=webhook_callback_url,
+        webhook_app_id=webhook_app_id,
+        otp_code=otp_code,
+        local_paths=dict(local_paths or {}),
+    )
     await context.core.mirror.register_schema(context.name, SYNOLOGY_SCHEMA)
     backend = SynologyBackend(context=context, config=config)
     if context.offline:

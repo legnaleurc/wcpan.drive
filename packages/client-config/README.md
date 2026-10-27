@@ -38,6 +38,19 @@ sources:
           dsn: /path/to/google.sqlite
 ```
 
+Generate a starting config from installed plugins with
+`wcpan.drive.client.cli init` (or `create_config_scaffold`):
+
+```sh
+wcpan.drive.client.cli init --list
+wcpan.drive.client.cli init -p google -p crypt -p sqlite > config.yaml
+```
+
+Plugins register factories under the `wcpan.drive.client.backend` and
+`wcpan.drive.client.cache` entry point groups; a factory that takes a
+positional argument is middleware for the backend or cache it wraps. Settings
+marked required are left empty to fill in.
+
 Version 4 renamed the source keys `file` and `snapshot` to `backend` and
 `cache`; version 3 files are rejected.
 

@@ -18,12 +18,12 @@ Version 3 names backend instances and the mounts they serve::
 
 Each backend section is passed to the backend factory named by ``type``. Version 2
 files, which configured one Synology server, are read as a single backend
-instance named ``synology``.
+instance named ``synology``, with its nested ``webhook`` section flattened.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from dacite import Config, DaciteError, MissingValueError, WrongTypeError, from_dict
@@ -149,6 +149,10 @@ def _from_raw(raw: RawServerConfig) -> ServerConfig:
 
 def _from_legacy(raw: _RawLegacyConfig) -> ServerConfig:
     settings = dict(raw.synology)
+    webhook: object = settings.pop("webhook", None)
+    if isinstance(webhook, dict):
+        for key, value in cast(dict[str, Any], webhook).items():
+            settings[f"webhook_{key}"] = value
     settings["local_paths"] = dict(raw.local_paths)
     return ServerConfig(
         host=raw.host,

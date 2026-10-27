@@ -483,3 +483,46 @@ class TestTrash(IsolatedAsyncioTestCase):
 
         aexpect(self._drive.purge_trash).assert_not_called()
         self.assertIn("Aborted.", stdout.getvalue())
+
+
+class TestInit(IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._factory = self.enterContext(
+            patch("wcpan.drive.client.cli._main.create_drive_from_config")
+        )
+
+    @patch("sys.stdout", new_callable=StringIO)
+    async def testInitNeedsNoConfig(self, stdout: StringIO):
+        scaffold = self.enterContext(
+            patch(
+                "wcpan.drive.client.cli._cmd.init.create_config_scaffold",
+                return_value="version: 4\n",
+            )
+        )
+
+        rv = await amain(["init", "-p", "google", "--plugin", "sqlite"])
+        self.assertEqual(rv, 0)
+
+        scaffold.assert_called_once_with(["google", "sqlite"])
+        self.assertEqual(stdout.getvalue(), "version: 4\n")
+        self._factory.assert_not_called()
+
+    @patch("sys.stderr", new_callable=StringIO)
+    async def testInitReportsBadPlugins(self, stderr: StringIO):
+        self.enterContext(
+            patch(
+                "wcpan.drive.client.cli._cmd.init.create_config_scaffold",
+                side_effect=ValueError("no plugin matches 'x'"),
+            )
+        )
+
+        rv = await amain(["init", "-p", "x"])
+        self.assertEqual(rv, 1)
+        self.assertIn("no plugin matches 'x'", stderr.getvalue())
+
+    @patch("sys.stderr", new_callable=StringIO)
+    async def testOtherCommandsNeedConfig(self, stderr: StringIO):
+        with self.assertRaises(SystemExit):
+            await amain(["list", "/"])
+        self.assertIn("--config", stderr.getvalue())
+        self._factory.assert_not_called()

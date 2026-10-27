@@ -13,6 +13,9 @@ dependencies = [
     "wcpan-drive-protocol>=0.1.0,<0.2.0",
 ]
 
+[project.entry-points."wcpan.drive.client.backend"]
+remote = "wcpan.drive.client.remote:create_backend"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

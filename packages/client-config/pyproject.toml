@@ -9,6 +9,7 @@ authors = [{ name = "Wei-Cheng Pan", email = "legnaleurc@gmail.com" }]
 dependencies = [
     "PyYAML>=6.0.1,<7.0.0",
     "wcpan-drive-client>=0.1.0,<0.2.0",
+    "wcpan-drive-plugin>=0.1.0,<0.2.0",
 ]
 
 [build-system]

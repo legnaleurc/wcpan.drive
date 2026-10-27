@@ -8,7 +8,7 @@ import sqlite3
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from unittest.mock import MagicMock
 
 from aiohttp import web
@@ -78,3 +78,14 @@ async def create_backend(
         yield backend
     finally:
         instances.pop(context.name, None)
+
+
+@asynccontextmanager
+async def create_typed_backend(
+    context: BackendContext,
+    *,
+    root: Annotated[str, "Root directory."],
+    depth: int = 1,
+) -> AsyncGenerator[FakeBackend, None]:
+    async with create_backend(context, root=root, depth=depth) as backend:
+        yield backend
