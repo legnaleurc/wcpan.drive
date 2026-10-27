@@ -12,9 +12,9 @@ from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.mounts import mount_id
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.mounts import ensure_mount_nodes
 from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import BackendLocator, NodeObservation
 from wcpan.drive.server.workers import (
@@ -74,16 +74,16 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         self.pool = ThreadPoolExecutor(2)
         self.a = _RecordingSchema()
         self.b = _RecordingSchema()
-        self.storage = StorageService(
+        self.mirror = MirrorStore(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
             schemas={"a": self.a, "b": self.b},
         )
-        await self.storage.ensure_schema()
+        await self.mirror.ensure_schema()
         wq = create_write_queue()
         mq = create_metadata_queue()
         self.node_sync = NodeSyncService(
-            storage=self.storage,
+            mirror=self.mirror,
             write_queue=wq,
             off_main=OffMainService(pool=self.pool),
             mounts={},
@@ -96,7 +96,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
             ),
         ]
         await ensure_mount_nodes(
-            ["one", "two"], storage=self.storage, node_sync=self.node_sync
+            ["one", "two"], mirror=self.mirror, node_sync=self.node_sync
         )
 
     async def asyncTearDown(self) -> None:
@@ -132,8 +132,8 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         self.assertEqual(self.b.bound, [("fb", "lb")])
 
     async def test_each_backend_retries_only_its_pending_media(self) -> None:
-        await self.storage.mark_enrichment_pending(NodeId("fa"), "a")
-        await self.storage.mark_enrichment_pending(NodeId("fb"), "b")
+        await self.mirror.mark_enrichment_pending(NodeId("fa"), "a")
+        await self.mirror.mark_enrichment_pending(NodeId("fb"), "b")
         located: list[str] = []
 
         async def locate(node_id: NodeId) -> None:
@@ -143,17 +143,17 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         await self.node_sync.wait_enrichment_drained()
 
         self.assertEqual(located, ["fa"])
-        self.assertEqual(await self.storage.get_pending_enrichment("b"), ["fb"])
+        self.assertEqual(await self.mirror.get_pending_enrichment("b"), ["fb"])
 
     async def test_new_mounts_are_published_once(self) -> None:
-        cursor = await self.storage.get_cursor()
+        cursor = await self.mirror.get_cursor()
         await ensure_mount_nodes(
-            ["one", "two"], storage=self.storage, node_sync=self.node_sync
+            ["one", "two"], mirror=self.mirror, node_sync=self.node_sync
         )
-        self.assertEqual(await self.storage.get_cursor(), cursor)
+        self.assertEqual(await self.mirror.get_cursor(), cursor)
 
         await ensure_mount_nodes(
-            ["one", "two", "three"], storage=self.storage, node_sync=self.node_sync
+            ["one", "two", "three"], mirror=self.mirror, node_sync=self.node_sync
         )
-        changes, _, _ = await self.storage.get_changes_since(cursor, 100)
+        changes, _, _ = await self.mirror.get_changes_since(cursor, 100)
         self.assertEqual([c[0] for c in changes], [mount_id("three")])

@@ -12,8 +12,8 @@ from logging import getLogger
 from wcpan.drive.protocol.types import NodeId
 
 from ..types import ReadSeq
+from .mirror import MirrorStore
 from .operations import Locate, LocateUndecidedError
-from .storage import StorageService
 from .sync import NodeSyncService
 
 
@@ -38,13 +38,13 @@ class ReconcileSession:
         scope: set[NodeId],
         read: ReadSeq,
         *,
-        storage: StorageService,
+        mirror: MirrorStore,
         node_sync: NodeSyncService,
         locate: Locate,
     ) -> None:
         self._scope = scope
         self._read = read
-        self._storage = storage
+        self._mirror = mirror
         self._node_sync = node_sync
         self._locate = locate
         self._seen = set[NodeId]()
@@ -63,11 +63,11 @@ class ReconcileSession:
 
         Waits for queued writes, so nodes observed by newer reads are excluded.
         """
-        preserved = await self._storage.build_deferred_preserved_set(
+        preserved = await self._mirror.build_deferred_preserved_set(
             self._seen, self._preserve_roots
         )
         preserved |= await self._node_sync.touched_after(self._read)
-        return await self._storage.deferred_removal_roots(preserved, self._scope)
+        return await self._mirror.deferred_removal_roots(preserved, self._scope)
 
     async def commit_removals(self) -> list[NodeId]:
         """Confirm and apply removals; returns the subtree roots removed."""
@@ -113,12 +113,12 @@ class ReconcileSession:
 async def reconcile_session(
     scope: set[NodeId],
     *,
-    storage: StorageService,
+    mirror: MirrorStore,
     node_sync: NodeSyncService,
     locate: Locate,
 ) -> AsyncGenerator[ReconcileSession, None]:
     """Open a pass over *scope*; enter before the first listing starts."""
     async with node_sync.observe() as read:
         yield ReconcileSession(
-            scope, read, storage=storage, node_sync=node_sync, locate=locate
+            scope, read, mirror=mirror, node_sync=node_sync, locate=locate
         )

@@ -1,9 +1,9 @@
 """Path services over the mirror.
 
 - ``LocalPathService``    — resolve node records to host-filesystem paths
-                            (holds *storage* and per-mount *MountSource*)
+                            (holds *mirror* and per-mount *MountSource*)
 - ``VirtualPathService``  — resolve client-facing virtual paths to node IDs
-                            (holds *storage*)
+                            (holds *mirror*)
 """
 
 from collections.abc import Callable, Mapping
@@ -14,7 +14,7 @@ from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 from ..lib.mounts import SERVER_ROOT_ID, is_virtual, mount_name
 from ..types import VirtualPath
-from .storage import StorageService
+from .mirror import MirrorStore
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -56,10 +56,10 @@ class LocalPathService:
     def __init__(
         self,
         *,
-        storage: StorageService,
+        mirror: MirrorStore,
         mounts: Mapping[str, MountSource],
     ) -> None:
-        self._storage = storage
+        self._mirror = mirror
         self._mounts = mounts
 
     async def resolve_local_path(self, record: NodeRecord) -> Path | None:
@@ -70,7 +70,7 @@ class LocalPathService:
         if not record.parent_id or is_virtual(record.parent_id):
             node_cache = {}
         else:
-            ancestors = await self._storage.get_ancestors(record.parent_id)
+            ancestors = await self._mirror.get_ancestors(record.parent_id)
             node_cache = {a.id: a for a in ancestors}
 
         return _resolve_local_path(self._mounts, record, node_cache)
@@ -84,8 +84,8 @@ class LocalPathService:
 class VirtualPathService:
     """Resolve client-facing virtual paths to directory node IDs."""
 
-    def __init__(self, *, storage: StorageService) -> None:
-        self._storage = storage
+    def __init__(self, *, mirror: MirrorStore) -> None:
+        self._mirror = mirror
 
     async def resolve_to_directory_node_id(
         self,
@@ -94,7 +94,7 @@ class VirtualPathService:
         """Resolve a server virtual path (``/`` = root ``_``) to a directory ``node_id``."""
         segments = _virtual_path_segments(virtual_path)
 
-        root = await self._storage.get_node_by_id(SERVER_ROOT_ID)
+        root = await self._mirror.get_node_by_id(SERVER_ROOT_ID)
         if root is None:
             raise ValueError("Server root is missing from the database")
         if not root.is_directory:
@@ -103,7 +103,7 @@ class VirtualPathService:
         if not segments:
             return SERVER_ROOT_ID
 
-        node_id = await self._storage.resolve_path_to_id(segments)
+        node_id = await self._mirror.resolve_path_to_id(segments)
         if node_id is None:
             raise ValueError(
                 f"No directory found at virtual path: {str(virtual_path)!r}"

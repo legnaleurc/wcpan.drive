@@ -8,8 +8,8 @@ from logging import getLogger
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.mounts import mount_id
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
-from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation, ReadSeq
 from wcpan.synology import SynologyClient, SynologyFileId, SynologyPath
@@ -37,13 +37,13 @@ class StartupScanService:
         self,
         *,
         drive_api: SynologyClient,
-        storage: StorageService,
+        mirror: MirrorStore,
         store: SynologyStore,
         syno_paths: SynologyPathService,
         node_sync: NodeSyncService,
     ) -> None:
         self._drive_api = drive_api
-        self._storage = storage
+        self._mirror = mirror
         self._store = store
         self._syno_paths = syno_paths
         self._node_sync = node_sync
@@ -66,7 +66,7 @@ class StartupScanService:
 
         _L.debug("Mount %r: %d item(s) from API", syno_path, len(items))
 
-        db_children = await self._storage.get_children(mid)
+        db_children = await self._mirror.get_children(mid)
         db_child_ids = {n.id for n in db_children}
 
         acc.session.saw(
@@ -132,7 +132,7 @@ class StartupScanService:
             folder_id, this_max_id, force_scan = entry
 
             if not force_scan and last_max_id > 0 and this_max_id <= last_max_id:
-                db_children = await self._storage.get_children(folder_id)
+                db_children = await self._mirror.get_children(folder_id)
                 if db_children:
                     should_skip = True
                     try:
@@ -189,7 +189,7 @@ class StartupScanService:
                 if (o := convert_file_info(item, parent_id=folder_id)) is not None
             )
 
-            db_children = await self._storage.get_children(folder_id)
+            db_children = await self._mirror.get_children(folder_id)
             db_child_ids = {n.id for n in db_children}
 
             pending_dir_upserts: list[NodeObservation] = []
@@ -243,7 +243,7 @@ class StartupScanService:
 
         async with reconcile_session(
             mount_ids,
-            storage=self._storage,
+            mirror=self._mirror,
             node_sync=self._node_sync,
             locate=partial(self._syno_paths.locate, self._drive_api),
         ) as session:

@@ -48,19 +48,19 @@ from .handlers.upload import (
 from .keys import (
     CHANGE_SERVICE_KEY,
     CONFIG_KEY,
+    MIRROR_KEY,
     NODE_OPERATIONS_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
-    STORAGE_KEY,
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
+from .services.mirror import MirrorStore, create_mirror_store
 from .services.mounts import ensure_mount_nodes
 from .services.off_main import OffMainService
 from .services.operations import OperationInvalidError, OperationNotSupportedError
 from .services.paths import MountSource
 from .services.routing import BackendRouter
-from .services.storage import StorageService, create_storage_service
 from .services.sync import NodeSyncService
 from .services.upload import create_upload_service
 from .types import MetadataQueue, ServerConfig, WriteQueue
@@ -106,7 +106,7 @@ async def managed_off_main() -> AsyncGenerator[OffMainService, None]:
 
 @dataclass(frozen=True, kw_only=True)
 class Core:
-    storage: StorageService
+    mirror: MirrorStore
     node_sync: NodeSyncService
     write_queue: WriteQueue
     metadata_queue: MetadataQueue
@@ -121,17 +121,17 @@ async def managed_core(
     off_main: OffMainService,
     after_write: Callable[[], None] | None = None,
 ) -> AsyncGenerator[Core, None]:
-    """Storage, the write and metadata workers, and ``NodeSyncService``.
+    """The mirror store, the write and metadata workers, and ``NodeSyncService``.
 
     Backend schemas are registered later, by each factory. Also used by
     offline commands, which run with the server stopped.
     """
-    storage = await create_storage_service(config.database_url, off_main=off_main)
+    mirror = await create_mirror_store(config.database_url, off_main=off_main)
     write_queue = create_write_queue()
     metadata_queue = create_metadata_queue()
     local_paths = LazyLocalPaths({n: m.backend for n, m in config.mounts.items()})
     node_sync = NodeSyncService(
-        storage=storage,
+        mirror=mirror,
         write_queue=write_queue,
         off_main=off_main,
         mounts={
@@ -143,7 +143,7 @@ async def managed_core(
     async with AsyncExitStack() as stack:
         group = await stack.enter_async_context(asyncio.TaskGroup())
         if after_write is None:
-            checkpoints = create_checkpoint_scheduler(group, storage)
+            checkpoints = create_checkpoint_scheduler(group, mirror)
             stack.callback(checkpoints.cancel)
             after_write = checkpoints
         await stack.enter_async_context(
@@ -157,7 +157,7 @@ async def managed_core(
                 )
             )
         yield Core(
-            storage=storage,
+            mirror=mirror,
             node_sync=node_sync,
             write_queue=write_queue,
             metadata_queue=metadata_queue,
@@ -185,7 +185,7 @@ async def entered_backends(
                 name=name,
                 mounts=config.mounts_of(name),
                 core=CoreServices(
-                    storage=core.storage,
+                    mirror=core.mirror,
                     node_sync=core.node_sync.for_backend(name),
                     off_main=core.off_main,
                 ),
@@ -213,19 +213,19 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             core = await stack.enter_async_context(
                 managed_core(config, off_main=off_main)
             )
-            app[STORAGE_KEY] = core.storage
+            app[MIRROR_KEY] = core.mirror
             app[OFF_MAIN_KEY] = off_main
             app[WRITE_QUEUE_KEY] = core.write_queue
             app[CHANGE_SERVICE_KEY] = core.node_sync
 
             await ensure_mount_nodes(
-                config.mounts, storage=core.storage, node_sync=core.node_sync
+                config.mounts, mirror=core.mirror, node_sync=core.node_sync
             )
             backends = await stack.enter_async_context(
                 entered_backends(config, core, offline=False, routes=routes)
             )
             router = BackendRouter(
-                storage=core.storage,
+                mirror=core.mirror,
                 mount_backends={n: m.backend for n, m in config.mounts.items()},
                 operations={n: b.operations for n, b in backends.items()},
                 uploaders={n: b.uploader for n, b in backends.items()},

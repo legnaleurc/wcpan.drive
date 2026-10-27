@@ -62,15 +62,15 @@ def _make_node(
 
 def _make_service(
     drive_api: object | None = None,
-    storage: object | None = None,
+    mirror: object | None = None,
     node_sync: object | None = None,
     syno_paths: object | None = None,
     mount_registry: MountRegistry | None = None,
 ) -> WebhookService:
     return WebhookService(
         drive_api=drive_api or MagicMock(),
-        storage=storage or MagicMock(),
-        store=storage or MagicMock(),
+        mirror=mirror or MagicMock(),
+        store=mirror or MagicMock(),
         node_sync=node_sync or MagicMock(spec=NodeSyncService),
         syno_paths=syno_paths or MagicMock(),
         mount_registry=mount_registry or MountRegistry(mounts={}, root_ids={}),
@@ -85,12 +85,12 @@ def _make_service(
 class TestFetchAndEnrich(IsolatedAsyncioTestCase):
     async def test_success(self):
         drive_api = MagicMock()
-        storage = MagicMock()
-        storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1"))
+        mirror = MagicMock()
+        mirror.get_node_by_locator = AsyncMock(return_value=_make_node("p1"))
         node_sync = MagicMock(spec=NodeSyncService)
         node_sync.upsert = AsyncMock(return_value=_make_node())
         drive_api.get_file = AsyncMock(return_value=_FAKE_SYNO_INFO)
-        service = _make_service(drive_api, storage, node_sync)
+        service = _make_service(drive_api, mirror, node_sync)
 
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
@@ -110,9 +110,9 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
         )
 
     async def test_parent_not_in_db_not_mount_skips(self):
-        storage = MagicMock()
-        storage.get_node_by_locator = AsyncMock(return_value=None)
-        service = _make_service(storage=storage)
+        mirror = MagicMock()
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
+        service = _make_service(mirror=mirror)
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
             SynologyPermanentLink(permanent_link="f1"),
@@ -121,12 +121,12 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
         )
 
     async def test_file_moved_to_unknown_parent_deletes_existing_node(self):
-        storage = MagicMock()
-        storage.get_node_by_locator = AsyncMock(return_value=None)
-        storage.get_node_by_id = AsyncMock(return_value=_make_node())
+        mirror = MagicMock()
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
+        mirror.get_node_by_id = AsyncMock(return_value=_make_node())
         node_sync = MagicMock(spec=NodeSyncService)
         node_sync.delete = AsyncMock()
-        service = _make_service(storage=storage, node_sync=node_sync)
+        service = _make_service(mirror=mirror, node_sync=node_sync)
 
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
@@ -137,12 +137,12 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
         node_sync.delete.assert_awaited_once_with(NodeId("f1"), read=ANY)
 
     async def test_file_moved_to_unknown_parent_no_op_when_node_absent(self):
-        storage = MagicMock()
-        storage.get_node_by_locator = AsyncMock(return_value=None)
-        storage.get_node_by_id = AsyncMock(return_value=None)
+        mirror = MagicMock()
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
+        mirror.get_node_by_id = AsyncMock(return_value=None)
         node_sync = MagicMock(spec=NodeSyncService)
         node_sync.delete = AsyncMock()
-        service = _make_service(storage=storage, node_sync=node_sync)
+        service = _make_service(mirror=mirror, node_sync=node_sync)
 
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
@@ -153,8 +153,8 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
         node_sync.delete.assert_not_awaited()
 
     async def test_parent_resolved_via_mount(self):
-        storage = MagicMock()
-        storage.get_node_by_locator = AsyncMock(return_value=None)
+        mirror = MagicMock()
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
         node_sync = MagicMock(spec=NodeSyncService)
         node_sync.upsert = AsyncMock(return_value=_make_node())
         registry = MountRegistry(
@@ -165,7 +165,7 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
         )
         drive_api = MagicMock()
         drive_api.get_file = AsyncMock(return_value=_FAKE_SYNO_INFO)
-        service = _make_service(drive_api, storage, node_sync, mount_registry=registry)
+        service = _make_service(drive_api, mirror, node_sync, mount_registry=registry)
 
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
@@ -179,11 +179,11 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
         self.assertEqual(call_args.locator, "f1")
 
     async def test_metadata_not_found_skips(self):
-        storage = MagicMock()
-        storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1"))
+        mirror = MagicMock()
+        mirror.get_node_by_locator = AsyncMock(return_value=_make_node("p1"))
         drive_api = MagicMock()
         drive_api.get_file = AsyncMock(return_value=None)
-        service = _make_service(drive_api, storage)
+        service = _make_service(drive_api, mirror)
 
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
@@ -201,13 +201,13 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
 class TestClassifyWebhookItem(IsolatedAsyncioTestCase):
     def _service(self):
         drive_api = MagicMock()
-        storage = MagicMock()
-        storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1"))
+        mirror = MagicMock()
+        mirror.get_node_by_locator = AsyncMock(return_value=_make_node("p1"))
         node_sync = MagicMock(spec=NodeSyncService)
         node_sync.upsert = AsyncMock(return_value=_make_node())
         drive_api.get_file = AsyncMock(return_value=_FAKE_SYNO_INFO)
         registry = MountRegistry(mounts={}, root_ids={})
-        return _make_service(drive_api, storage, node_sync, mount_registry=registry)
+        return _make_service(drive_api, mirror, node_sync, mount_registry=registry)
 
     async def test_empty_file_id_schedules_delayed_upsert(self):
         service = self._service()
@@ -431,11 +431,11 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
             )
 
     async def test_mirrored_directory_move_fetches_waits_without_scanning(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_video"))
-        storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_video"))
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_video"))
+        mirror.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_video"))
         registry = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
-        service = _make_service(storage=storage, mount_registry=registry)
+        service = _make_service(mirror=mirror, mount_registry=registry)
         service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
@@ -472,16 +472,16 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         mock_scan.assert_not_awaited()
 
     async def test_mirrored_directory_move_to_mount_root_skips_scanning(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_video"))
-        storage.get_node_by_locator = AsyncMock(return_value=None)
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_video"))
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
         registry = MountRegistry(
             mounts={"video": "/team-folders/video/L"},
             root_ids={
                 SynologyFileId(file_id="mount-root"): NodeId("_video"),
             },
         )
-        service = _make_service(storage=storage, mount_registry=registry)
+        service = _make_service(mirror=mirror, mount_registry=registry)
         service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
@@ -513,11 +513,11 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         mock_scan.assert_not_awaited()
 
     async def test_moved_directory_source_not_under_current_mount_scans(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_old"))
-        storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_video"))
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_old"))
+        mirror.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_video"))
         registry = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
-        service = _make_service(storage=storage, mount_registry=registry)
+        service = _make_service(mirror=mirror, mount_registry=registry)
         service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
@@ -549,11 +549,11 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         mock_scan.assert_awaited_once_with(NodeId("f1"))
 
     async def test_moved_directory_destination_not_under_current_mount_scans(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_video"))
-        storage.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_old"))
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_video"))
+        mirror.get_node_by_locator = AsyncMock(return_value=_make_node("p1", "_old"))
         registry = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
-        service = _make_service(storage=storage, mount_registry=registry)
+        service = _make_service(mirror=mirror, mount_registry=registry)
         service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
@@ -585,10 +585,10 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         mock_scan.assert_awaited_once_with(NodeId("f1"))
 
     async def test_moved_directory_missing_source_scans(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=None)
-        storage.get_node_by_locator = AsyncMock(return_value=None)
-        service = _make_service(storage=storage)
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=None)
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
+        service = _make_service(mirror=mirror)
         service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
@@ -620,11 +620,11 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         mock_scan.assert_awaited_once_with(NodeId("f1"))
 
     async def test_moved_directory_missing_destination_scans(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_video"))
-        storage.get_node_by_locator = AsyncMock(return_value=None)
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=_make_node("f1", "_video"))
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
         registry = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
-        service = _make_service(storage=storage, mount_registry=registry)
+        service = _make_service(mirror=mirror, mount_registry=registry)
         service._node_sync.flush = AsyncMock()
         pending = MagicMock()
         plan = service._classify_webhook_item(
@@ -663,11 +663,11 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
 
 class TestResolveMovedDirRootId(IsolatedAsyncioTestCase):
     async def test_uses_permanent_link_record(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=_make_node("perm-1"))
-        storage.get_node_by_locator = AsyncMock(return_value=None)
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=_make_node("perm-1"))
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
         drive_api = MagicMock()
-        service = _make_service(drive_api, storage)
+        service = _make_service(drive_api, mirror)
 
         rv = await service._resolve_moved_dir_root_id(
             SynologyFileId(file_id="f1"),
@@ -676,17 +676,17 @@ class TestResolveMovedDirRootId(IsolatedAsyncioTestCase):
 
         self.assertEqual(rv, "perm-1")
         drive_api.get_file.assert_not_called()
-        storage.get_node_by_locator.assert_not_awaited()
+        mirror.get_node_by_locator.assert_not_awaited()
 
     async def test_falls_back_to_metadata_permanent_link(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=None)
-        storage.get_node_by_locator = AsyncMock(return_value=None)
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=None)
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
         drive_api = MagicMock()
         drive_api.get_file = AsyncMock(
             return_value={**_FAKE_SYNO_INFO, "permanent_link": "perm-2"}
         )
-        service = _make_service(drive_api, storage)
+        service = _make_service(drive_api, mirror)
 
         rv = await service._resolve_moved_dir_root_id(
             SynologyFileId(file_id="f1"),
@@ -694,15 +694,15 @@ class TestResolveMovedDirRootId(IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(rv, "perm-2")
-        storage.get_node_by_locator.assert_not_awaited()
+        mirror.get_node_by_locator.assert_not_awaited()
 
     async def test_falls_back_to_storage_lookup_by_file_id(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=None)
-        storage.get_node_by_locator = AsyncMock(return_value=_make_node("mirror-1"))
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=None)
+        mirror.get_node_by_locator = AsyncMock(return_value=_make_node("mirror-1"))
         drive_api = MagicMock()
         drive_api.get_file = AsyncMock(return_value=None)
-        service = _make_service(drive_api, storage)
+        service = _make_service(drive_api, mirror)
 
         rv = await service._resolve_moved_dir_root_id(
             SynologyFileId(file_id="f1"),
@@ -710,15 +710,15 @@ class TestResolveMovedDirRootId(IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(rv, "mirror-1")
-        storage.get_node_by_locator.assert_awaited_once_with(SynologyLocator("f1"))
+        mirror.get_node_by_locator.assert_awaited_once_with(SynologyLocator("f1"))
 
     async def test_returns_none_when_unresolved(self):
-        storage = MagicMock()
-        storage.get_node_by_id = AsyncMock(return_value=None)
-        storage.get_node_by_locator = AsyncMock(return_value=None)
+        mirror = MagicMock()
+        mirror.get_node_by_id = AsyncMock(return_value=None)
+        mirror.get_node_by_locator = AsyncMock(return_value=None)
         drive_api = MagicMock()
         drive_api.get_file = AsyncMock(return_value=None)
-        service = _make_service(drive_api, storage)
+        service = _make_service(drive_api, mirror)
 
         rv = await service._resolve_moved_dir_root_id(
             SynologyFileId(file_id="f1"),
@@ -731,15 +731,15 @@ class TestResolveMovedDirRootId(IsolatedAsyncioTestCase):
 class TestWebhookServiceMovedDir(IsolatedAsyncioTestCase):
     async def test_skips_subtree_scan_when_root_unresolved(self):
         drive_api = MagicMock()
-        storage = MagicMock()
+        mirror = MagicMock()
 
         async def _get_by_locator(locator: SynologyLocator):
             if locator == SynologyLocator("p1"):
                 return _make_node("p1")
             return None
 
-        storage.get_node_by_locator = AsyncMock(side_effect=_get_by_locator)
-        storage.get_node_by_id = AsyncMock(return_value=None)
+        mirror.get_node_by_locator = AsyncMock(side_effect=_get_by_locator)
+        mirror.get_node_by_id = AsyncMock(return_value=None)
         node_sync = MagicMock(spec=NodeSyncService)
         node_sync.upsert = AsyncMock(return_value=_make_node())
         node_sync.delete = AsyncMock()
@@ -747,8 +747,8 @@ class TestWebhookServiceMovedDir(IsolatedAsyncioTestCase):
         mount_registry = MountRegistry(mounts={}, root_ids={})
         service = WebhookService(
             drive_api=drive_api,
-            storage=storage,
-            store=storage,
+            mirror=mirror,
+            store=mirror,
             node_sync=node_sync,
             syno_paths=syno_paths,
             mount_registry=mount_registry,

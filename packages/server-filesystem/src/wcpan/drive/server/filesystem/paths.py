@@ -4,14 +4,14 @@ import os
 
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.lib.mounts import mount_name
-from wcpan.drive.server.services.storage import StorageService
+from wcpan.drive.server.services.mirror import MirrorStore
 
 
 class NodePaths:
     """Rebuild a node's path from its mirrored ancestors and mount source."""
 
-    def __init__(self, *, storage: StorageService, mounts: dict[str, str]) -> None:
-        self._storage = storage
+    def __init__(self, *, mirror: MirrorStore, mounts: dict[str, str]) -> None:
+        self._mirror = mirror
         self._mounts = mounts
 
     @property
@@ -20,7 +20,7 @@ class NodePaths:
 
     async def path_of(self, node_id: NodeId) -> str | None:
         """``None`` for virtual nodes or a node whose ancestors are incomplete."""
-        ancestors = await self._storage.get_ancestors(node_id)
+        ancestors = await self._mirror.get_ancestors(node_id)
         if not ancestors:
             return None
         top = ancestors[-1]

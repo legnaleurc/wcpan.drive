@@ -40,7 +40,7 @@ class NodeObservation:
     record: NodeRecord
     locator: BackendLocator | None
     # Backend instance that made the observation; set by its ``NodeSyncService``
-    # so storage binds the locator with that backend's schema.
+    # so the mirror binds the locator with that backend's schema.
     backend: str | None = None
 
 

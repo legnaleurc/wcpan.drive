@@ -1,7 +1,7 @@
 """Integration tests for the client–server HTTP contract.
 
 These tests spin up the real aiohttp handlers against a minimal in-process
-app (fake Storage, stub OffMainService) and make actual HTTP requests via
+app (fake MirrorStore, stub OffMainService) and make actual HTTP requests via
 aiohttp.test_utils.TestClient.  No real Synology connection is needed.
 """
 
@@ -29,9 +29,9 @@ from wcpan.drive.server.handlers.upload import (
 )
 from wcpan.drive.server.keys import (
     CHANGE_SERVICE_KEY,
+    MIRROR_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
-    STORAGE_KEY,
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
@@ -81,7 +81,7 @@ class _FakeOffMain:
         return fn(*args, **kwargs)
 
 
-class _FakeStorage:
+class _FakeMirror:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
         self._locators: dict[str, SynologyLocator] = {}
@@ -109,13 +109,13 @@ class _FakeStorage:
 
 
 def _make_app(
-    storage: _FakeStorage,
+    mirror: _FakeMirror,
     session_store: UploadSessionStore,
 ) -> web.Application:
     app = web.Application()
     off_main = _FakeOffMain()
     wq = create_write_queue()
-    storage._nodes.setdefault(
+    mirror._nodes.setdefault(
         "parent-a",
         NodeRecord(
             id="parent-a",
@@ -138,10 +138,10 @@ def _make_app(
     )
     syno_paths = SynologyPathService(
         registry=MountRegistry(mounts={}, root_ids={}),
-        store=storage,  # type: ignore[arg-type]
+        store=mirror,  # type: ignore[arg-type]
     )
     node_sync = NodeSyncService(
-        storage=storage,
+        mirror=mirror,
         write_queue=wq,
         off_main=off_main,
         mounts={},
@@ -151,7 +151,7 @@ def _make_app(
     drive_api.list_folder = AsyncMock(return_value=([], 0))
     drive_api.get_file = AsyncMock(return_value=None)
     app[READY_KEY] = True
-    app[STORAGE_KEY] = storage
+    app[MIRROR_KEY] = mirror
     app[OFF_MAIN_KEY] = off_main
     app[WRITE_QUEUE_KEY] = wq
     app[SYNOLOGY_PATH_KEY] = syno_paths
@@ -189,8 +189,8 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
 
     async def test_upload_session_carries_media_info(self) -> None:
         """MediaInfo dimensions and flags survive the upload-session protocol."""
-        storage = _FakeStorage()
-        app = _make_app(storage, self._session_store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._session_store)
 
         media = MediaInfo(
             is_image=True,
@@ -232,8 +232,8 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
 
     async def test_direct_upload_carries_media_info(self) -> None:
         """MediaInfo is applied when using the direct (non-session) upload endpoint."""
-        storage = _FakeStorage()
-        app = _make_app(storage, self._session_store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._session_store)
 
         media = MediaInfo(
             is_image=True,
@@ -265,9 +265,9 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
 
     async def test_video_media_info_roundtrip(self) -> None:
         """is_video and ms_duration survive the upload-session protocol."""
-        storage = _FakeStorage()
+        mirror = _FakeMirror()
         syno_info = {**_FAKE_SYNO_INFO, "content_type": "video", "name": "clip.mp4"}
-        app = _make_app(storage, self._session_store)
+        app = _make_app(mirror, self._session_store)
 
         media = MediaInfo(
             is_image=False,
@@ -320,7 +320,7 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
 
     async def test_get_root_timestamps_preserved(self) -> None:
         """Timestamps are preserved through server JSON serialization."""
-        storage = _FakeStorage()
+        mirror = _FakeMirror()
         root = NodeRecord(
             id=SERVER_ROOT_ID,
             parent_id=None,
@@ -339,8 +339,8 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
             height=0,
             ms_duration=0,
         )
-        storage._nodes[SERVER_ROOT_ID] = root
-        app = _make_app(storage, self._session_store)
+        mirror._nodes[SERVER_ROOT_ID] = root
+        app = _make_app(mirror, self._session_store)
 
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/root")
@@ -362,8 +362,8 @@ class TestNullUploadSink(IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def test_put_null_returns_upload_stats(self) -> None:
-        storage = _FakeStorage()
-        app = _make_app(storage, self._session_store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._session_store)
         payload = b"x" * 8192
 
         async with TestClient(TestServer(app)) as client:
@@ -390,8 +390,8 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
 
     async def test_upload_returns_node_record(self) -> None:
         """PATCH with full file data returns 201 with a parseable NodeRecord."""
-        storage = _FakeStorage()
-        app = _make_app(storage, self._session_store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._session_store)
 
         with patch.object(
             app[SYNOLOGY_DRIVE_API_KEY],
@@ -420,8 +420,8 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
 
     async def test_partial_patch_returns_204(self) -> None:
         """PATCH with partial data returns 204 with updated Upload-Offset."""
-        storage = _FakeStorage()
-        app = _make_app(storage, self._session_store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._session_store)
 
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
@@ -440,8 +440,8 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
             self.assertEqual(resp2.headers["Upload-Offset"], "10")
 
     async def test_session_not_found_returns_404(self) -> None:
-        storage = _FakeStorage()
-        app = _make_app(storage, self._session_store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._session_store)
 
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch(

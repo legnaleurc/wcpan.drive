@@ -117,7 +117,7 @@ class TestIdentity(ScanTestCase):
         after = await self.node("f.txt")
         assert after is not None
         self.assertNotEqual(after.id, before)
-        self.assertIsNone(await self.storage.get_node_by_id(before))
+        self.assertIsNone(await self.mirror.get_node_by_id(before))
 
     async def test_content_change_updates_same_node(self) -> None:
         path = self.write("f.txt", b"old")
@@ -133,7 +133,7 @@ class TestIdentity(ScanTestCase):
         assert after is not None
         self.assertEqual(after.id, before)
         self.assertEqual(after.hash, hashlib.md5(b"new content").hexdigest())
-        changes, _, _ = await self.storage.get_changes_since(cursor, 100)
+        changes, _, _ = await self.mirror.get_changes_since(cursor, 100)
         self.assertEqual([c[0] for c in changes], [before])
 
     async def test_deleted_entries_are_removed(self) -> None:
@@ -144,7 +144,7 @@ class TestIdentity(ScanTestCase):
         shutil.rmtree(self.source / "a")
         await self.scan()
 
-        self.assertIsNone(await self.storage.get_node_by_id(folder))
+        self.assertIsNone(await self.mirror.get_node_by_id(folder))
 
     async def test_hard_links_are_separate_nodes(self) -> None:
         self.write("a/f.txt", b"x")
@@ -170,15 +170,13 @@ class TestIdentity(ScanTestCase):
         cursor = await self.cursor()
 
         self.scanner = FilesystemScanner(
-            storage=self.storage,
+            mirror=self.mirror,
             store=self.store,
             node_sync=self.node_sync,
             paths=self.paths,
             blocking=Blocking(executor=self.io_pool),
         )
-        await ensure_mount_nodes(
-            ["docs"], storage=self.storage, node_sync=self.node_sync
-        )
+        await ensure_mount_nodes(["docs"], mirror=self.mirror, node_sync=self.node_sync)
         await self.scan()
 
         self.assertEqual(await self.node_id("a/f.txt"), before)
@@ -195,7 +193,7 @@ class TestCoverage(ScanTestCase):
         (self.source / "a").chmod(0o000)
         await self.scan()
 
-        self.assertIsNotNone(await self.storage.get_node_by_id(file))
+        self.assertIsNotNone(await self.mirror.get_node_by_id(file))
 
     async def test_missing_source_keeps_mirror(self) -> None:
         self.write("f.txt", b"x")
@@ -205,7 +203,7 @@ class TestCoverage(ScanTestCase):
         shutil.rmtree(self.source)
         await self.scan()
 
-        self.assertIsNotNone(await self.storage.get_node_by_id(file))
+        self.assertIsNotNone(await self.mirror.get_node_by_id(file))
 
     async def test_source_on_another_filesystem_keeps_mirror(self) -> None:
         self.write("f.txt", b"x")
@@ -220,7 +218,7 @@ class TestCoverage(ScanTestCase):
         ):
             await self.scan()
 
-        self.assertIsNotNone(await self.storage.get_node_by_id(file))
+        self.assertIsNotNone(await self.mirror.get_node_by_id(file))
 
     async def test_file_changing_while_hashed_keeps_previous_version(self) -> None:
         path = self.write("f.txt", b"old")

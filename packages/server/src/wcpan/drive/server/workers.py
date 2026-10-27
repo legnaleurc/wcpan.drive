@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from logging import getLogger
 
 from .lib.debounce import Debouncer
-from .services.storage import StorageService
+from .services.mirror import MirrorStore
 from .types import MetadataQueue, MetadataWorkItem, WriteQueue
 
 
@@ -50,13 +50,13 @@ class CheckpointScheduler:
     """Debounced WAL checkpoint after writes; call it from the write worker."""
 
     def __init__(
-        self, group: asyncio.TaskGroup, storage: StorageService, *, delay: float
+        self, group: asyncio.TaskGroup, mirror: MirrorStore, *, delay: float
     ) -> None:
         self._debouncer = Debouncer(group, delay)
-        self._storage = storage
+        self._mirror = mirror
 
     def __call__(self) -> None:
-        self._debouncer.start(self._storage.checkpoint)
+        self._debouncer.start(self._mirror.checkpoint)
 
     def cancel(self) -> None:
         """Drop a pending checkpoint, so shutdown need not wait for its delay."""
@@ -65,11 +65,11 @@ class CheckpointScheduler:
 
 def create_checkpoint_scheduler(
     group: asyncio.TaskGroup,
-    storage: StorageService,
+    mirror: MirrorStore,
     *,
     delay: float = _WAL_CHECKPOINT_DELAY,
 ) -> CheckpointScheduler:
-    return CheckpointScheduler(group, storage, delay=delay)
+    return CheckpointScheduler(group, mirror, delay=delay)
 
 
 # Let-it-crash on write failure by design.

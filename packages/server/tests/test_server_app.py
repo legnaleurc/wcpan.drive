@@ -13,7 +13,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.app import create_app
-from wcpan.drive.server.keys import NODE_OPERATIONS_KEY, STORAGE_KEY
+from wcpan.drive.server.keys import MIRROR_KEY, NODE_OPERATIONS_KEY
 from wcpan.drive.server.services.operations import (
     OperationInvalidError,
     OperationNotSupportedError,
@@ -97,9 +97,9 @@ class TestCreateApp(IsolatedAsyncioTestCase):
 
     async def test_core_creates_root_and_mount_nodes(self) -> None:
         await self.ready()
-        storage = self.app[STORAGE_KEY]
+        mirror = self.app[MIRROR_KEY]
         for node_id in ("_", "_docs", "_pics"):
-            self.assertIsNotNone(await storage.get_node_by_id(NodeId(node_id)))
+            self.assertIsNotNone(await mirror.get_node_by_id(NodeId(node_id)))
 
     async def test_operations_go_to_the_mount_backend(self) -> None:
         record = MagicMock()

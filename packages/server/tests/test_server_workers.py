@@ -213,32 +213,32 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
 
 class TestCheckpointScheduler(IsolatedAsyncioTestCase):
     async def test_calls_checkpoint_after_schedule(self):
-        storage = MagicMock()
-        storage.checkpoint = AsyncMock()
+        mirror = MagicMock()
+        mirror.checkpoint = AsyncMock()
 
         async with asyncio.TaskGroup() as group:
-            schedule = create_checkpoint_scheduler(group, storage, delay=0.01)
+            schedule = create_checkpoint_scheduler(group, mirror, delay=0.01)
             schedule()
             await asyncio.sleep(0.05)
 
-        storage.checkpoint.assert_awaited_once()
+        mirror.checkpoint.assert_awaited_once()
 
     async def test_does_not_checkpoint_without_schedule(self):
-        storage = MagicMock()
-        storage.checkpoint = AsyncMock()
+        mirror = MagicMock()
+        mirror.checkpoint = AsyncMock()
 
         async with asyncio.TaskGroup() as group:
-            create_checkpoint_scheduler(group, storage, delay=0.01)
+            create_checkpoint_scheduler(group, mirror, delay=0.01)
             await asyncio.sleep(0.03)
 
-        storage.checkpoint.assert_not_called()
+        mirror.checkpoint.assert_not_called()
 
     async def test_debounces_multiple_schedules(self):
-        storage = MagicMock()
-        storage.checkpoint = AsyncMock()
+        mirror = MagicMock()
+        mirror.checkpoint = AsyncMock()
 
         async with asyncio.TaskGroup() as group:
-            schedule = create_checkpoint_scheduler(group, storage, delay=0.03)
+            schedule = create_checkpoint_scheduler(group, mirror, delay=0.03)
             schedule()
             await asyncio.sleep(0.01)
             schedule()
@@ -246,28 +246,28 @@ class TestCheckpointScheduler(IsolatedAsyncioTestCase):
             schedule()
             await asyncio.sleep(0.05)
 
-        storage.checkpoint.assert_awaited_once()
+        mirror.checkpoint.assert_awaited_once()
 
     async def test_can_schedule_again_after_checkpoint_completes(self):
-        storage = MagicMock()
-        storage.checkpoint = AsyncMock()
+        mirror = MagicMock()
+        mirror.checkpoint = AsyncMock()
 
         async with asyncio.TaskGroup() as group:
-            schedule = create_checkpoint_scheduler(group, storage, delay=0.01)
+            schedule = create_checkpoint_scheduler(group, mirror, delay=0.01)
             schedule()
             await asyncio.sleep(0.03)
             schedule()
             await asyncio.sleep(0.03)
 
-        self.assertEqual(storage.checkpoint.await_count, 2)
+        self.assertEqual(mirror.checkpoint.await_count, 2)
 
     async def test_checkpoint_failure_propagates(self):
-        storage = MagicMock()
-        storage.checkpoint = AsyncMock(side_effect=RuntimeError("checkpoint failed"))
+        mirror = MagicMock()
+        mirror.checkpoint = AsyncMock(side_effect=RuntimeError("checkpoint failed"))
 
         with self.assertRaises(ExceptionGroup) as cm:
             async with asyncio.TaskGroup() as group:
-                schedule = create_checkpoint_scheduler(group, storage, delay=0)
+                schedule = create_checkpoint_scheduler(group, mirror, delay=0)
                 schedule()
                 await asyncio.sleep(0)
 

@@ -1,1 +1,1 @@
-"""Server-side service objects (storage, network, change pipeline, etc.)."""
+"""Server-side service objects (mirror, network, change pipeline, etc.)."""

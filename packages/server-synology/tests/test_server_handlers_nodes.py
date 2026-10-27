@@ -22,10 +22,10 @@ from wcpan.drive.server.handlers.nodes import (
 )
 from wcpan.drive.server.keys import (
     CHANGE_SERVICE_KEY,
+    MIRROR_KEY,
     NODE_OPERATIONS_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
-    STORAGE_KEY,
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
@@ -76,7 +76,7 @@ class _FakeOffMain:
         return fn(*args, **kwargs)
 
 
-class _FakeStorage:
+class _FakeMirror:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
         self._locators: dict[str, SynologyLocator] = {}
@@ -160,21 +160,21 @@ def _make_dir(
     )
 
 
-def _make_app(storage: _FakeStorage) -> web.Application:
+def _make_app(mirror: _FakeMirror) -> web.Application:
     app = web.Application()
     off_main = _FakeOffMain()
     wq = create_write_queue()
     tmp = tempfile.mkdtemp(prefix="wcpan_test_")
     store = UploadSessionStore(tmp_dir=Path(tmp))
-    storage._nodes.setdefault("p1", _make_dir("p1"))
-    storage._nodes.setdefault("new-parent", _make_dir("new-parent"))
-    storage._nodes.setdefault("bad", _make_dir("bad"))
+    mirror._nodes.setdefault("p1", _make_dir("p1"))
+    mirror._nodes.setdefault("new-parent", _make_dir("new-parent"))
+    mirror._nodes.setdefault("bad", _make_dir("bad"))
     syno_paths = SynologyPathService(
         registry=MountRegistry(mounts={}, root_ids={}),
-        store=storage,  # type: ignore[arg-type]
+        store=mirror,  # type: ignore[arg-type]
     )
     node_sync = NodeSyncService(
-        storage=storage,
+        mirror=mirror,
         write_queue=wq,
         off_main=off_main,
         mounts={},
@@ -184,7 +184,7 @@ def _make_app(storage: _FakeStorage) -> web.Application:
     drive_api.list_folder = AsyncMock(return_value=([], 0))
     drive_api.get_file = AsyncMock(return_value=None)
     app[READY_KEY] = True
-    app[STORAGE_KEY] = storage
+    app[MIRROR_KEY] = mirror
     app[OFF_MAIN_KEY] = off_main
     app[WRITE_QUEUE_KEY] = wq
     app[SYNOLOGY_PATH_KEY] = syno_paths
@@ -220,10 +220,10 @@ def _make_app(storage: _FakeStorage) -> web.Application:
 
 class TestGetNode(IsolatedAsyncioTestCase):
     async def test_returns_node(self):
-        storage = _FakeStorage()
+        mirror = _FakeMirror()
         node = _make_node()
-        storage._nodes["n1"] = node
-        app = _make_app(storage)
+        mirror._nodes["n1"] = node
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/nodes/n1")
             self.assertEqual(resp.status, 200)
@@ -232,8 +232,8 @@ class TestGetNode(IsolatedAsyncioTestCase):
         self.assertEqual(record.name, "test.txt")
 
     async def test_not_found(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/nodes/missing")
             self.assertEqual(resp.status, 404)
@@ -246,8 +246,8 @@ class TestGetNode(IsolatedAsyncioTestCase):
 
 class TestCreateNode(IsolatedAsyncioTestCase):
     async def test_success(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         with patch.object(
             app[SYNOLOGY_DRIVE_API_KEY],
             "create_folder",
@@ -267,8 +267,8 @@ class TestCreateNode(IsolatedAsyncioTestCase):
     async def test_name_is_normalized_to_nfc(self):
         raw_name = "てすとは\u3099"
         normalized_name = unicodedata.normalize("NFC", raw_name)
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         result = dict(_FAKE_SYNO_INFO, name=normalized_name)
         with patch.object(
             app[SYNOLOGY_DRIVE_API_KEY],
@@ -287,8 +287,8 @@ class TestCreateNode(IsolatedAsyncioTestCase):
         self.assertEqual(record.name, normalized_name)
 
     async def test_missing_name(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/v1/nodes",
@@ -297,8 +297,8 @@ class TestCreateNode(IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 400)
 
     async def test_missing_parent_id(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/v1/nodes",
@@ -314,9 +314,9 @@ class TestCreateNode(IsolatedAsyncioTestCase):
 
 class TestUpdateNode(IsolatedAsyncioTestCase):
     async def test_rename(self):
-        storage = _FakeStorage()
-        storage._nodes["n1"] = _make_node()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_node()
+        app = _make_app(mirror)
         rename_result = {
             "name": "renamed.txt",
             "created_time": 1000,
@@ -343,9 +343,9 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
     async def test_rename_name_is_normalized_to_nfc(self):
         raw_name = "かなひ\u309a.txt"
         normalized_name = unicodedata.normalize("NFC", raw_name)
-        storage = _FakeStorage()
-        storage._nodes["n1"] = _make_node()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_node()
+        app = _make_app(mirror)
         rename_result = {
             "name": normalized_name,
             "created_time": 1000,
@@ -371,9 +371,9 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
         self.assertEqual(record.name, normalized_name)
 
     async def test_move(self):
-        storage = _FakeStorage()
-        storage._nodes["n1"] = _make_node()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_node()
+        app = _make_app(mirror)
         app[SYNOLOGY_DRIVE_API_KEY].move = AsyncMock()
         app[SYNOLOGY_DRIVE_API_KEY].get_file = AsyncMock(return_value=None)
         app[SYNOLOGY_DRIVE_API_KEY].list_folder = AsyncMock(return_value=([], 0))
@@ -388,9 +388,9 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
         self.assertEqual(record.id, "n1")
 
     async def test_move_rebinds_locator_via_permanent_link(self):
-        storage = _FakeStorage()
-        storage._nodes["n1"] = _make_node()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_node()
+        app = _make_app(mirror)
         node_sync = app[CHANGE_SERVICE_KEY]
         with (
             patch.object(
@@ -435,12 +435,12 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
         wq = app[WRITE_QUEUE_KEY]
         while not wq.empty():
             await wq.get_nowait()()
-        self.assertEqual(await storage.get_locators(["n1"]), {"n1": "n2"})
+        self.assertEqual(await mirror.get_locators(["n1"]), {"n1": "n2"})
 
     async def test_rename_conflict(self):
-        storage = _FakeStorage()
-        storage._nodes["n1"] = _make_node()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_node()
+        app = _make_app(mirror)
         with patch.object(
             app[SYNOLOGY_DRIVE_API_KEY],
             "rename",
@@ -455,9 +455,9 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
                 self.assertEqual(resp.status, 409)
 
     async def test_virtual_node_forbidden(self):
-        storage = _FakeStorage()
-        storage._nodes["_root"] = _make_node(node_id="_root")
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["_root"] = _make_node(node_id="_root")
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch(
                 "/api/v1/nodes/_root",
@@ -466,8 +466,8 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 403)
 
     async def test_not_found(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch(
                 "/api/v1/nodes/missing",
@@ -476,9 +476,9 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 404)
 
     async def test_move_error(self):
-        storage = _FakeStorage()
-        storage._nodes["n1"] = _make_node()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_node()
+        app = _make_app(mirror)
         with patch.object(
             app[SYNOLOGY_DRIVE_API_KEY],
             "move",
@@ -500,9 +500,9 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
 
 class TestDeleteNode(IsolatedAsyncioTestCase):
     async def test_success(self):
-        storage = _FakeStorage()
-        storage._nodes["n1"] = _make_node()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_node()
+        app = _make_app(mirror)
         with patch.object(
             app[SYNOLOGY_DRIVE_API_KEY],
             "delete",
@@ -513,16 +513,16 @@ class TestDeleteNode(IsolatedAsyncioTestCase):
                 self.assertEqual(resp.status, 204)
 
     async def test_not_found(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.delete("/api/v1/nodes/missing")
             self.assertEqual(resp.status, 404)
 
     async def test_virtual_node_forbidden(self):
-        storage = _FakeStorage()
-        storage._nodes["_mount"] = _make_node(node_id="_mount")
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._nodes["_mount"] = _make_node(node_id="_mount")
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.delete("/api/v1/nodes/_mount")
             self.assertEqual(resp.status, 403)
@@ -535,8 +535,8 @@ class TestDeleteNode(IsolatedAsyncioTestCase):
 
 class TestUploadNode(IsolatedAsyncioTestCase):
     async def test_success(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         upload_info = {
             "file_id": "uploaded-1",
             "permanent_link": "uploaded-1",
@@ -569,8 +569,8 @@ class TestUploadNode(IsolatedAsyncioTestCase):
     async def test_upload_name_is_normalized_to_nfc(self):
         raw_name = "かなは\u3099.txt"
         normalized_name = unicodedata.normalize("NFC", raw_name)
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         upload_info = {
             "file_id": "uploaded-1",
             "permanent_link": "uploaded-1",
@@ -601,8 +601,8 @@ class TestUploadNode(IsolatedAsyncioTestCase):
         self.assertEqual(record.name, normalized_name)
 
     async def test_missing_name(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/v1/nodes/p1/upload",
@@ -611,8 +611,8 @@ class TestUploadNode(IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 400)
 
     async def test_upload_to_virtual_root_forbidden(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/v1/nodes/_/upload",
@@ -622,8 +622,8 @@ class TestUploadNode(IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 403)
 
     async def test_upload_error(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         with patch.object(
             app[SYNOLOGY_DRIVE_API_KEY],
             "upload",
@@ -639,8 +639,8 @@ class TestUploadNode(IsolatedAsyncioTestCase):
                 self.assertEqual(resp.status, 507)
 
     async def test_conflict_returns_409_without_hitting_synology_upload(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         app[SYNOLOGY_DRIVE_API_KEY].get_file = AsyncMock(
             return_value={
                 "file_id": "p1",
@@ -690,8 +690,8 @@ class TestUploadNode(IsolatedAsyncioTestCase):
 
 class TestDownloadNode(IsolatedAsyncioTestCase):
     async def test_not_found(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/nodes/missing/download")
             self.assertEqual(resp.status, 404)

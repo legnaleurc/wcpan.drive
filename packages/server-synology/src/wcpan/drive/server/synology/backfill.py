@@ -7,9 +7,9 @@ from pathlib import PurePosixPath
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, mount_id, mount_name
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.paths import VirtualPathService
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
-from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import ReadSeq, VirtualPath
 from wcpan.synology import SynologyClient
@@ -59,17 +59,17 @@ class BackfillService:
         self,
         *,
         drive_api: SynologyClient,
-        storage: StorageService,
+        mirror: MirrorStore,
         store: SynologyStore,
         syno_paths: SynologyPathService,
         node_sync: NodeSyncService,
     ) -> None:
         self._drive_api = drive_api
-        self._storage = storage
+        self._mirror = mirror
         self._store = store
         self._syno_paths = syno_paths
         self._node_sync = node_sync
-        self._virtual_paths = VirtualPathService(storage=storage)
+        self._virtual_paths = VirtualPathService(mirror=mirror)
 
     async def run_virtual_path(
         self, virtual_path: str, *, dry_run: bool = False
@@ -92,7 +92,7 @@ class BackfillService:
         """
         own = {mount_id(name) for name in self._syno_paths.mounts}
         if root_node_id == SERVER_ROOT_ID:
-            roots = await self._storage.get_children(root_node_id)
+            roots = await self._mirror.get_children(root_node_id)
             initial = [c.id for c in roots if c.id in own]
         elif await self._mount_of(root_node_id) in own:
             initial = [root_node_id]
@@ -105,7 +105,7 @@ class BackfillService:
 
         async with reconcile_session(
             set(initial),
-            storage=self._storage,
+            mirror=self._mirror,
             node_sync=self._node_sync,
             locate=partial(self._syno_paths.locate, self._drive_api),
         ) as session:
@@ -116,7 +116,7 @@ class BackfillService:
     async def _mount_of(self, node_id: NodeId) -> NodeId | None:
         if mount_name(node_id) is not None:
             return node_id
-        ancestors = await self._storage.get_ancestors(node_id)
+        ancestors = await self._mirror.get_ancestors(node_id)
         return ancestors[-1].parent_id if ancestors else None
 
     async def _reconcile_in_session(
@@ -143,7 +143,7 @@ class BackfillService:
                 session.preserve(parent_id)
                 return []
 
-            db_children = await self._storage.get_children(parent_id)
+            db_children = await self._mirror.get_children(parent_id)
             db_by_id: dict[NodeId, NodeRecord] = {r.id: r for r in db_children}
             db_locators = await self._store.get_locators(list(db_by_id))
             children: list[NodeId] = []

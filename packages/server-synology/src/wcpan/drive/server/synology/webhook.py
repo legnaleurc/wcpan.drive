@@ -8,7 +8,7 @@ from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.debounce import TaskIdDebouncer
 from wcpan.drive.server.lib.mounts import mount_name
-from wcpan.drive.server.services.storage import StorageService
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation, ReadSeq
 from wcpan.synology import (
@@ -57,14 +57,14 @@ class WebhookService:
         self,
         *,
         drive_api: SynologyClient,
-        storage: StorageService,
+        mirror: MirrorStore,
         store: SynologyStore,
         node_sync: NodeSyncService,
         syno_paths: SynologyPathService,
         mount_registry: MountRegistry,
     ) -> None:
         self._drive_api = drive_api
-        self._storage = storage
+        self._mirror = mirror
         self._store = store
         self._node_sync = node_sync
         self._syno_paths = syno_paths
@@ -105,7 +105,7 @@ class WebhookService:
             resolved = self._mount_registry.lookup_mount_virtual_id(parent_file_ref)
             if resolved is None:
                 if event_type in ("file_moved", "file_renamed"):
-                    existing = await self._storage.get_node_by_id(
+                    existing = await self._mirror.get_node_by_id(
                         NodeId(permanent_link_ref.permanent_link)
                     )
                     if existing is not None:
@@ -281,7 +281,7 @@ class WebhookService:
         if not plan.scan_moved_dir_subtree:
             return False
 
-        source_node = await self._storage.get_node_by_id(
+        source_node = await self._mirror.get_node_by_id(
             NodeId(plan.permanent_link_ref.permanent_link)
         )
         if source_node is None:
@@ -311,7 +311,7 @@ class WebhookService:
         if direct_mount is not None:
             return direct_mount in self._mount_registry.mounts
 
-        ancestors = await self._storage.get_ancestors(node.id)
+        ancestors = await self._mirror.get_ancestors(node.id)
         if not ancestors:
             return False
         top = ancestors[-1]
@@ -363,7 +363,7 @@ class WebhookService:
         file_ref: SynologyFileId,
         permanent_link_ref: SynologyPermanentLink,
     ) -> NodeId | None:
-        record = await self._storage.get_node_by_id(
+        record = await self._mirror.get_node_by_id(
             NodeId(permanent_link_ref.permanent_link)
         )
         if record is not None:

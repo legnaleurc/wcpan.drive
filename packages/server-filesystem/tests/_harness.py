@@ -20,9 +20,9 @@ from wcpan.drive.server.filesystem.scan import FilesystemScanner
 from wcpan.drive.server.filesystem.store import FILESYSTEM_SCHEMA, FilesystemStore
 from wcpan.drive.server.filesystem.watch import DirectoryWatcher
 from wcpan.drive.server.lib.mounts import mount_id
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.mounts import ensure_mount_nodes
 from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.workers import (
     create_metadata_queue,
@@ -49,16 +49,16 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         self.db_path = str(self.tmp / "mirror.sqlite")
         self.pool = ThreadPoolExecutor(2)
         self.io_pool = ThreadPoolExecutor(2)
-        self.storage = StorageService(
+        self.mirror = MirrorStore(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
             schemas={"fs": FILESYSTEM_SCHEMA},
         )
-        await self.storage.ensure_schema()
+        await self.mirror.ensure_schema()
         self.write_queue = create_write_queue()
         self.metadata_queue = create_metadata_queue()
         self.node_sync = NodeSyncService(
-            storage=self.storage,
+            mirror=self.mirror,
             write_queue=self.write_queue,
             off_main=OffMainService(pool=self.pool),
             mounts={},
@@ -72,14 +72,14 @@ class ScanTestCase(IsolatedAsyncioTestCase):
                 )
             ),
         ]
-        self.store = FilesystemStore(storage=self.storage)
-        self.paths = NodePaths(storage=self.storage, mounts={"docs": str(self.source)})
+        self.store = FilesystemStore(mirror=self.mirror)
+        self.paths = NodePaths(mirror=self.mirror, mounts={"docs": str(self.source)})
         blocking = Blocking(executor=self.io_pool)
         self.watcher = DirectoryWatcher.create() if self.watch else None
         if self.watcher is not None:
             self.watcher.start()
         self.scanner = FilesystemScanner(
-            storage=self.storage,
+            mirror=self.mirror,
             store=self.store,
             node_sync=self.node_sync,
             paths=self.paths,
@@ -88,7 +88,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         )
         self.operations = FilesystemOperations(
             scanner=self.scanner,
-            storage=self.storage,
+            mirror=self.mirror,
             node_sync=self.node_sync,
             paths=self.paths,
             store=self.store,
@@ -97,14 +97,12 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         )
         self.uploader = FilesystemUploader(
             scanner=self.scanner,
-            storage=self.storage,
+            mirror=self.mirror,
             node_sync=self.node_sync,
             blocking=blocking,
             read_only=self.read_only,
         )
-        await ensure_mount_nodes(
-            ["docs"], storage=self.storage, node_sync=self.node_sync
-        )
+        await ensure_mount_nodes(["docs"], mirror=self.mirror, node_sync=self.node_sync)
 
     async def asyncTearDown(self) -> None:
         if self.watcher is not None:
@@ -135,7 +133,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         parent = DOCS
         record: NodeRecord | None = None
         for name in relative.split("/"):
-            children = await self.storage.get_children(parent)
+            children = await self.mirror.get_children(parent)
             record = next((c for c in children if c.name == name), None)
             if record is None:
                 return None
@@ -148,4 +146,4 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         return record.id
 
     async def cursor(self) -> int:
-        return await self.storage.get_cursor()
+        return await self.mirror.get_cursor()

@@ -16,11 +16,11 @@ from ..types import (
     WriteQueue,
 )
 from .enricher import MediaEnrichmentError, MediaEnrichService
+from .mirror import MirrorStore
 from .off_main import OffMainService
 from .operations import Locate, LocateUndecidedError
 from .ordering import ObservationOrder
 from .paths import LocalPathService, MountSource
-from .storage import StorageService
 
 
 def _has_complete_media_dims(record: NodeRecord) -> bool:
@@ -40,9 +40,9 @@ _L = getLogger(__name__)
 class NodeSyncService:
     """Central gateway for persisting node changes.
 
-    Accepts infrastructure (storage, write_queue, off_main, mounts) and exposes
+    Accepts infrastructure (mirror, write_queue, off_main, mounts) and exposes
     a narrow interface of reusable primitives. Internally handles
-    media enrichment, write-queue enqueuing, and storage method dispatch so
+    media enrichment, write-queue enqueuing, and mirror method dispatch so
     callers are not aware of those concerns.
 
     Every write names the backend read it came from (``observe``). A write is
@@ -51,25 +51,25 @@ class NodeSyncService:
     observation or resurrect a node removed meanwhile.
 
     Each backend instance writes through its own view (``for_backend``), which
-    tags observations so storage binds their locators with that backend's
+    tags observations so the mirror binds their locators with that backend's
     schema. Views share the ordering, queues, and enrichment.
     """
 
     def __init__(
         self,
         *,
-        storage: StorageService,
+        mirror: MirrorStore,
         write_queue: WriteQueue,
         off_main: OffMainService,
         mounts: Mapping[str, MountSource],
         metadata_queue: MetadataQueue,
     ) -> None:
-        self._storage = storage
+        self._mirror = mirror
         self._write_queue = write_queue
         self._metadata_queue = metadata_queue
         self._order = ObservationOrder()
         self._backend: str | None = None
-        local_path_service = LocalPathService(storage=storage, mounts=mounts)
+        local_path_service = LocalPathService(mirror=mirror, mounts=mounts)
         self._enricher = MediaEnrichService(
             local_path_service=local_path_service,
             off_main=off_main,
@@ -132,7 +132,7 @@ class NodeSyncService:
                     for o, read in items
                     if self._order.admits(o.record.id, read)
                 ]
-                applied = await self._storage.apply_observations(
+                applied = await self._mirror.apply_observations(
                     [o for o, _ in admitted]
                 )
                 for o, read in admitted:
@@ -174,7 +174,7 @@ class NodeSyncService:
             try:
                 if not self._order.admits(node_id, read):
                     return
-                await self._storage.delete_subtree_and_emit_changes(node_id)
+                await self._mirror.delete_subtree_and_emit_changes(node_id)
                 self._order.record(node_id, read)
             finally:
                 self._order.release(read)
@@ -246,7 +246,7 @@ class NodeSyncService:
         async def mark() -> None:
             try:
                 if self._order.admits(node_id, read):
-                    await self._storage.mark_enrichment_pending(node_id, backend)
+                    await self._mirror.mark_enrichment_pending(node_id, backend)
             finally:
                 self._order.release(read)
 
@@ -272,7 +272,7 @@ class NodeSyncService:
         await self._write_queue.join()
 
         node_ids = [o.record.id for o in observations]
-        existing = await self._storage.get_nodes_by_ids(node_ids)
+        existing = await self._mirror.get_nodes_by_ids(node_ids)
 
         skip_batch: list[tuple[NodeObservation, ReadSeq]] = []
         for o in observations:
@@ -294,7 +294,7 @@ class NodeSyncService:
         longer has is removed, which also clears its entry.
         Used by: scanner, after the startup scan.
         """
-        for node_id in await self._storage.get_pending_enrichment(self._backend):
+        for node_id in await self._mirror.get_pending_enrichment(self._backend):
             async with self.observe() as read:
                 try:
                     current = await locate(node_id)

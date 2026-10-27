@@ -4,12 +4,12 @@ from collections.abc import Iterable
 
 from ..lib.mounts import SERVER_ROOT_ID, mount_id, structural_records
 from ..types import NodeObservation
-from .storage import StorageService
+from .mirror import MirrorStore
 from .sync import NodeSyncService
 
 
 async def ensure_mount_nodes(
-    mount_names: Iterable[str], *, storage: StorageService, node_sync: NodeSyncService
+    mount_names: Iterable[str], *, mirror: MirrorStore, node_sync: NodeSyncService
 ) -> None:
     """Create the root and any missing mount nodes, publishing each new one.
 
@@ -20,7 +20,7 @@ async def ensure_mount_nodes(
     names = list(mount_names)
     records = structural_records(names)
     ids = [SERVER_ROOT_ID] + [mount_id(name) for name in names]
-    existing = await storage.get_nodes_by_ids(ids)
+    existing = await mirror.get_nodes_by_ids(ids)
     missing = [r for r in records if r.id not in existing]
     if not missing:
         return

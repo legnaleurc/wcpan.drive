@@ -41,12 +41,12 @@ class TestFilesystemSettings(TestCase):
 
 
 def _context(mounts: dict[str, str]) -> BackendContext:
-    storage = MagicMock()
-    storage.register_schema = AsyncMock()
+    mirror = MagicMock()
+    mirror.register_schema = AsyncMock()
     return BackendContext(
         name="disk",
         mounts=mounts,
-        core=CoreServices(storage=storage, node_sync=MagicMock(), off_main=MagicMock()),
+        core=CoreServices(mirror=mirror, node_sync=MagicMock(), off_main=MagicMock()),
         routes=BackendRoutes(name="disk"),
         offline=True,
     )

@@ -22,9 +22,9 @@ from typing import Any, Protocol, cast
 from aiohttp import web
 from aiohttp.typedefs import Handler
 
+from .services.mirror import MirrorStore
 from .services.off_main import OffMainService
 from .services.operations import NodeOperations
-from .services.storage import StorageService
 from .services.sync import NodeSyncService
 from .services.upload import Uploader
 
@@ -44,7 +44,7 @@ class CoreServices:
     ``node_sync`` tags every observation with the instance name.
     """
 
-    storage: StorageService
+    mirror: MirrorStore
     node_sync: NodeSyncService
     off_main: OffMainService
 

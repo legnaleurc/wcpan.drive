@@ -1,4 +1,4 @@
-"""Replay-safety tests for storage change paging semantics."""
+"""Replay-safety tests for mirror change paging semantics."""
 
 import os
 import tempfile
@@ -7,9 +7,9 @@ from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID
-from wcpan.drive.server.services.storage import StorageService
 
 
 _NOW = 1_704_067_200
@@ -41,11 +41,11 @@ def _make_node(
     )
 
 
-def _make_storage(db_path: str, pool: ThreadPoolExecutor) -> StorageService:
-    return StorageService(db_path, off_main=OffMainService(pool=pool))
+def _make_mirror(db_path: str, pool: ThreadPoolExecutor) -> MirrorStore:
+    return MirrorStore(db_path, off_main=OffMainService(pool=pool))
 
 
-class TestStorageChangesPaging(IsolatedAsyncioTestCase):
+class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
     async def test_cursor_advances_by_raw_rows_even_with_same_node_repeats(
         self,
     ) -> None:
@@ -53,20 +53,20 @@ class TestStorageChangesPaging(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = _make_storage(db_path, pool)
-                await storage.ensure_schema()
+                mirror = _make_mirror(db_path, pool)
+                await mirror.ensure_schema()
                 n1 = _make_node("n1")
-                await storage.upsert_node_and_emit_change(n1)
-                await storage.upsert_node_and_emit_change(n1)
-                await storage.delete_subtree_and_emit_changes("n1")
+                await mirror.upsert_node_and_emit_change(n1)
+                await mirror.upsert_node_and_emit_change(n1)
+                await mirror.delete_subtree_and_emit_changes("n1")
 
-                page1, cursor1, has_more1 = await storage.get_changes_since(0, 2)
+                page1, cursor1, has_more1 = await mirror.get_changes_since(0, 2)
                 self.assertEqual(len(page1), 1)
                 self.assertTrue(has_more1)
                 self.assertEqual(page1[0][0], "n1")
                 self.assertFalse(page1[0][1])
 
-                page2, cursor2, has_more2 = await storage.get_changes_since(cursor1, 2)
+                page2, cursor2, has_more2 = await mirror.get_changes_since(cursor1, 2)
                 self.assertEqual(len(page2), 1)
                 self.assertFalse(has_more2)
                 self.assertEqual(page2[0][0], "n1")
@@ -80,14 +80,14 @@ class TestStorageChangesPaging(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = _make_storage(db_path, pool)
-                await storage.ensure_schema()
+                mirror = _make_mirror(db_path, pool)
+                await mirror.ensure_schema()
                 n1 = _make_node("n1")
-                await storage.upsert_node_and_emit_change(n1)
-                await storage.delete_subtree_and_emit_changes("n1")
-                await storage.upsert_node_and_emit_change(n1)
+                await mirror.upsert_node_and_emit_change(n1)
+                await mirror.delete_subtree_and_emit_changes("n1")
+                await mirror.upsert_node_and_emit_change(n1)
 
-                changes, _, _ = await storage.get_changes_since(0, 10)
+                changes, _, _ = await mirror.get_changes_since(0, 10)
                 self.assertEqual([c[0] for c in changes], ["n1"])
                 self.assertEqual([c[1] for c in changes], [False])
         finally:
@@ -98,13 +98,13 @@ class TestStorageChangesPaging(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = _make_storage(db_path, pool)
-                await storage.ensure_schema()
+                mirror = _make_mirror(db_path, pool)
+                await mirror.ensure_schema()
                 n1 = _make_node("n1")
-                await storage.upsert_node_and_emit_change(n1)
-                await storage.delete_subtree_and_emit_changes("n1")
+                await mirror.upsert_node_and_emit_change(n1)
+                await mirror.delete_subtree_and_emit_changes("n1")
 
-                changes, _, _ = await storage.get_changes_since(0, 10)
+                changes, _, _ = await mirror.get_changes_since(0, 10)
                 self.assertEqual(len(changes), 1)
                 self.assertEqual(changes[0][0], "n1")
                 self.assertTrue(changes[0][1])
@@ -116,14 +116,14 @@ class TestStorageChangesPaging(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = _make_storage(db_path, pool)
-                await storage.ensure_schema()
+                mirror = _make_mirror(db_path, pool)
+                await mirror.ensure_schema()
                 n1 = _make_node("n1")
-                await storage.upsert_node_and_emit_change(n1)
-                await storage.delete_subtree_and_emit_changes("n1")
-                await storage.upsert_node_and_emit_change(n1)
+                await mirror.upsert_node_and_emit_change(n1)
+                await mirror.delete_subtree_and_emit_changes("n1")
+                await mirror.upsert_node_and_emit_change(n1)
 
-                changes, _, _ = await storage.get_changes_since(0, 10)
+                changes, _, _ = await mirror.get_changes_since(0, 10)
                 self.assertEqual(len(changes), 1)
                 self.assertEqual(changes[0][0], "n1")
                 self.assertFalse(changes[0][1])
@@ -135,14 +135,14 @@ class TestStorageChangesPaging(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = _make_storage(db_path, pool)
-                await storage.ensure_schema()
+                mirror = _make_mirror(db_path, pool)
+                await mirror.ensure_schema()
                 parent = _make_node("parent", is_directory=True)
                 child = _make_node("child", parent_id="parent")
-                await storage.bulk_upsert_nodes([parent, child])
-                await storage.delete_subtree_and_emit_changes("parent")
+                await mirror.bulk_upsert_nodes([parent, child])
+                await mirror.delete_subtree_and_emit_changes("parent")
 
-                changes, _, _ = await storage.get_changes_since(0, 10)
+                changes, _, _ = await mirror.get_changes_since(0, 10)
                 removed_ids = {
                     node_id for node_id, is_removed, _ in changes if is_removed
                 }

@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from contextlib import closing
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.services.storage import StorageService, row_to_record
+from wcpan.drive.server.services.mirror import MirrorStore, row_to_record
 from wcpan.drive.server.types import BackendLocator
 from wcpan.synology import SynologyPath
 
@@ -69,26 +69,26 @@ SYNOLOGY_SCHEMA = SynologySchema()
 
 
 class SynologyStore:
-    """Queries over the Synology tables through the core storage connection."""
+    """Queries over the Synology tables through the core mirror connection."""
 
-    def __init__(self, *, storage: StorageService) -> None:
-        self._storage = storage
+    def __init__(self, *, mirror: MirrorStore) -> None:
+        self._mirror = mirror
 
     async def get_node_by_locator(self, locator: SynologyLocator) -> NodeRecord | None:
-        return await self._storage.read(_get_node_by_locator, locator)
+        return await self._mirror.read(_get_node_by_locator, locator)
 
     async def get_locators(
         self, node_ids: list[NodeId]
     ) -> dict[NodeId, SynologyLocator]:
-        return await self._storage.read(_get_locators, node_ids)
+        return await self._mirror.read(_get_locators, node_ids)
 
     async def get_mount_max_ids(
         self, mounts: dict[str, SynologyPath]
     ) -> dict[str, int]:
-        return await self._storage.read(_get_mount_max_ids, mounts)
+        return await self._mirror.read(_get_mount_max_ids, mounts)
 
     async def set_mount_state(self, name: str, path: str, value: int) -> None:
-        await self._storage.write(_set_mount_state, name, path, value)
+        await self._mirror.write(_set_mount_state, name, path, value)
 
 
 def _get_mount_max_ids(

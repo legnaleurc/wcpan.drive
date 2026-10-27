@@ -15,9 +15,9 @@ from wcpan.drive.server.handlers.changes import (
 )
 from wcpan.drive.server.keys import (
     CHANGE_SERVICE_KEY,
+    MIRROR_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
-    STORAGE_KEY,
     WRITE_QUEUE_KEY,
 )
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID
@@ -58,7 +58,7 @@ class _FakeOffMain:
         return fn(*args, **kwargs)
 
 
-class _FakeStorage:
+class _FakeMirror:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
         self._cursor: int = 42
@@ -84,16 +84,16 @@ class _FakeStorage:
         return {o.record.id for o in observations}
 
 
-def _make_app(storage: _FakeStorage) -> web.Application:
+def _make_app(mirror: _FakeMirror) -> web.Application:
     app = web.Application()
     off_main = _FakeOffMain()
     wq = create_write_queue()
     app[READY_KEY] = True
-    app[STORAGE_KEY] = storage
+    app[MIRROR_KEY] = mirror
     app[OFF_MAIN_KEY] = off_main
     app[WRITE_QUEUE_KEY] = wq
     app[CHANGE_SERVICE_KEY] = NodeSyncService(
-        storage=storage,
+        mirror=mirror,
         write_queue=wq,
         off_main=off_main,
         mounts={},
@@ -113,8 +113,8 @@ def _make_app(storage: _FakeStorage) -> web.Application:
 
 class TestGetCursor(IsolatedAsyncioTestCase):
     async def test_returns_cursor(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/cursor")
             self.assertEqual(resp.status, 200)
@@ -129,7 +129,7 @@ class TestGetCursor(IsolatedAsyncioTestCase):
 
 class TestGetRoot(IsolatedAsyncioTestCase):
     async def test_returns_root(self):
-        storage = _FakeStorage()
+        mirror = _FakeMirror()
         root = NodeRecord(
             id=SERVER_ROOT_ID,
             parent_id=None,
@@ -148,8 +148,8 @@ class TestGetRoot(IsolatedAsyncioTestCase):
             height=0,
             ms_duration=0,
         )
-        storage._nodes[SERVER_ROOT_ID] = root
-        app = _make_app(storage)
+        mirror._nodes[SERVER_ROOT_ID] = root
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/root")
             self.assertEqual(resp.status, 200)
@@ -157,8 +157,8 @@ class TestGetRoot(IsolatedAsyncioTestCase):
         self.assertEqual(record.id, SERVER_ROOT_ID)
 
     async def test_not_found(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/root")
             self.assertEqual(resp.status, 404)
@@ -171,10 +171,10 @@ class TestGetRoot(IsolatedAsyncioTestCase):
 
 class TestGetChanges(IsolatedAsyncioTestCase):
     async def test_returns_changes(self):
-        storage = _FakeStorage()
+        mirror = _FakeMirror()
         node = _make_node("n1")
-        storage._changes = [("n1", False, node)]
-        app = _make_app(storage)
+        mirror._changes = [("n1", False, node)]
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/changes", params={"cursor": "0"})
             self.assertEqual(resp.status, 200)
@@ -186,9 +186,9 @@ class TestGetChanges(IsolatedAsyncioTestCase):
         self.assertIn("node", body["changes"][0])
 
     async def test_returns_removals(self):
-        storage = _FakeStorage()
-        storage._changes = [("del1", True, None)]
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._changes = [("del1", True, None)]
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/changes", params={"cursor": "0"})
             self.assertEqual(resp.status, 200)
@@ -198,15 +198,15 @@ class TestGetChanges(IsolatedAsyncioTestCase):
         self.assertEqual(body["changes"][0]["node_id"], "del1")
 
     async def test_invalid_cursor_returns_400(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/changes", params={"cursor": "abc"})
             self.assertEqual(resp.status, 400)
 
     async def test_invalid_max_size_returns_400(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(
                 "/api/v1/changes", params={"cursor": "0", "max_size": "not-a-number"}
@@ -214,8 +214,8 @@ class TestGetChanges(IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 400)
 
     async def test_default_params(self):
-        storage = _FakeStorage()
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/v1/changes")
             self.assertEqual(resp.status, 200)
@@ -223,9 +223,9 @@ class TestGetChanges(IsolatedAsyncioTestCase):
         self.assertEqual(body["changes"], [])
 
     async def test_max_size_caps_at_1000(self):
-        storage = _FakeStorage()
-        storage._changes = [("n1", False, _make_node())] * 5
-        app = _make_app(storage)
+        mirror = _FakeMirror()
+        mirror._changes = [("n1", False, _make_node())] * 5
+        app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(
                 "/api/v1/changes", params={"cursor": "0", "max_size": "9999"}

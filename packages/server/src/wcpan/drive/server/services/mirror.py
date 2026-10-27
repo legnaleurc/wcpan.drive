@@ -790,7 +790,7 @@ def _resolve_path_to_id(dsn: str, segments: list[str]) -> NodeId | None:
     return NodeId(row["node_id"]) if row else None
 
 
-class StorageService:
+class MirrorStore:
     """Async SQLite access - delegates blocking calls to OffMainService."""
 
     def __init__(
@@ -924,13 +924,13 @@ class StorageService:
         )
 
 
-async def create_storage_service(
+async def create_mirror_store(
     database_url: str,
     *,
     off_main: OffMainService,
     schemas: Schemas | None = None,
-) -> StorageService:
-    storage = StorageService(database_url, off_main=off_main, schemas=schemas)
+) -> MirrorStore:
+    mirror = MirrorStore(database_url, off_main=off_main, schemas=schemas)
     _L.info("initializing database: %s", database_url)
-    await storage.ensure_schema()
-    return storage
+    await mirror.ensure_schema()
+    return mirror

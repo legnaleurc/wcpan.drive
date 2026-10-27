@@ -16,9 +16,9 @@ from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     mount_id,
 )
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import VirtualPathService
-from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology.backfill import BackfillService
 from wcpan.drive.server.synology.mounts import MountRegistry
@@ -38,7 +38,7 @@ _TS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp())
 
 
 async def _reconcile_with_worker(
-    storage: StorageService,
+    mirror: MirrorStore,
     mounts: dict[str, str],
     drive_api: object,
     root_id: str,
@@ -51,7 +51,7 @@ async def _reconcile_with_worker(
     with ThreadPoolExecutor(2) as pool:
         off_main = OffMainService(pool=pool)
         cs = NodeSyncService(
-            storage=storage,
+            mirror=mirror,
             write_queue=q,
             off_main=off_main,
             mounts={},
@@ -60,12 +60,12 @@ async def _reconcile_with_worker(
         syno_mounts = {k: SynologyPath(v) for k, v in mounts.items()}
         syno_paths = SynologyPathService(
             registry=MountRegistry(mounts=syno_mounts, root_ids={}),
-            store=SynologyStore(storage=storage),
+            store=SynologyStore(mirror=mirror),
         )
         bf = BackfillService(
             drive_api=drive_api,
-            storage=storage,
-            store=SynologyStore(storage=storage),
+            mirror=mirror,
+            store=SynologyStore(mirror=mirror),
             syno_paths=syno_paths,
             node_sync=cs,
         )
@@ -149,20 +149,20 @@ class TestVirtualPathToDirectoryNodeId(IsolatedAsyncioTestCase):
         fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         self.pool = ThreadPoolExecutor()
-        storage = StorageService(
+        mirror = MirrorStore(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
             schemas={"synology": SYNOLOGY_SCHEMA},
         )
-        await storage.ensure_schema()
-        await storage.bulk_upsert_nodes(
+        await mirror.ensure_schema()
+        await mirror.bulk_upsert_nodes(
             [
                 _node(SERVER_ROOT_ID, "", None, is_directory=True),
                 _node(mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True),
                 _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
             ]
         )
-        self.svc = VirtualPathService(storage=storage)
+        self.svc = VirtualPathService(mirror=mirror)
 
     async def asyncTearDown(self) -> None:
         self.pool.shutdown(wait=False, cancel_futures=True)
@@ -207,13 +207,13 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path,
                     off_main=OffMainService(pool=pool),
                     schemas={"synology": SYNOLOGY_SCHEMA},
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(
@@ -232,7 +232,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     return []
 
                 stats = await _reconcile_with_worker(
-                    storage,
+                    mirror,
                     mounts,
                     drive_api,
                     "dir-1",
@@ -243,7 +243,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                 self.assertEqual(stats["checked"], 1)
                 self.assertEqual(stats["updated"], 1)
                 self.assertEqual(stats["added"], 0)
-                updated = await storage.get_node_by_id("f-1")
+                updated = await mirror.get_node_by_id("f-1")
                 assert updated is not None
                 self.assertEqual(updated.size, 999)
                 self.assertEqual(updated.width, 42)
@@ -255,13 +255,13 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path,
                     off_main=OffMainService(pool=pool),
                     schemas={"synology": SYNOLOGY_SCHEMA},
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(
@@ -280,7 +280,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     return []
 
                 stats = await _reconcile_with_worker(
-                    storage,
+                    mirror,
                     mounts,
                     drive_api,
                     "dir-1",
@@ -289,7 +289,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                 )
 
                 self.assertEqual(stats["updated"], 1)
-                updated = await storage.get_node_by_id("f-1")
+                updated = await mirror.get_node_by_id("f-1")
                 assert updated is not None
                 self.assertEqual(updated.size, 0)
         finally:
@@ -300,13 +300,13 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path,
                     off_main=OffMainService(pool=pool),
                     schemas={"synology": SYNOLOGY_SCHEMA},
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(
@@ -324,7 +324,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     return []
 
                 stats = await _reconcile_with_worker(
-                    storage,
+                    mirror,
                     mounts,
                     drive_api,
                     "dir-1",
@@ -335,7 +335,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                 self.assertEqual(stats["checked"], 1)
                 self.assertEqual(stats["added"], 1)
                 self.assertEqual(stats["updated"], 0)
-                added = await storage.get_node_by_id("f-new")
+                added = await mirror.get_node_by_id("f-new")
                 self.assertIsNotNone(added)
                 assert added is not None
                 self.assertEqual(added.name, "new.txt")
@@ -348,13 +348,13 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path,
                     off_main=OffMainService(pool=pool),
                     schemas={"synology": SYNOLOGY_SCHEMA},
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(
@@ -373,7 +373,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     return []
 
                 stats = await _reconcile_with_worker(
-                    storage,
+                    mirror,
                     mounts,
                     drive_api,
                     SERVER_ROOT_ID,
@@ -392,13 +392,13 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path,
                     off_main=OffMainService(pool=pool),
                     schemas={"synology": SYNOLOGY_SCHEMA},
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(
@@ -416,7 +416,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     return []
 
                 stats = await _reconcile_with_worker(
-                    storage,
+                    mirror,
                     mounts,
                     drive_api,
                     "dir-1",
@@ -425,7 +425,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                 )
 
                 self.assertEqual(stats["added"], 1)
-                self.assertIsNone(await storage.get_node_by_id("f-new"))
+                self.assertIsNone(await mirror.get_node_by_id("f-new"))
         finally:
             os.unlink(db_path)
 
@@ -434,13 +434,13 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path,
                     off_main=OffMainService(pool=pool),
                     schemas={"synology": SYNOLOGY_SCHEMA},
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(
@@ -461,7 +461,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     return []
 
                 stats = await _reconcile_with_worker(
-                    storage,
+                    mirror,
                     mounts,
                     drive_api,
                     "dir-1",
@@ -471,8 +471,8 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
 
                 self.assertEqual(stats["checked"], 1)
                 self.assertEqual(stats["removed"], 1)
-                self.assertIsNotNone(await storage.get_node_by_id("f-1"))
-                self.assertIsNone(await storage.get_node_by_id("f-2"))
+                self.assertIsNotNone(await mirror.get_node_by_id("f-1"))
+                self.assertIsNone(await mirror.get_node_by_id("f-2"))
         finally:
             os.unlink(db_path)
 
@@ -481,13 +481,13 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
         os.close(fd)
         try:
             with ThreadPoolExecutor() as pool:
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path,
                     off_main=OffMainService(pool=pool),
                     schemas={"synology": SYNOLOGY_SCHEMA},
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(
@@ -507,7 +507,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     return []
 
                 stats = await _reconcile_with_worker(
-                    storage,
+                    mirror,
                     mounts,
                     drive_api,
                     "dir-1",
@@ -516,6 +516,6 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                 )
 
                 self.assertEqual(stats["removed"], 1)
-                self.assertIsNotNone(await storage.get_node_by_id("f-2"))
+                self.assertIsNotNone(await mirror.get_node_by_id("f-2"))
         finally:
             os.unlink(db_path)

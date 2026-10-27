@@ -123,11 +123,11 @@ class TestSynologyParentRef(IsolatedAsyncioTestCase):
 
     async def test_root_requires_stored_node(self):
         # given
-        storage = MagicMock()
-        storage.get_locators = AsyncMock(return_value={})
+        mirror = MagicMock()
+        mirror.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
-            store=storage,
+            store=mirror,
         )
         # when / then
         with self.assertRaises(ValueError):
@@ -135,11 +135,11 @@ class TestSynologyParentRef(IsolatedAsyncioTestCase):
 
     async def test_real_parent_requires_stored_node(self):
         # given
-        storage = MagicMock()
-        storage.get_locators = AsyncMock(return_value={})
+        mirror = MagicMock()
+        mirror.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
-            store=storage,
+            store=mirror,
         )
         # when / then
         with self.assertRaises(ValueError):
@@ -254,11 +254,11 @@ class TestFindChildByName(IsolatedAsyncioTestCase):
 
     async def test_non_mount_parent_calls_get_file_with_child_ref(self):
         # given
-        storage = MagicMock()
-        storage.get_locators = AsyncMock(return_value={"42": SynologyLocator("42")})
+        mirror = MagicMock()
+        mirror.get_locators = AsyncMock(return_value={"42": SynologyLocator("42")})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
-            store=storage,
+            store=mirror,
         )
         drive_api = MagicMock()
         expected = {"name": "img.jpg"}
@@ -276,11 +276,11 @@ class TestFindChildByName(IsolatedAsyncioTestCase):
 
     async def test_parent_not_found_raises(self):
         # given
-        storage = MagicMock()
-        storage.get_locators = AsyncMock(return_value={})
+        mirror = MagicMock()
+        mirror.get_locators = AsyncMock(return_value={})
         svc = SynologyPathService(
             registry=MountRegistry(mounts={}, root_ids={}),
-            store=storage,
+            store=mirror,
         )
         drive_api = MagicMock()
         drive_api.get_file = AsyncMock(return_value=None)

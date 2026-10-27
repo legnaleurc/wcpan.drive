@@ -6,11 +6,11 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from unittest import IsolatedAsyncioTestCase
 
-from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.services.storage import (
+from wcpan.drive.server.services.mirror import (
+    MirrorStore,
     SchemaVersionError,
-    StorageService,
 )
+from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.synology.convert import SynologyLocator
 from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.synology import SynologyPath
@@ -21,13 +21,13 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
         fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         self.pool = ThreadPoolExecutor()
-        self.storage = StorageService(
+        self.mirror = MirrorStore(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
             schemas={"synology": SYNOLOGY_SCHEMA},
         )
-        self.store = SynologyStore(storage=self.storage)
-        await self.storage.ensure_schema()
+        self.store = SynologyStore(mirror=self.mirror)
+        await self.mirror.ensure_schema()
 
     async def asyncTearDown(self) -> None:
         self.pool.shutdown(wait=False, cancel_futures=True)
@@ -80,13 +80,13 @@ class TestSetMountState(IsolatedAsyncioTestCase):
         fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         self.pool = ThreadPoolExecutor()
-        self.storage = StorageService(
+        self.mirror = MirrorStore(
             self.db_path,
             off_main=OffMainService(pool=self.pool),
             schemas={"synology": SYNOLOGY_SCHEMA},
         )
-        self.store = SynologyStore(storage=self.storage)
-        await self.storage.ensure_schema()
+        self.store = SynologyStore(mirror=self.mirror)
+        await self.mirror.ensure_schema()
 
     async def asyncTearDown(self) -> None:
         self.pool.shutdown(wait=False, cancel_futures=True)
@@ -136,7 +136,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         os.unlink(self.db_path)
 
     async def test_new_db_sets_user_version(self) -> None:
-        await StorageService(
+        await MirrorStore(
             self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         ).ensure_schema()
 
@@ -173,7 +173,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.commit()
         con.close()
 
-        await StorageService(
+        await MirrorStore(
             self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         ).ensure_schema()
 
@@ -222,13 +222,11 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.commit()
         con.close()
 
-        storage = StorageService(self.db_path, off_main=self.off_main)
-        await storage.ensure_schema()
+        mirror = MirrorStore(self.db_path, off_main=self.off_main)
+        await mirror.ensure_schema()
 
-        self.assertEqual(
-            await storage.get_pending_enrichment("synology"), ["pending-1"]
-        )
-        self.assertEqual(await storage.get_pending_enrichment("other"), [])
+        self.assertEqual(await mirror.get_pending_enrichment("synology"), ["pending-1"])
+        self.assertEqual(await mirror.get_pending_enrichment("other"), [])
 
     async def test_version_4_db_moves_locators_out_of_nodes(self) -> None:
         con = sqlite3.connect(self.db_path)
@@ -268,10 +266,10 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.commit()
         con.close()
 
-        storage = StorageService(
+        mirror = MirrorStore(
             self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         )
-        await storage.ensure_schema()
+        await mirror.ensure_schema()
 
         con = sqlite3.connect(self.db_path)
         version = con.execute("PRAGMA user_version").fetchone()[0]
@@ -282,26 +280,26 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
 
         # Public IDs and the change feed survive; virtual nodes get no locator.
         self.assertEqual(
-            await SynologyStore(storage=storage).get_locators(
+            await SynologyStore(mirror=mirror).get_locators(
                 ["_", "_docs", "perm-d", "perm-f"]
             ),
             {"perm-d": "101", "perm-f": "102"},
         )
-        found = await SynologyStore(storage=storage).get_node_by_locator(
+        found = await SynologyStore(mirror=mirror).get_node_by_locator(
             SynologyLocator("102")
         )
         assert found is not None
         self.assertEqual((found.id, found.parent_id), ("perm-f", "perm-d"))
-        changes, cursor, _ = await storage.get_changes_since(0, 100)
+        changes, cursor, _ = await mirror.get_changes_since(0, 100)
         self.assertEqual([c[0] for c in changes], ["_", "_docs", "perm-d", "perm-f"])
         self.assertEqual(cursor, 4)
 
     async def test_existing_db_with_matching_version_is_accepted(self) -> None:
-        storage = StorageService(
+        mirror = MirrorStore(
             self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         )
-        await storage.ensure_schema()
-        await storage.ensure_schema()
+        await mirror.ensure_schema()
+        await mirror.ensure_schema()
 
     async def test_existing_unversioned_db_is_rejected(self) -> None:
         con = sqlite3.connect(self.db_path)
@@ -310,7 +308,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.close()
 
         with self.assertRaises(SchemaVersionError):
-            await StorageService(
+            await MirrorStore(
                 self.db_path,
                 off_main=self.off_main,
                 schemas={"synology": SYNOLOGY_SCHEMA},
@@ -323,7 +321,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.close()
 
         with self.assertRaises(SchemaVersionError):
-            await StorageService(
+            await MirrorStore(
                 self.db_path,
                 off_main=self.off_main,
                 schemas={"synology": SYNOLOGY_SCHEMA},

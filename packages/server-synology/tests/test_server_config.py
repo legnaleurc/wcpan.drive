@@ -60,12 +60,12 @@ class TestSettings(unittest.TestCase):
 
 
 def _context(*, offline: bool, mounts: dict[str, str] | None = None) -> BackendContext:
-    storage = MagicMock()
-    storage.register_schema = AsyncMock()
+    mirror = MagicMock()
+    mirror.register_schema = AsyncMock()
     return BackendContext(
         name="nas",
         mounts=mounts or {"p": "/volume1/p"},
-        core=CoreServices(storage=storage, node_sync=MagicMock(), off_main=MagicMock()),
+        core=CoreServices(mirror=mirror, node_sync=MagicMock(), off_main=MagicMock()),
         routes=BackendRoutes(name="nas"),
         offline=offline,
     )
@@ -88,7 +88,7 @@ class TestFactory(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(backend.local_path("/volume2/a.jpg"))
                 with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
                     await backend.command(["--help"])
-        context.core.storage.register_schema.assert_awaited_once()
+        context.core.mirror.register_schema.assert_awaited_once()
 
     async def test_invalid_settings_are_rejected(self):
         with self.assertRaises(ValueError):

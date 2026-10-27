@@ -98,7 +98,7 @@ class _FakeOffMain:
         return fn(*args, **kwargs)
 
 
-class _FakeStorage:
+class _FakeMirror:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
         self._bulk: list[NodeRecord] = []
@@ -139,21 +139,21 @@ def _obs(record: NodeRecord) -> NodeObservation:
 
 
 def _make_service(
-    storage: _FakeStorage | None = None,
+    mirror: _FakeMirror | None = None,
     *,
     metadata_queue: asyncio.Queue | None = None,
-) -> tuple[NodeSyncService, _FakeStorage, asyncio.Queue]:
-    storage = storage or _FakeStorage()
+) -> tuple[NodeSyncService, _FakeMirror, asyncio.Queue]:
+    mirror = mirror or _FakeMirror()
     wq: asyncio.Queue = asyncio.Queue()
     off_main = _FakeOffMain()
     cs = NodeSyncService(
-        storage=storage,  # type: ignore[arg-type]
+        mirror=mirror,  # type: ignore[arg-type]
         write_queue=wq,
         off_main=off_main,  # type: ignore[arg-type]
         mounts={},
         metadata_queue=metadata_queue or asyncio.Queue(),
     )
-    return cs, storage, wq
+    return cs, mirror, wq
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def _make_service(
 
 class TestNodeSyncServiceInit(IsolatedAsyncioTestCase):
     async def test_enqueues_write(self):
-        cs, storage, wq = _make_service()
+        cs, mirror, wq = _make_service()
         record = _make_record()
         with patch(
             "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
@@ -177,10 +177,10 @@ class TestNodeSyncServiceInit(IsolatedAsyncioTestCase):
         # Execute the enqueued write
         op = wq.get_nowait()
         await op()
-        self.assertIn("n1", storage._nodes)
+        self.assertIn("n1", mirror._nodes)
 
     async def test_enrichment_failure_withholds_write_and_marks_pending(self):
-        cs, storage, wq = _make_service()
+        cs, mirror, wq = _make_service()
         record = _make_record(is_image=True)
         with patch(
             "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
@@ -192,31 +192,31 @@ class TestNodeSyncServiceInit(IsolatedAsyncioTestCase):
         self.assertIs(result, record)
         self.assertEqual(wq.qsize(), 1)
         await wq.get_nowait()()
-        self.assertEqual(storage._observations, [])
-        self.assertEqual(storage._pending, {record.id})
+        self.assertEqual(mirror._observations, [])
+        self.assertEqual(mirror._pending, {record.id})
 
 
 class TestNodeSyncServiceDelete(IsolatedAsyncioTestCase):
     async def test_enqueues_delete(self):
-        cs, storage, wq = _make_service()
-        storage._nodes["n1"] = _make_record()
+        cs, mirror, wq = _make_service()
+        mirror._nodes["n1"] = _make_record()
         async with cs.observe() as read:
             await cs.delete("n1", read=read)
         self.assertEqual(wq.qsize(), 1)
         op = wq.get_nowait()
         await op()
-        self.assertNotIn("n1", storage._nodes)
+        self.assertNotIn("n1", mirror._nodes)
 
 
 class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
     async def test_empty_is_noop(self):
-        cs, storage, wq = _make_service()
+        cs, mirror, wq = _make_service()
         async with cs.observe() as read:
             await cs.upsert_batch([], read=read)
         self.assertEqual(wq.qsize(), 0)
 
     async def test_enqueues_batch(self):
-        cs, storage, wq = _make_service()
+        cs, mirror, wq = _make_service()
         records = [_make_record("a"), _make_record("b")]
         with patch(
             "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
@@ -228,11 +228,11 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
         self.assertEqual(wq.qsize(), 1)
         op = wq.get_nowait()
         await op()
-        self.assertEqual(len(storage._observations), 1)
-        self.assertEqual(len(storage._observations[0]), 2)
+        self.assertEqual(len(mirror._observations), 1)
+        self.assertEqual(len(mirror._observations[0]), 2)
 
     async def test_enrichment_failure_filters_batch_record(self):
-        cs, storage, wq = _make_service()
+        cs, mirror, wq = _make_service()
         failed = _make_record("a", is_image=True)
         kept = _make_record("b")
 
@@ -251,11 +251,11 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
         self.assertEqual(wq.qsize(), 2)
         while not wq.empty():
             await wq.get_nowait()()
-        self.assertEqual(storage._observations, [[kept]])
-        self.assertEqual(storage._pending, {failed.id})
+        self.assertEqual(mirror._observations, [[kept]])
+        self.assertEqual(mirror._pending, {failed.id})
 
     async def test_enrichment_failure_skips_entire_batch_when_all_fail(self):
-        cs, storage, wq = _make_service()
+        cs, mirror, wq = _make_service()
         record = _make_record("a", is_image=True)
         with patch(
             "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
@@ -266,8 +266,8 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
                 await cs.upsert_batch([_obs(record)], read=read)
         self.assertEqual(wq.qsize(), 1)
         await wq.get_nowait()()
-        self.assertEqual(storage._observations, [])
-        self.assertEqual(storage._pending, {record.id})
+        self.assertEqual(mirror._observations, [])
+        self.assertEqual(mirror._pending, {record.id})
 
 
 class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
@@ -279,7 +279,7 @@ class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
 
     async def test_incomplete_media_routes_to_metadata_queue(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, storage, wq = _make_service(metadata_queue=mq)
+        cs, mirror, wq = _make_service(metadata_queue=mq)
         records = [_make_record("new-file", is_image=True)]
         async with cs.observe() as read:
             await cs.upsert_file_batch([_obs(r) for r in records], read=read)
@@ -291,12 +291,12 @@ class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
 
     async def test_complete_media_skips_metadata_queue(self):
         mq: asyncio.Queue = asyncio.Queue()
-        storage = _FakeStorage()
+        mirror = _FakeMirror()
         # Pre-populate DB with record that has complete dims
-        storage._nodes["img1"] = _make_record(
+        mirror._nodes["img1"] = _make_record(
             "img1", is_image=True, width=100, height=200
         )
-        cs, storage, wq = _make_service(storage, metadata_queue=mq)
+        cs, mirror, wq = _make_service(mirror, metadata_queue=mq)
         records = [_make_record("img1", is_image=True)]
         async with cs.observe() as read:
             await cs.upsert_file_batch([_obs(r) for r in records], read=read)
@@ -315,7 +315,7 @@ class TestNodeSyncServiceReconcile(IsolatedAsyncioTestCase):
         self.assertEqual(mq.qsize(), 1)
 
     async def test_reconcile_update_without_local_paths(self):
-        cs, storage, wq = _make_service()
+        cs, mirror, wq = _make_service()
         existing = _make_record("n1")
         from_api = _make_record("n1")
         async with cs.observe() as read:
@@ -324,7 +324,7 @@ class TestNodeSyncServiceReconcile(IsolatedAsyncioTestCase):
 
     async def test_reconcile_update_with_complete_dims(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, storage, wq = _make_service(metadata_queue=mq)
+        cs, mirror, wq = _make_service(metadata_queue=mq)
         existing = _make_record("n1", is_image=True, width=100, height=200)
         from_api = _make_record("n1", is_image=True)
         async with cs.observe() as read:
@@ -335,7 +335,7 @@ class TestNodeSyncServiceReconcile(IsolatedAsyncioTestCase):
 
     async def test_reconcile_update_without_complete_dims(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, storage, wq = _make_service(metadata_queue=mq)
+        cs, mirror, wq = _make_service(metadata_queue=mq)
         existing = _make_record("n1", is_image=True, width=0, height=0)
         from_api = _make_record("n1", is_image=True)
         async with cs.observe() as read:
@@ -378,7 +378,7 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
 
     async def test_process_metadata_item(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, storage, wq = _make_service(metadata_queue=mq)
+        cs, mirror, wq = _make_service(metadata_queue=mq)
         record = _make_record()
         async with cs.observe() as read:
             await cs.reconcile_insert(_obs(record), read=read)
@@ -392,11 +392,11 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
         self.assertEqual(wq.qsize(), 1)
         op = wq.get_nowait()
         await op()
-        self.assertIn("n1", storage._nodes)
+        self.assertIn("n1", mirror._nodes)
 
     async def test_process_metadata_item_withholds_enrichment_failure(self):
         mq: asyncio.Queue = asyncio.Queue()
-        cs, storage, wq = _make_service(metadata_queue=mq)
+        cs, mirror, wq = _make_service(metadata_queue=mq)
         record = _make_record(is_image=True)
         async with cs.observe() as read:
             await cs.reconcile_insert(_obs(record), read=read)
@@ -409,5 +409,5 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
             await cs.process_metadata_item(item)
         self.assertEqual(wq.qsize(), 1)
         await wq.get_nowait()()
-        self.assertEqual(storage._observations, [])
-        self.assertEqual(storage._pending, {record.id})
+        self.assertEqual(mirror._observations, [])
+        self.assertEqual(mirror._pending, {record.id})

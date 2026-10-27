@@ -16,13 +16,13 @@ from typing import Any, BinaryIO
 
 from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.operations import (
     OperationConflictError,
     OperationInvalidError,
     OperationNotSupportedError,
     OperationUnavailableError,
 )
-from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     UploadConflictError,
@@ -85,13 +85,13 @@ class _Writes:
         self,
         *,
         scanner: FilesystemScanner,
-        storage: StorageService,
+        mirror: MirrorStore,
         node_sync: NodeSyncService,
         blocking: Blocking,
         read_only: bool,
     ) -> None:
         self._scanner = scanner
-        self._storage = storage
+        self._mirror = mirror
         self._node_sync = node_sync
         self._blocking = blocking
         self._read_only = read_only
@@ -121,7 +121,7 @@ class _Writes:
         """The node an existing entry maps to, reading its folder first."""
         await self._scanner.scan_folders([parent_id])
         await self._node_sync.wait_enrichment_drained()
-        children = await self._storage.get_children(parent_id)
+        children = await self._mirror.get_children(parent_id)
         return next((c for c in children if c.name == name), None)
 
     async def _record(self, observation: NodeObservation, read: ReadSeq) -> NodeRecord:
@@ -136,7 +136,7 @@ class FilesystemOperations(_Writes):
         self,
         *,
         scanner: FilesystemScanner,
-        storage: StorageService,
+        mirror: MirrorStore,
         node_sync: NodeSyncService,
         paths: NodePaths,
         store: FilesystemStore,
@@ -145,7 +145,7 @@ class FilesystemOperations(_Writes):
     ) -> None:
         super().__init__(
             scanner=scanner,
-            storage=storage,
+            mirror=mirror,
             node_sync=node_sync,
             blocking=blocking,
             read_only=read_only,

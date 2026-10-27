@@ -16,8 +16,8 @@ from wcpan.drive.server.lib.mounts import (
     mount_id,
     mount_name,
 )
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology.convert import SynologyLocator
 from wcpan.drive.server.synology.mounts import MountRegistry
@@ -138,11 +138,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -161,7 +161,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -176,13 +176,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         self._push_incremental_scan_mocks(stack, by_path=by_path)
                         svc = StartupScanService(
                             drive_api=MagicMock(),
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )
@@ -197,12 +197,12 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
-                row = await storage.get_node_by_id("x1")
+                row = await mirror.get_node_by_id("x1")
                 self.assertIsNotNone(row)
                 assert row is not None
                 self.assertEqual(row.parent_id, mount_id("b"))
 
-                changes, _, _ = await storage.get_changes_since(0, max_size=500)
+                changes, _, _ = await mirror.get_changes_since(0, max_size=500)
                 x1_removes = [c for c in changes if c[0] == "x1" and c[1] is True]
                 self.assertEqual(x1_removes, [])
         finally:
@@ -214,11 +214,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -249,7 +249,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -268,13 +268,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         )
                         svc = StartupScanService(
                             drive_api=drive_api,
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )
@@ -289,8 +289,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
-                self.assertIsNotNone(await storage.get_node_by_id("dirF"))
-                self.assertIsNotNone(await storage.get_node_by_id("childC"))
+                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
             os.unlink(db_path)
 
@@ -301,11 +301,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -327,7 +327,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -344,13 +344,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         )
                         svc = StartupScanService(
                             drive_api=MagicMock(),
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )
@@ -365,8 +365,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
-                self.assertIsNotNone(await storage.get_node_by_id("dirF"))
-                self.assertIsNotNone(await storage.get_node_by_id("childC"))
+                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
             os.unlink(db_path)
 
@@ -377,11 +377,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -403,7 +403,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -420,13 +420,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         )
                         svc = StartupScanService(
                             drive_api=MagicMock(),
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )
@@ -441,8 +441,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
-                self.assertIsNotNone(await storage.get_node_by_id("dirF"))
-                self.assertIsNotNone(await storage.get_node_by_id("childC"))
+                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
             os.unlink(db_path)
 
@@ -454,11 +454,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -481,7 +481,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -498,13 +498,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         )
                         svc = StartupScanService(
                             drive_api=MagicMock(),
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )
@@ -519,8 +519,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
-                self.assertIsNotNone(await storage.get_node_by_id("dirF"))
-                self.assertIsNotNone(await storage.get_node_by_id("childC"))
+                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
             os.unlink(db_path)
 
@@ -530,11 +530,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -560,7 +560,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -580,13 +580,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         )
                         svc = StartupScanService(
                             drive_api=MagicMock(),
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )
@@ -601,8 +601,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
-                self.assertIsNotNone(await storage.get_node_by_id("dirF"))
-                self.assertIsNotNone(await storage.get_node_by_id("childC"))
+                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
             os.unlink(db_path)
 
@@ -613,11 +613,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -631,7 +631,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         _node("child2", "b.txt", "perm:dirF"),
                     ]
                 )
-                await storage.apply_observations(
+                await mirror.apply_observations(
                     [
                         NodeObservation(
                             record=_node(
@@ -673,7 +673,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -692,13 +692,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         )
                         svc = StartupScanService(
                             drive_api=drive_api,
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )
@@ -713,8 +713,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
-                self.assertIsNotNone(await storage.get_node_by_id("child1"))
-                self.assertIsNone(await storage.get_node_by_id("child2"))
+                self.assertIsNotNone(await mirror.get_node_by_id("child1"))
+                self.assertIsNone(await mirror.get_node_by_id("child2"))
         finally:
             os.unlink(db_path)
 
@@ -725,11 +725,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -745,7 +745,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -764,13 +764,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         )
                         svc = StartupScanService(
                             drive_api=MagicMock(),
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )
@@ -798,11 +798,11 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
         try:
             with ThreadPoolExecutor(2) as pool:
                 off_main = OffMainService(pool=pool)
-                storage = StorageService(
+                mirror = MirrorStore(
                     db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
                 )
-                await storage.ensure_schema()
-                await storage.bulk_upsert_nodes(
+                await mirror.ensure_schema()
+                await mirror.bulk_upsert_nodes(
                     [
                         _node(SERVER_ROOT_ID, "", None, is_directory=True),
                         _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
@@ -841,7 +841,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
-                    storage=storage,
+                    mirror=mirror,
                     write_queue=q,
                     off_main=off_main,
                     mounts={},
@@ -860,13 +860,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         )
                         svc = StartupScanService(
                             drive_api=drive_api,
-                            storage=storage,
-                            store=SynologyStore(storage=storage),
+                            mirror=mirror,
+                            store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
                                     mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
                                 ),
-                                store=SynologyStore(storage=storage),
+                                store=SynologyStore(mirror=mirror),
                             ),
                             node_sync=cs,
                         )

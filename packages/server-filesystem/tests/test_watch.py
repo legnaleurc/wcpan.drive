@@ -65,7 +65,7 @@ class TestFollowChanges(_WatchTestCase):
         self.write("top.txt", b"top")
         await self.follow()
         self.assertIsNotNone(await self.node("top.txt"))
-        self.assertIsNotNone(await self.storage.get_node_by_id(deep))
+        self.assertIsNotNone(await self.mirror.get_node_by_id(deep))
 
     async def test_rename_keeps_node_id(self) -> None:
         before = await self.node_id("a/inner/deep.txt")
@@ -95,7 +95,7 @@ class TestFollowChanges(_WatchTestCase):
         folder = await self.node_id("a/inner")
         shutil.rmtree(self.source / "a/inner")
         await self.follow()
-        self.assertIsNone(await self.storage.get_node_by_id(folder))
+        self.assertIsNone(await self.mirror.get_node_by_id(folder))
 
     async def test_replaced_folder_gets_new_node(self) -> None:
         old_folder = await self.node_id("a/inner")
@@ -104,8 +104,8 @@ class TestFollowChanges(_WatchTestCase):
         self.write("a/inner/other.txt", b"other")
         await self.follow()
 
-        self.assertIsNone(await self.storage.get_node_by_id(old_folder))
-        self.assertIsNone(await self.storage.get_node_by_id(old_file))
+        self.assertIsNone(await self.mirror.get_node_by_id(old_folder))
+        self.assertIsNone(await self.mirror.get_node_by_id(old_file))
         self.assertNotEqual(await self.node_id("a/inner"), old_folder)
         self.assertIsNotNone(await self.node("a/inner/other.txt"))
         self.assertIsNone(await self.node("a/inner/deep.txt"))
@@ -128,7 +128,7 @@ class TestRuntime(_WatchTestCase):
             watcher=self.watcher,
             rescan_interval=3600,
             core=CoreServices(
-                storage=self.storage, node_sync=self.node_sync, off_main=MagicMock()
+                mirror=self.mirror, node_sync=self.node_sync, off_main=MagicMock()
             ),
             settle_delay=0.05,
         )

@@ -9,7 +9,7 @@ from functools import partial
 class Blocking:
     """Bounded executor for directory listings, hashing, and file reads.
 
-    Kept apart from the storage pool so bulk reads cannot starve database work.
+    Kept apart from the mirror pool so bulk reads cannot starve database work.
     A running call cannot be cancelled; shutdown abandons queued calls only.
     """
 

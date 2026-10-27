@@ -6,7 +6,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from wcpan.drive.protocol.types import NodeId
 
-from ..keys import NODE_OPERATIONS_KEY, STORAGE_KEY, UPLOAD_SERVICE_KEY
+from ..keys import MIRROR_KEY, NODE_OPERATIONS_KEY, UPLOAD_SERVICE_KEY
 from ..lib.names import normalize_name
 from ..services.operations import OperationConflictError, OperationUnavailableError
 from ..services.paths import SERVER_ROOT_ID, is_virtual
@@ -31,9 +31,9 @@ def _conflict_response(e: OperationConflictError) -> web.Response:
 
 @require_ready
 async def get_node(request: web.Request) -> web.Response:
-    storage = request.app[STORAGE_KEY]
+    mirror = request.app[MIRROR_KEY]
     node_id = NodeId(request.match_info["id"])
-    record = await storage.get_node_by_id(node_id)
+    record = await mirror.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
     return web.json_response(record_to_response(record))
@@ -41,9 +41,9 @@ async def get_node(request: web.Request) -> web.Response:
 
 @require_ready
 async def download_node(request: web.Request) -> web.StreamResponse:
-    storage = request.app[STORAGE_KEY]
+    mirror = request.app[MIRROR_KEY]
     node_id = NodeId(request.match_info["id"])
-    record = await storage.get_node_by_id(node_id)
+    record = await mirror.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
 
@@ -96,14 +96,14 @@ async def create_node(request: web.Request) -> web.Response:
 @require_ready
 async def update_node(request: web.Request) -> web.Response:
     """Rename and/or move a node."""
-    storage = request.app[STORAGE_KEY]
+    mirror = request.app[MIRROR_KEY]
     operations = request.app[NODE_OPERATIONS_KEY]
     node_id = NodeId(request.match_info["id"])
 
     if is_virtual(node_id):
         raise web.HTTPForbidden(reason="Cannot modify virtual nodes")
 
-    record = await storage.get_node_by_id(node_id)
+    record = await mirror.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
 
@@ -128,14 +128,14 @@ async def update_node(request: web.Request) -> web.Response:
 
 @require_ready
 async def delete_node(request: web.Request) -> web.Response:
-    storage = request.app[STORAGE_KEY]
+    mirror = request.app[MIRROR_KEY]
     operations = request.app[NODE_OPERATIONS_KEY]
     node_id = NodeId(request.match_info["id"])
 
     if is_virtual(node_id):
         raise web.HTTPForbidden(reason="Cannot delete virtual nodes")
 
-    record = await storage.get_node_by_id(node_id)
+    record = await mirror.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
 

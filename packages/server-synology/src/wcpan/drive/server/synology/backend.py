@@ -53,7 +53,7 @@ async def create_backend(
     Serving connects here; offline, ``command`` connects once its arguments parse.
     """
     config = parse_synology_config(settings)
-    await context.core.storage.register_schema(context.name, SYNOLOGY_SCHEMA)
+    await context.core.mirror.register_schema(context.name, SYNOLOGY_SCHEMA)
     backend = SynologyBackend(context=context, config=config)
     if context.offline:
         yield backend
@@ -115,7 +115,7 @@ class SynologyBackend:
             async with self.connect() as c:
                 service = BackfillService(
                     drive_api=c.drive_api,
-                    storage=self._context.core.storage,
+                    mirror=self._context.core.mirror,
                     store=c.store,
                     syno_paths=c.syno_paths,
                     node_sync=self._context.core.node_sync,
@@ -129,7 +129,7 @@ class SynologyBackend:
     async def connect(self) -> AsyncGenerator[_Connection, None]:
         """Log in and resolve the mount roots."""
         async with create_synology_client(self._config) as drive_api:
-            store = SynologyStore(storage=self._context.core.storage)
+            store = SynologyStore(mirror=self._context.core.mirror)
             registry = await create_mount_registry(self._mounts, drive_api=drive_api)
             yield _Connection(
                 drive_api=drive_api,
@@ -165,14 +165,14 @@ class SynologyBackend:
                 ),
                 startup_scan=StartupScanService(
                     drive_api=c.drive_api,
-                    storage=core.storage,
+                    mirror=core.mirror,
                     store=c.store,
                     syno_paths=c.syno_paths,
                     node_sync=core.node_sync,
                 ),
                 webhook_service=WebhookService(
                     drive_api=c.drive_api,
-                    storage=core.storage,
+                    mirror=core.mirror,
                     store=c.store,
                     node_sync=core.node_sync,
                     syno_paths=c.syno_paths,

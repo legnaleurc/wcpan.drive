@@ -27,9 +27,9 @@ from wcpan.drive.protocol.lib import guess_mime_type
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.mounts import mount_id, mount_name
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.operations import LocateUndecidedError
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
-from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation
 
@@ -125,14 +125,14 @@ class FilesystemScanner:
     def __init__(
         self,
         *,
-        storage: StorageService,
+        mirror: MirrorStore,
         store: FilesystemStore,
         node_sync: NodeSyncService,
         paths: NodePaths,
         blocking: Blocking,
         watcher: DirectoryWatcher | None = None,
     ) -> None:
-        self._storage = storage
+        self._mirror = mirror
         self._store = store
         self._node_sync = node_sync
         self._paths = paths
@@ -170,7 +170,7 @@ class FilesystemScanner:
             ):
                 present.add(folder_id)
                 continue
-            record = await self._storage.get_node_by_id(folder_id)
+            record = await self._mirror.get_node_by_id(folder_id)
             if record is not None and record.parent_id is not None:
                 pending.append(record.parent_id)
         return present
@@ -195,7 +195,7 @@ class FilesystemScanner:
         async with self._pass_lock:
             async with reconcile_session(
                 scope,
-                storage=self._storage,
+                mirror=self._mirror,
                 node_sync=self._node_sync,
                 locate=self.locate,
             ) as session:
@@ -227,7 +227,7 @@ class FilesystemScanner:
     async def current(self, node_id: NodeId) -> tuple[Entry, Previous] | None:
         """*node_id* at its mirrored path, if that path still names the same object."""
         path = await self._paths.path_of(node_id)
-        record = await self._storage.get_node_by_id(node_id)
+        record = await self._mirror.get_node_by_id(node_id)
         state = (await self._store.get_entries([node_id])).get(node_id)
         if path is None or record is None or state is None:
             return None
@@ -280,7 +280,7 @@ class FilesystemScanner:
     async def locate(self, node_id: NodeId) -> NodeObservation | None:
         """Current observation of *node_id* at its mirrored path, if still there."""
         path = await self._paths.path_of(node_id)
-        record = await self._storage.get_node_by_id(node_id)
+        record = await self._mirror.get_node_by_id(node_id)
         state = (await self._store.get_entries([node_id])).get(node_id)
         if path is None or record is None or record.parent_id is None or state is None:
             return None
@@ -358,7 +358,7 @@ class FilesystemScanner:
                 session.preserve(folder_id)
                 return []
 
-            existing = await self._storage.get_children(folder_id)
+            existing = await self._mirror.get_children(folder_id)
             states = await self._store.get_entries([r.id for r in existing])
             by_name = {r.name: r for r in existing}
 
@@ -416,7 +416,7 @@ class FilesystemScanner:
 
     async def _moved_from(self, candidate: NodeId, entry: Entry) -> Previous | None:
         """*candidate*'s last observation, if its old path no longer names *entry*."""
-        record = await self._storage.get_node_by_id(candidate)
+        record = await self._mirror.get_node_by_id(candidate)
         state = (await self._store.get_entries([candidate])).get(candidate)
         if record is None or state is None or record.is_directory != entry.is_directory:
             return None

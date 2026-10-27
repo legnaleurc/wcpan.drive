@@ -13,7 +13,7 @@ from contextlib import closing
 from dataclasses import dataclass
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server.services.storage import StorageService
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.types import BackendLocator
 
 from .handles import FileIdentity
@@ -97,23 +97,23 @@ FILESYSTEM_SCHEMA = FilesystemSchema()
 
 
 class FilesystemStore:
-    """Queries over the filesystem tables through the core storage connection."""
+    """Queries over the filesystem tables through the core mirror connection."""
 
-    def __init__(self, *, storage: StorageService) -> None:
-        self._storage = storage
+    def __init__(self, *, mirror: MirrorStore) -> None:
+        self._mirror = mirror
 
     async def get_entries(self, node_ids: list[NodeId]) -> dict[NodeId, EntryState]:
-        return await self._storage.read(_get_entries, node_ids)
+        return await self._mirror.read(_get_entries, node_ids)
 
     async def nodes_by_identity(self, identity: FileIdentity) -> list[NodeId]:
-        return await self._storage.read(_nodes_by_identity, identity)
+        return await self._mirror.read(_nodes_by_identity, identity)
 
     async def get_mount_fsid(self, name: str, path: str) -> str | None:
         """The filesystem *name* was last scanned on, unless its path changed."""
-        return await self._storage.read(_get_mount_fsid, name, path)
+        return await self._mirror.read(_get_mount_fsid, name, path)
 
     async def set_mount_fsid(self, name: str, path: str, fsid: str) -> None:
-        await self._storage.write(_set_mount_fsid, name, path, fsid)
+        await self._mirror.write(_set_mount_fsid, name, path, fsid)
 
 
 def _get_entries(

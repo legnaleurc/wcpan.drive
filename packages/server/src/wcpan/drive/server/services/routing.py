@@ -6,12 +6,12 @@ from contextlib import AbstractAsyncContextManager
 from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 
 from ..lib.mounts import SERVER_ROOT_ID, mount_name
+from .mirror import MirrorStore
 from .operations import (
     NodeOperations,
     OperationNotSupportedError,
     OperationUnavailableError,
 )
-from .storage import StorageService
 from .upload import Uploader
 
 
@@ -21,12 +21,12 @@ class BackendRouter:
     def __init__(
         self,
         *,
-        storage: StorageService,
+        mirror: MirrorStore,
         mount_backends: Mapping[str, str],
         operations: Mapping[str, NodeOperations],
         uploaders: Mapping[str, Uploader],
     ) -> None:
-        self._storage = storage
+        self._mirror = mirror
         self._mount_backends = mount_backends
         self._operations = operations
         self._uploaders = uploaders
@@ -37,7 +37,7 @@ class BackendRouter:
             raise OperationNotSupportedError("Cannot change the server root")
         name = mount_name(node_id)
         if name is None:
-            ancestors = await self._storage.get_ancestors(node_id)
+            ancestors = await self._mirror.get_ancestors(node_id)
             top = ancestors[-1] if ancestors else None
             if top is not None and top.parent_id is not None:
                 name = mount_name(top.parent_id)

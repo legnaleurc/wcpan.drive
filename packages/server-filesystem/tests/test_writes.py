@@ -146,7 +146,7 @@ class TestDelete(_WriteTestCase):
         await self.operations.delete(record)
 
         self.assertFalse((self.source / "a/f.txt").exists())
-        self.assertIsNone(await self.storage.get_node_by_id(record.id))
+        self.assertIsNone(await self.mirror.get_node_by_id(record.id))
 
     async def test_deletes_folder_with_contents(self) -> None:
         folder = await self.node("a")
@@ -156,7 +156,7 @@ class TestDelete(_WriteTestCase):
         await self.operations.delete(folder)
 
         self.assertFalse((self.source / "a").exists())
-        self.assertIsNone(await self.storage.get_node_by_id(file_id))
+        self.assertIsNone(await self.mirror.get_node_by_id(file_id))
 
     async def test_replaced_entry_is_not_deleted(self) -> None:
         record = await self.node("a/f.txt")
@@ -176,7 +176,7 @@ class TestDelete(_WriteTestCase):
 
         await self.operations.delete(record)
 
-        self.assertIsNone(await self.storage.get_node_by_id(record.id))
+        self.assertIsNone(await self.mirror.get_node_by_id(record.id))
 
 
 class TestUpload(_WriteTestCase):
@@ -242,7 +242,7 @@ class TestUpload(_WriteTestCase):
     async def test_staging_files_are_not_mirrored(self) -> None:
         self.write(f"b/{STAGING_PREFIX}leftover", b"x")
         await self.scan()
-        children = await self.storage.get_children(await self.node_id("b"))
+        children = await self.mirror.get_children(await self.node_id("b"))
         self.assertEqual(children, [])
 
 
@@ -269,7 +269,7 @@ class TestWritesWithWatcher(_WriteTestCase):
         await self.scanner.scan_folders(dirty)
         await self.node_sync.wait_enrichment_drained()
 
-        root_names = [c.name for c in await self.storage.get_children(DOCS)]
+        root_names = [c.name for c in await self.mirror.get_children(DOCS)]
         self.assertEqual(root_names.count("fresh"), 1)
         self.assertEqual(await self.node_id("fresh"), created.id)
         self.assertEqual(await self.node_id("fresh/f.txt"), uploaded.id)

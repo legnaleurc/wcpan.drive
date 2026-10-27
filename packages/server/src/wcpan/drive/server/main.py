@@ -27,7 +27,7 @@ from wcpan.logging import ConfigBuilder
 from .app import create_app, entered_backends, managed_core, managed_off_main
 from .backend import load_factory
 from .config import ConfigVersionError, load_config
-from .services.storage import (
+from .services.mirror import (
     SchemaVersionError,
     cleanup_dangling_nodes,
     reset_change_history,

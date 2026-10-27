@@ -18,10 +18,10 @@ from wcpan.drive.server.handlers.upload import (
 )
 from wcpan.drive.server.keys import (
     CHANGE_SERVICE_KEY,
+    MIRROR_KEY,
     NODE_OPERATIONS_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
-    STORAGE_KEY,
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
@@ -88,7 +88,7 @@ class _FakeOffMain:
         return fn(*args, **kwargs)
 
 
-class _FakeStorage:
+class _FakeMirror:
     def __init__(self) -> None:
         self._nodes: dict[str, NodeRecord] = {}
         self._locators: dict[str, SynologyLocator] = {}
@@ -138,25 +138,25 @@ def _make_dir(node_id: str) -> NodeRecord:
 
 
 def _make_app(
-    storage: _FakeStorage, session_store: UploadSessionStore
+    mirror: _FakeMirror, session_store: UploadSessionStore
 ) -> web.Application:
     app = web.Application()
     off_main = _FakeOffMain()
     wq = create_write_queue()
-    storage._nodes.setdefault("parent-a", _make_dir("parent-a"))
+    mirror._nodes.setdefault("parent-a", _make_dir("parent-a"))
     syno_paths = SynologyPathService(
         registry=MountRegistry(mounts={}, root_ids={}),
-        store=storage,  # type: ignore[arg-type]
+        store=mirror,  # type: ignore[arg-type]
     )
     node_sync = NodeSyncService(
-        storage=storage,
+        mirror=mirror,
         write_queue=wq,
         off_main=off_main,
         mounts={},
         metadata_queue=asyncio.Queue(),
     )  # type: ignore[arg-type]
     app[READY_KEY] = True
-    app[STORAGE_KEY] = storage
+    app[MIRROR_KEY] = mirror
     app[OFF_MAIN_KEY] = off_main
     app[WRITE_QUEUE_KEY] = wq
     app[SYNOLOGY_PATH_KEY] = syno_paths
@@ -199,8 +199,8 @@ class TestCreateNodeConflict409(IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def test_returns_node_record_json(self) -> None:
-        storage = _FakeStorage()
-        app = _make_app(storage, self._store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._store)
 
         with (
             patch.object(
@@ -239,8 +239,8 @@ class TestFinaliseUploadConflict409(IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def test_put_session_finalise_conflict_returns_409_node(self) -> None:
-        storage = _FakeStorage()
-        app = _make_app(storage, self._store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._store)
         with (
             patch.object(
                 app[SYNOLOGY_DRIVE_API_KEY], "upload", new_callable=AsyncMock
@@ -284,8 +284,8 @@ class TestUploadNodeConflict409(IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def test_returns_node_record_json(self) -> None:
-        storage = _FakeStorage()
-        app = _make_app(storage, self._store)
+        mirror = _FakeMirror()
+        app = _make_app(mirror, self._store)
 
         with (
             patch.object(

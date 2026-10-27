@@ -193,7 +193,7 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
         )
         record = replace(record, width=800, height=600)
         local_path_svc = LocalPathService(
-            storage=MagicMock(),
+            mirror=MagicMock(),
             mounts={},
         )
         enricher = MediaEnrichService(local_path_service=local_path_svc)
@@ -231,7 +231,7 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(1) as pool:
                 off_main = OffMainService(pool=pool)
                 local_path_svc = LocalPathService(
-                    storage=MagicMock(),
+                    mirror=MagicMock(),
                     mounts={},
                 )
                 enricher = MediaEnrichService(
@@ -279,7 +279,7 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(1) as pool:
                 off_main = OffMainService(pool=pool)
                 local_path_svc = LocalPathService(
-                    storage=MagicMock(),
+                    mirror=MagicMock(),
                     mounts={},
                 )
                 enricher = MediaEnrichService(
@@ -309,9 +309,9 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
         mq = create_metadata_queue()
         with ThreadPoolExecutor(1) as pool:
             off_main = OffMainService(pool=pool)
-            storage = MagicMock()
+            mirror = MagicMock()
             cs = NodeSyncService(
-                storage=storage,
+                mirror=mirror,
                 write_queue=wq,
                 off_main=off_main,
                 mounts={},
@@ -333,7 +333,7 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
             observation = convert_file_info(info, parent_id="par")
             assert observation is not None
             record = observation.record
-            storage.apply_observations = AsyncMock(return_value={record.id})
+            mirror.apply_observations = AsyncMock(return_value={record.id})
             async with cs.observe() as read:
                 await cs.reconcile_insert(observation, read=read)
             item = await mq.get()
@@ -349,6 +349,6 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
                 await job()
             finally:
                 wq.task_done()
-            storage.apply_observations.assert_awaited_once_with(
+            mirror.apply_observations.assert_awaited_once_with(
                 [NodeObservation(record=record, locator=SynologyLocator("n1"))]
             )

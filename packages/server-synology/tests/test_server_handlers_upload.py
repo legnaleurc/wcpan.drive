@@ -18,9 +18,9 @@ from wcpan.drive.server.handlers.upload import (
 )
 from wcpan.drive.server.keys import (
     CHANGE_SERVICE_KEY,
+    MIRROR_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
-    STORAGE_KEY,
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
@@ -60,18 +60,18 @@ def _make_app(store: UploadSessionStore) -> dict:
     app: dict = {}
     off_main = _MockOffMain()
     wq: asyncio.Queue = asyncio.Queue()
-    storage = MagicMock()
+    mirror = MagicMock()
 
     async def _get_locators(node_ids: list[str]):
         return {"p1": SynologyLocator("p1")} if "p1" in node_ids else {}
 
-    storage.get_locators = AsyncMock(side_effect=_get_locators)
+    mirror.get_locators = AsyncMock(side_effect=_get_locators)
     syno_paths = SynologyPathService(
         registry=MountRegistry(mounts={"tmp": "/team-folders/download"}, root_ids={}),
-        store=storage,
+        store=mirror,
     )
     node_sync = NodeSyncService(
-        storage=storage,
+        mirror=mirror,
         write_queue=wq,
         off_main=off_main,
         mounts={},
@@ -82,7 +82,7 @@ def _make_app(store: UploadSessionStore) -> dict:
     drive_api.get_file = AsyncMock(return_value=None)
     app[READY_KEY] = True
     app[OFF_MAIN_KEY] = off_main
-    app[STORAGE_KEY] = storage
+    app[MIRROR_KEY] = mirror
     app[WRITE_QUEUE_KEY] = wq
     app[SYNOLOGY_DRIVE_API_KEY] = drive_api
     app[SYNOLOGY_PATH_KEY] = syno_paths

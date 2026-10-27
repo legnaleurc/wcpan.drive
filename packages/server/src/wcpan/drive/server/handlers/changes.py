@@ -4,7 +4,7 @@ from typing import Any
 
 from aiohttp import web
 
-from ..keys import STORAGE_KEY
+from ..keys import MIRROR_KEY
 from ..services.paths import SERVER_ROOT_ID
 from .lib import record_to_response, require_ready
 
@@ -14,15 +14,15 @@ _MAX_CHANGES = 1000
 
 @require_ready
 async def get_cursor(request: web.Request) -> web.Response:
-    storage = request.app[STORAGE_KEY]
-    cursor = await storage.get_cursor()
+    mirror = request.app[MIRROR_KEY]
+    cursor = await mirror.get_cursor()
     return web.json_response({"cursor": cursor})
 
 
 @require_ready
 async def get_root(request: web.Request) -> web.Response:
-    storage = request.app[STORAGE_KEY]
-    record = await storage.get_node_by_id(SERVER_ROOT_ID)
+    mirror = request.app[MIRROR_KEY]
+    record = await mirror.get_node_by_id(SERVER_ROOT_ID)
     if record is None:
         raise web.HTTPNotFound()
     return web.json_response(record_to_response(record))
@@ -30,7 +30,7 @@ async def get_root(request: web.Request) -> web.Response:
 
 @require_ready
 async def get_changes(request: web.Request) -> web.Response:
-    storage = request.app[STORAGE_KEY]
+    mirror = request.app[MIRROR_KEY]
     try:
         cursor = int(request.rel_url.query.get("cursor", "0"))
         max_size = min(
@@ -40,7 +40,7 @@ async def get_changes(request: web.Request) -> web.Response:
     except ValueError:
         raise web.HTTPBadRequest()
 
-    rows, new_cursor, has_more = await storage.get_changes_since(cursor, max_size)
+    rows, new_cursor, has_more = await mirror.get_changes_since(cursor, max_size)
 
     changes: list[dict[str, Any]] = []
     for node_id, is_removed, record in rows:

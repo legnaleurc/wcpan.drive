@@ -639,7 +639,7 @@ the core's connection inside core transactions (create tables, bind a locator,
 forget locators of removed nodes), its routes are added to the app, and its
 runtime supplies `NodeOperations`, an `Uploader`, initial discovery before ready,
 and ongoing background work. `NodeObservation.locator` is an opaque
-`BackendLocator`; backend queries and checkpoint writes use `StorageService.read`
+`BackendLocator`; backend queries and checkpoint writes use `MirrorStore.read`
 and `write`, the latter through `NodeSyncService.enqueue` so checkpoints follow
 the mirror writes they cover. Configuration keeps generic fields (database,
 listener, mounts as label to source path, `local_paths`) in the core and leaves

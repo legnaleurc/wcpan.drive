@@ -66,7 +66,7 @@ async def create_backend(
 ) -> AsyncGenerator[FakeBackend, None]:
     if settings.get("invalid"):
         raise ValueError("invalid setting")
-    await context.core.storage.register_schema(context.name, FakeSchema())
+    await context.core.mirror.register_schema(context.name, FakeSchema())
 
     async def hook(_request: web.Request) -> web.Response:
         return web.Response(text=context.name)

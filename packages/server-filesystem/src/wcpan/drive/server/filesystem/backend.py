@@ -108,7 +108,7 @@ async def create_backend(
     """Backend factory for ``type: wcpan.drive.server.filesystem.create_backend``."""
     config = parse_filesystem_config(settings)
     mounts = check_mounts(context.mounts)
-    await context.core.storage.register_schema(context.name, FILESYSTEM_SCHEMA)
+    await context.core.mirror.register_schema(context.name, FILESYSTEM_SCHEMA)
     backend = FilesystemBackend(context=context, config=config, mounts=mounts)
     if context.offline:
         yield backend
@@ -166,7 +166,7 @@ class FilesystemBackend:
         args = command_parser(self.name).parse_args(list(argv))
         if args.command == "rebind-mount":
             fsid = await rebind_mount(
-                self._context.core.storage, self._mounts, args.mount
+                self._context.core.mirror, self._mounts, args.mount
             )
             print(f"Mount {args.mount!r} now expects filesystem {fsid}.")
 
@@ -179,10 +179,10 @@ class FilesystemBackend:
         watcher = DirectoryWatcher.create() if self._config.watch else None
         try:
             blocking = Blocking(executor=executor)
-            store = FilesystemStore(storage=core.storage)
-            paths = NodePaths(storage=core.storage, mounts=self._mounts)
+            store = FilesystemStore(mirror=core.mirror)
+            paths = NodePaths(mirror=core.mirror, mounts=self._mounts)
             scanner = FilesystemScanner(
-                storage=core.storage,
+                mirror=core.mirror,
                 store=store,
                 node_sync=core.node_sync,
                 paths=paths,
@@ -193,7 +193,7 @@ class FilesystemBackend:
             self._runtime = FilesystemRuntime(
                 operations=FilesystemOperations(
                     scanner=scanner,
-                    storage=core.storage,
+                    mirror=core.mirror,
                     node_sync=core.node_sync,
                     paths=paths,
                     store=store,
@@ -202,7 +202,7 @@ class FilesystemBackend:
                 ),
                 uploader=FilesystemUploader(
                     scanner=scanner,
-                    storage=core.storage,
+                    mirror=core.mirror,
                     node_sync=core.node_sync,
                     blocking=blocking,
                     read_only=read_only,
