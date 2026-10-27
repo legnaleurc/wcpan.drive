@@ -722,19 +722,26 @@ client and server dependency sets separate, and validate independent wheel
 installations, not only imports within the shared development environment. No
 compatibility wrapper is planned for the retired Synology client package.
 
-Status: duld is migrated on its `wcpan-drive-client` branch: imports move to
-`wcpan.drive.client`, `.client.cli`, and dependencies to `wcpan-drive-client`,
-`-client-cli`, `-client-remote`, and `-client-sqlite` (replacing
-`wcpan-drive-synology`). Its `uv.lock` cannot be updated until these are
-published, and deployed drive configs must name the new provider modules
-(`wcpan.drive.client.remote.create_backend`, `wcpan.drive.client.sqlite.create_cache`)
-in a version 4 CLI config with `backend` and `cache` keys.
+Status: duld's `wcpan-drive-client` branch was migrated against the earlier
+client interface: imports move to `wcpan.drive.client`, `.client.cli`, and
+dependencies to `wcpan-drive-client`, `-client-cli`, `-client-remote`, and
+`-client-sqlite` (replacing `wcpan-drive-synology`). Its `uv.lock` cannot be
+updated until these are published.
 
-Validated with wheels from `uv build --all-packages --no-sources` installed into
-clean environments: duld's dependencies install no server packages, and the
-server with the filesystem backend installs no client packages. duld's tests
-pass there, and its drive backend created a folder, uploaded, synced, and
-verified an `md5` digest against that server.
+That branch predates the client renames (`FileService`/`SnapshotService` to
+`Backend`/`Cache`, `create_drive(backend=, cache=)`, provider entry points
+`create_backend`/`create_cache`/`create_middleware`, and CLI config version 4
+with `backend` and `cache` keys) and does not build against the workspace now.
+The client interface is still changing, so duld is deliberately not updated
+yet: re-migrate it, and its deployed drive configs, once the interface is
+settled, then repeat the validation below.
+
+Last validated, before the renames, with wheels from
+`uv build --all-packages --no-sources` installed into clean environments:
+duld's dependencies install no server packages, and the server with the
+filesystem backend installs no client packages. duld's tests passed there, and
+its drive backend created a folder, uploaded, synced, and verified an `md5`
+digest against that server.
 
 ## Validation
 
