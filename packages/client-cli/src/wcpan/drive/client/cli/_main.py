@@ -4,10 +4,10 @@ from argparse import ArgumentParser, Namespace
 from logging.config import dictConfig
 from pathlib import Path
 
+from wcpan.drive.client.config import create_drive_from_config
 from wcpan.logging import ConfigBuilder
 
 from . import __version__ as VERSION
-from ._cfg import create_drive_from_config
 from ._cmd.auth import add_auth_command
 from ._cmd.download import add_download_command
 from ._cmd.find import add_find_command

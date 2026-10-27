@@ -4,8 +4,10 @@ members = ["packages/*"]
 [tool.uv.sources]
 wcpan-drive-client = { workspace = true }
 wcpan-drive-client-cli = { workspace = true }
+wcpan-drive-client-config = { workspace = true }
 wcpan-drive-client-crypt = { workspace = true }
 wcpan-drive-client-google = { workspace = true }
+wcpan-drive-client-media = { workspace = true }
 wcpan-drive-client-remote = { workspace = true }
 wcpan-drive-client-sqlite = { workspace = true }
 wcpan-drive-protocol = { workspace = true }

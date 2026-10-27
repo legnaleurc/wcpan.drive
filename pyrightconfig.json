@@ -2,8 +2,10 @@
   "include": [
     "packages/client/src",
     "packages/client-cli/src",
+    "packages/client-config/src",
     "packages/client-crypt/src",
     "packages/client-google/src",
+    "packages/client-media/src",
     "packages/client-remote/src",
     "packages/client-sqlite/src",
     "packages/protocol/src",
@@ -16,8 +18,10 @@
   "extraPaths": [
     "packages/client/src",
     "packages/client-cli/src",
+    "packages/client-config/src",
     "packages/client-crypt/src",
     "packages/client-google/src",
+    "packages/client-media/src",
     "packages/client-remote/src",
     "packages/client-sqlite/src",
     "packages/protocol/src",

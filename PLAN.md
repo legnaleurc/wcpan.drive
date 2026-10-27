@@ -28,8 +28,8 @@ published, with its own dependencies and version. The root is not published.
 | `wcpan-drive-client-remote` | `wcpan.drive.client.remote` | HTTP server provider and client-model adaptation |
 | `wcpan-drive-client-crypt` | `wcpan.drive.client.crypt` | Encryption middleware |
 | `wcpan-drive-client-sqlite` | `wcpan.drive.client.sqlite` | Client metadata cache |
-| `wcpan-drive-client-config` | `wcpan.drive.client.config` | Planned: YAML drive configuration loader |
-| `wcpan-drive-client-media` | `wcpan.drive.client.media` | Planned: local MIME type and media probing |
+| `wcpan-drive-client-config` | `wcpan.drive.client.config` | YAML drive configuration loader |
+| `wcpan-drive-client-media` | `wcpan.drive.client.media` | Local MIME type and media probing |
 | `wcpan-drive-client-cli` | `wcpan.drive.client.cli` | Client command line; no public library API |
 | `wcpan-drive-protocol` | `wcpan.drive.protocol` | Lightweight HTTP wire models and serialization |
 | `wcpan-drive-server` | `wcpan.drive.server` | Mirror, HTTP server, reconciliation, and backend extension contracts |
@@ -51,9 +51,10 @@ Existing external consumers, including duld, require coordinated migration.
 
 ### Client helper packages
 
-Status: decided, not yet implemented. `wcpan.drive.client.cli.lib` is used as a
-utility library by duld, dvd, and drive.py, which therefore install the CLI and
-its interactive dependencies. Split it by responsibility:
+Status: implemented in this repository; external consumers still need to
+migrate (see stage 5). `wcpan.drive.client.cli.lib` was used as a utility
+library by duld, dvd, and drive.py, which therefore installed the CLI and its
+interactive dependencies. It is split by responsibility:
 
 - `wcpan-drive-client-config` owns the drive configuration (currently version 4):
   YAML loading, schema validation before any factory import, dotted-path factory
@@ -752,9 +753,8 @@ pretending to provide a Synology checkpoint or immutable entry locator.
 
 The workspace initialization establishes independently buildable distributions,
 and the hash model and service interface are coordinated across the client
-framework, SQLite, providers, crypt, and CLI. Remaining work: extract the client
-helper packages (see Client helper packages), migrate duld, dvd, and drive.py
-off `cli.lib`, keep
+framework, SQLite, providers, crypt, and CLI. Remaining work: migrate duld, dvd, and
+drive.py off the removed `cli.lib` (see Client helper packages), keep
 client and server dependency sets separate, and validate independent wheel
 installations, not only imports within the shared development environment. No
 compatibility wrapper is planned for the retired Synology client package.

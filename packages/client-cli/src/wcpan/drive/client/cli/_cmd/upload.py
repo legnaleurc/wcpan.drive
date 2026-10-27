@@ -3,9 +3,8 @@ from pathlib import Path
 
 from wcpan.drive.client.types import Drive
 
-from .._lib import cerr
+from .._lib import cerr, create_executor
 from .._upload import upload_list
-from ..lib import create_executor
 from .lib import (
     SubCommand,
     add_bool_argument,

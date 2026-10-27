@@ -20,6 +20,8 @@ namespace migration; the old package names and import paths are not aliases.
 | `packages/client-remote` | `wcpan-drive-client-remote` | `wcpan.drive.client.remote` |
 | `packages/client-crypt` | `wcpan-drive-client-crypt` | `wcpan.drive.client.crypt` |
 | `packages/client-sqlite` | `wcpan-drive-client-sqlite` | `wcpan.drive.client.sqlite` |
+| `packages/client-config` | `wcpan-drive-client-config` | `wcpan.drive.client.config` |
+| `packages/client-media` | `wcpan-drive-client-media` | `wcpan.drive.client.media` |
 | `packages/client-cli` | `wcpan-drive-client-cli` | `wcpan.drive.client.cli` |
 | `packages/protocol` | `wcpan-drive-protocol` | `wcpan.drive.protocol` |
 | `packages/server` | `wcpan-drive-server` | `wcpan.drive.server` |
@@ -30,7 +32,9 @@ The client and server roots are namespace packages. Client framework constructor
 are available from `wcpan.drive.client.api`; types and exceptions have explicit
 modules. Extensions remain separately installable. The server does not depend on
 the client framework; both the server and remote provider use the protocol package.
-The client CLI command is `wcpan.drive.client.cli`. Update configured provider
+The client CLI command is `wcpan.drive.client.cli`; it has no library API.
+Load drive config files with `wcpan.drive.client.config` and probe local media
+with `wcpan.drive.client.media`. Update configured provider
 module paths from `wcpan.drive.google`, `.crypt`, and `.sqlite` to
 `wcpan.drive.client.google`, `.crypt`, and `.sqlite`, respectively.
 

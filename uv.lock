@@ -6,8 +6,10 @@ requires-python = ">=3.13, <4.0"
 members = [
     "wcpan-drive-client",
     "wcpan-drive-client-cli",
+    "wcpan-drive-client-config",
     "wcpan-drive-client-crypt",
     "wcpan-drive-client-google",
+    "wcpan-drive-client-media",
     "wcpan-drive-client-remote",
     "wcpan-drive-client-sqlite",
     "wcpan-drive-protocol",
@@ -752,10 +754,10 @@ version = "0.1.0"
 source = { editable = "packages/client-cli" }
 dependencies = [
     { name = "prompt-toolkit" },
-    { name = "pymediainfo" },
-    { name = "python-magic" },
     { name = "pyyaml" },
     { name = "wcpan-drive-client" },
+    { name = "wcpan-drive-client-config" },
+    { name = "wcpan-drive-client-media" },
     { name = "wcpan-logging" },
     { name = "wcpan-queue" },
 ]
@@ -763,12 +765,27 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "prompt-toolkit", specifier = ">=3.0.0,<4.0.0" },
-    { name = "pymediainfo", specifier = ">=7.0.1,<8.0.0" },
-    { name = "python-magic", specifier = ">=0.4.27,<0.5.0" },
     { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
     { name = "wcpan-drive-client", editable = "packages/client" },
+    { name = "wcpan-drive-client-config", editable = "packages/client-config" },
+    { name = "wcpan-drive-client-media", editable = "packages/client-media" },
     { name = "wcpan-logging", specifier = ">=2.0.3,<3.0.0" },
     { name = "wcpan-queue", specifier = ">=7.2.1,<8.0.0" },
+]
+
+[[package]]
+name = "wcpan-drive-client-config"
+version = "0.1.0"
+source = { editable = "packages/client-config" }
+dependencies = [
+    { name = "pyyaml" },
+    { name = "wcpan-drive-client" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
+    { name = "wcpan-drive-client", editable = "packages/client" },
 ]
 
 [[package]]
@@ -798,6 +815,23 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.3,<4.0.0" },
+    { name = "wcpan-drive-client", editable = "packages/client" },
+]
+
+[[package]]
+name = "wcpan-drive-client-media"
+version = "0.1.0"
+source = { editable = "packages/client-media" }
+dependencies = [
+    { name = "pymediainfo" },
+    { name = "python-magic" },
+    { name = "wcpan-drive-client" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pymediainfo", specifier = ">=7.0.1,<8.0.0" },
+    { name = "python-magic", specifier = ">=0.4.27,<0.5.0" },
     { name = "wcpan-drive-client", editable = "packages/client" },
 ]
 

@@ -5,8 +5,7 @@ from pathlib import Path
 from wcpan.drive.client.types import Drive, Node
 
 from .._download import download_list
-from .._lib import cerr
-from ..lib import create_executor
+from .._lib import cerr, create_executor
 from .lib import (
     SubCommand,
     add_bool_argument,
