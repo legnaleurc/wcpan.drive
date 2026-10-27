@@ -5,35 +5,7 @@ from typing import Any
 
 import yaml
 from pymediainfo import MediaInfo as MediaInfo_
-from wcpan.drive.client.types import CreateHasher, Drive, MediaInfo, Node
-
-
-def _get_hash_off_main(local_path: Path, create_hasher: CreateHasher) -> str:
-    from asyncio import run
-
-    CHUNK_SIZE = 64 * 1024
-
-    async def calc():
-        hasher = await create_hasher()
-        with open(local_path, "rb") as fin:
-            while True:
-                chunk = fin.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                await hasher.update(chunk)
-        return await hasher.hexdigest()
-
-    return run(calc())
-
-
-async def get_file_hash(
-    path: Path, /, *, pool: Executor, drive: Drive, node: Node
-) -> str:
-    from asyncio import get_running_loop
-
-    factory = await drive.get_hasher_factory(node)
-    loop = get_running_loop()
-    return await loop.run_in_executor(pool, _get_hash_off_main, path, factory)
+from wcpan.drive.client.types import MediaInfo
 
 
 def cout(*values: object) -> None:

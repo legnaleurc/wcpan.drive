@@ -3,11 +3,11 @@ from concurrent.futures import Executor
 from pathlib import Path
 from typing import override
 
-from wcpan.drive.client.lib import upload_file_from_local
+from wcpan.drive.client.lib import get_file_hash, upload_file_from_local
 from wcpan.drive.client.types import Drive, Node
 
 from ._queue import AbstractHandler, walk_list
-from .lib import get_file_hash, get_media_info
+from .lib import get_media_info
 
 
 class UploadHandler(AbstractHandler[Path, Node]):

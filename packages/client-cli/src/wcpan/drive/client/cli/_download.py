@@ -3,11 +3,10 @@ from concurrent.futures import Executor
 from pathlib import Path
 from typing import override
 
-from wcpan.drive.client.lib import download_file_to_local
+from wcpan.drive.client.lib import download_file_to_local, get_file_hash
 from wcpan.drive.client.types import Drive, Node
 
 from ._queue import AbstractHandler, walk_list
-from .lib import get_file_hash
 
 
 class DownloadHandler(AbstractHandler[Node, Path]):

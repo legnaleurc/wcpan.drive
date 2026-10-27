@@ -34,11 +34,13 @@ Example:
 """
 
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Executor
 from pathlib import Path, PurePath
 from typing import TypeGuard
 
 from ._lib import (
     download_retry,
+    hash_local_file,
     resolve_path,
     upload_retry,
 )
@@ -58,6 +60,7 @@ __all__ = (
     "download_file_to_local",
     "else_none",
     "find_duplicate_nodes",
+    "get_file_hash",
     "is_remove",
     "is_update",
     "is_valid_name",
@@ -577,6 +580,32 @@ async def download_file_to_local(
     tmp_path.rename(complete_path)
 
     return complete_path
+
+
+async def get_file_hash(
+    path: Path, /, *, pool: Executor, drive: Drive, node: Node
+) -> str:
+    """Calculate a local file's hash with the hasher matching a remote node.
+
+    Uses the node's hasher factory, so the result is comparable to
+    ``node.hash``. Hashing runs in ``pool``; a process pool requires the
+    factory to be picklable (a module-level callable or partial, not a
+    closure over live resources).
+
+    Args:
+        path: Local file to hash.
+        pool: Executor that runs the hashing.
+        drive: Drive providing the hasher factory.
+        node: Remote node whose hash algorithm to use.
+
+    Returns:
+        The hex digest of the local file.
+    """
+    from asyncio import get_running_loop
+
+    factory = await drive.get_hasher_factory(node)
+    loop = get_running_loop()
+    return await loop.run_in_executor(pool, hash_local_file, path, factory)
 
 
 def is_remove(change: ChangeAction, /) -> TypeGuard[RemoveAction]:

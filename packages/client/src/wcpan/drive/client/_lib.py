@@ -6,10 +6,10 @@ lib module. These functions are not part of the public API.
 
 import asyncio
 from logging import getLogger
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import BinaryIO
 
-from .types import ReadableFile, WritableFile
+from .types import CreateHasher, ReadableFile, WritableFile
 
 
 _CHUNK_SIZE = 256 * 1024
@@ -99,3 +99,22 @@ async def _download_continue(fin: ReadableFile, fout: BinaryIO) -> None:
     fout.flush()
     offset = fout.tell()
     await fin.seek(offset)
+
+
+def hash_local_file(local_path: Path, create_hasher: CreateHasher) -> str:
+    """Hash a local file synchronously; runs in an executor worker.
+
+    Module-level so it can be pickled into a process pool.
+    """
+
+    async def calc():
+        hasher = await create_hasher()
+        with open(local_path, "rb") as fin:
+            while True:
+                chunk = fin.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                await hasher.update(chunk)
+        return await hasher.hexdigest()
+
+    return asyncio.run(calc())

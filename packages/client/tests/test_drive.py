@@ -126,6 +126,17 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
             self.assertIsNone(root.parent_id)
             self.assertTrue(root.is_directory)
 
+    async def testMultiModeRejectsDuplicateNames(self) -> None:
+        create_backend = create_mocked_acm(Mock(spec=Backend))
+        create_cache = create_mocked_acm(Mock(spec=Cache))
+        source = SourceConfig(name="google", backend=create_backend, cache=create_cache)
+
+        with self.assertRaises(ValueError):
+            async with create_multi_drive(sources=[source, source]):
+                pass
+        create_backend.assert_not_called()
+        create_cache.assert_not_called()
+
 
 class AuthTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

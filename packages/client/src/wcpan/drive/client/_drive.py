@@ -85,10 +85,13 @@ async def create_multi_drive(
 
     Raises:
         InvalidServiceError: If any service reports an incompatible API version.
-        ValueError: If sources is empty.
+        ValueError: If sources is empty or has duplicate names.
     """
     if not sources:
         raise ValueError("at least one source is required")
+    names = [source.name for source in sources]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate source names: {names}")
 
     if len(sources) == 1:
         source = sources[0]

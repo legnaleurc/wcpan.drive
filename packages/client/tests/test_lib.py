@@ -1,7 +1,10 @@
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import PurePath
+from hashlib import md5
+from pathlib import Path, PurePath
+from tempfile import TemporaryDirectory
 from typing import Any
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, MagicMock
@@ -11,13 +14,20 @@ from wcpan.drive.client.lib import (
     dispatch_change,
     else_none,
     find_duplicate_nodes,
+    get_file_hash,
     is_remove,
     is_update,
     is_valid_name,
     move_node,
     normalize_path,
 )
-from wcpan.drive.client.types import Drive, Node, RemoveAction, UpdateAction
+from wcpan.drive.client.types import (
+    Drive,
+    Hasher,
+    Node,
+    RemoveAction,
+    UpdateAction,
+)
 
 
 def make_node(
@@ -365,3 +375,42 @@ class NodeHashInvariantTestCase(TestCase):
                 hash="abc",
                 hash_algorithm="md5",
             )
+
+
+class _Md5Hasher(Hasher):
+    def __init__(self) -> None:
+        self._hasher = md5()
+
+    async def update(self, data: bytes) -> None:
+        self._hasher.update(data)
+
+    async def digest(self) -> bytes:
+        return self._hasher.digest()
+
+    async def hexdigest(self) -> str:
+        return self._hasher.hexdigest()
+
+    async def copy(self) -> "_Md5Hasher":
+        rv = _Md5Hasher()
+        rv._hasher = self._hasher.copy()
+        return rv
+
+
+async def _create_md5_hasher() -> Hasher:
+    return _Md5Hasher()
+
+
+class TestGetFileHash(IsolatedAsyncioTestCase):
+    async def testUsesNodeHasher(self) -> None:
+        data = b"x" * (300 * 1024)
+        node = make_node(node_id="f1", name="a.bin")
+        drive = MagicMock(spec=Drive)
+        drive.get_hasher_factory = AsyncMock(return_value=_create_md5_hasher)
+
+        with TemporaryDirectory() as tmp, ThreadPoolExecutor() as pool:
+            path = Path(tmp) / "a.bin"
+            path.write_bytes(data)
+            rv = await get_file_hash(path, pool=pool, drive=drive, node=node)
+
+        self.assertEqual(rv, md5(data).hexdigest())
+        drive.get_hasher_factory.assert_awaited_once_with(node)
