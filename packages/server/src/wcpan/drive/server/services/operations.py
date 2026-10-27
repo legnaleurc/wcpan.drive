@@ -4,7 +4,7 @@ from collections.abc import AsyncIterable, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 from ..types import NodeObservation
 
@@ -39,7 +39,7 @@ class LocateUndecidedError(Exception):
 # Fetch a node directly from the backend. Returns ``None`` when the node no longer
 # exists under a mirrored parent; raises ``LocateUndecidedError`` when the backend
 # cannot answer.
-type Locate = Callable[[MirrorStableId], Awaitable[NodeObservation | None]]
+type Locate = Callable[[NodeId], Awaitable[NodeObservation | None]]
 
 
 class NodeOperations(Protocol):
@@ -49,7 +49,7 @@ class NodeOperations(Protocol):
     translate backend errors into the exceptions above.
     """
 
-    async def create_folder(self, parent_id: MirrorStableId, name: str) -> NodeRecord:
+    async def create_folder(self, parent_id: NodeId, name: str) -> NodeRecord:
         """Create a directory and return its mirrored record."""
         ...
 
@@ -58,7 +58,7 @@ class NodeOperations(Protocol):
         record: NodeRecord,
         *,
         name: str | None,
-        parent_id: MirrorStableId | None,
+        parent_id: NodeId | None,
     ) -> NodeRecord:
         """Rename and/or move *record*; ``None`` leaves that field unchanged."""
         ...

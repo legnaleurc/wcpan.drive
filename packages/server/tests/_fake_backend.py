@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from aiohttp import web
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.backend import BackendContext
 from wcpan.drive.server.types import BackendLocator
 
@@ -22,7 +22,7 @@ class FakeSchema:
         con.execute("CREATE TABLE IF NOT EXISTS fake_backend (x INTEGER)")
 
     def bind_locator(
-        self, con: sqlite3.Connection, node_id: MirrorStableId, locator: BackendLocator
+        self, con: sqlite3.Connection, node_id: NodeId, locator: BackendLocator
     ) -> None:
         pass
 

@@ -14,7 +14,7 @@ from logging import getLogger
 from pathlib import Path
 from typing import BinaryIO, Protocol
 
-from wcpan.drive.protocol.types import MediaInfo, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 
 from ..lib.names import normalize_name
 
@@ -29,7 +29,7 @@ UPLOAD_CLEANUP_INTERVAL = 5 * 60
 @dataclass
 class UploadSession:
     session_id: str
-    parent_id: MirrorStableId
+    parent_id: NodeId
     name: str
     total_size: int
     mime_type: str | None
@@ -47,7 +47,7 @@ class UploadSessionStore:
 
     def create(
         self,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         name: str,
         total_size: int,
         mime_type: str | None,
@@ -156,15 +156,13 @@ class UploadOffsetMismatchError(Exception):
 class Uploader(Protocol):
     """Backend half of an upload: conflict lookup and the transfer itself."""
 
-    async def find_conflict(
-        self, parent_id: MirrorStableId, name: str
-    ) -> NodeRecord | None:
+    async def find_conflict(self, parent_id: NodeId, name: str) -> NodeRecord | None:
         """The existing node named *name* under *parent_id*, if any."""
         ...
 
     async def upload(
         self,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         name: str,
         content: AsyncIterable[bytes],
         *,
@@ -210,7 +208,7 @@ class UploadService:
 
     async def create_session(
         self,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         name: str,
         total_size: int,
         mime_type: str | None,
@@ -244,7 +242,7 @@ class UploadService:
 
     async def upload_direct(
         self,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         name: str,
         content: AsyncIterable[bytes],
         mime_type: str | None,

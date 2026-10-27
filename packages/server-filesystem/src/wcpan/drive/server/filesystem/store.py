@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.services.storage import StorageService
 from wcpan.drive.server.types import BackendLocator
 
@@ -65,7 +65,7 @@ class FilesystemSchema:
         con.executescript(_DDL)
 
     def bind_locator(
-        self, con: sqlite3.Connection, node_id: MirrorStableId, locator: BackendLocator
+        self, con: sqlite3.Connection, node_id: NodeId, locator: BackendLocator
     ) -> None:
         state = EntryState.from_locator(locator)
         con.execute(
@@ -102,12 +102,10 @@ class FilesystemStore:
     def __init__(self, *, storage: StorageService) -> None:
         self._storage = storage
 
-    async def get_entries(
-        self, node_ids: list[MirrorStableId]
-    ) -> dict[MirrorStableId, EntryState]:
+    async def get_entries(self, node_ids: list[NodeId]) -> dict[NodeId, EntryState]:
         return await self._storage.read(_get_entries, node_ids)
 
-    async def nodes_by_identity(self, identity: FileIdentity) -> list[MirrorStableId]:
+    async def nodes_by_identity(self, identity: FileIdentity) -> list[NodeId]:
         return await self._storage.read(_nodes_by_identity, identity)
 
     async def get_mount_fsid(self, name: str, path: str) -> str | None:
@@ -119,8 +117,8 @@ class FilesystemStore:
 
 
 def _get_entries(
-    con: sqlite3.Connection, node_ids: list[MirrorStableId]
-) -> dict[MirrorStableId, EntryState]:
+    con: sqlite3.Connection, node_ids: list[NodeId]
+) -> dict[NodeId, EntryState]:
     if not node_ids:
         return {}
     placeholders = ",".join("?" * len(node_ids))
@@ -133,7 +131,7 @@ def _get_entries(
     ) as cur:
         rows = cur.fetchall()
     return {
-        MirrorStableId(row["node_id"]): EntryState(
+        NodeId(row["node_id"]): EntryState(
             FileIdentity(row["identity"]),
             row["size"],
             row["mtime_ns"],
@@ -143,9 +141,7 @@ def _get_entries(
     }
 
 
-def _nodes_by_identity(
-    con: sqlite3.Connection, identity: FileIdentity
-) -> list[MirrorStableId]:
+def _nodes_by_identity(con: sqlite3.Connection, identity: FileIdentity) -> list[NodeId]:
     with closing(
         con.execute(
             """
@@ -157,7 +153,7 @@ def _nodes_by_identity(
             (identity,),
         )
     ) as cur:
-        return [MirrorStableId(row["node_id"]) for row in cur.fetchall()]
+        return [NodeId(row["node_id"]) for row in cur.fetchall()]
 
 
 def _get_mount_fsid(con: sqlite3.Connection, name: str, path: str) -> str | None:

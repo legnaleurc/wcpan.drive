@@ -24,7 +24,7 @@ from functools import partial
 from logging import getLogger
 
 from wcpan.drive.protocol.lib import guess_mime_type
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.mounts import mount_id, mount_name
 from wcpan.drive.server.services.operations import LocateUndecidedError
@@ -50,7 +50,7 @@ from .watch import DirectoryWatcher
 
 _L = getLogger(__name__)
 
-type _Folder = tuple[MirrorStableId, str]
+type _Folder = tuple[NodeId, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,9 +61,9 @@ class Previous:
     state: EntryState
 
 
-def new_node_id() -> MirrorStableId:
+def new_node_id() -> NodeId:
     # Hex never starts with the virtual ID prefix.
-    return MirrorStableId(uuid.uuid4().hex)
+    return NodeId(uuid.uuid4().hex)
 
 
 def _same_public_metadata(a: NodeRecord, b: NodeRecord) -> bool:
@@ -97,9 +97,7 @@ def _same_public_metadata(a: NodeRecord, b: NodeRecord) -> bool:
     )
 
 
-def _record(
-    entry: Entry, node_id: MirrorStableId, parent_id: MirrorStableId, hash_: str
-) -> NodeRecord:
+def _record(entry: Entry, node_id: NodeId, parent_id: NodeId, hash_: str) -> NodeRecord:
     st = entry.stat
     mime_type = guess_mime_type(entry.name, is_directory=entry.is_directory)
     return NodeRecord(
@@ -147,7 +145,7 @@ class FilesystemScanner:
         mounts = {mount_id(name) for name in self._paths.mounts}
         await self._pass(mounts, scoped=None)
 
-    async def scan_folders(self, folder_ids: Iterable[MirrorStableId]) -> None:
+    async def scan_folders(self, folder_ids: Iterable[NodeId]) -> None:
         """Re-read *folder_ids* only; their unchanged subfolders keep their mirror.
 
         A folder that is gone or now names another object is replaced by its
@@ -158,12 +156,10 @@ class FilesystemScanner:
         if scope:
             await self._pass(scope, scoped=scope)
 
-    async def _present_folders(
-        self, folder_ids: Iterable[MirrorStableId]
-    ) -> set[MirrorStableId]:
-        present = set[MirrorStableId]()
+    async def _present_folders(self, folder_ids: Iterable[NodeId]) -> set[NodeId]:
+        present = set[NodeId]()
         pending = list(folder_ids)
-        visited = set[MirrorStableId]()
+        visited = set[NodeId]()
         while pending:
             folder_id = pending.pop()
             if folder_id in visited:
@@ -179,7 +175,7 @@ class FilesystemScanner:
                 pending.append(record.parent_id)
         return present
 
-    async def _still_present(self, folder_id: MirrorStableId) -> bool:
+    async def _still_present(self, folder_id: NodeId) -> bool:
         """Whether the folder's mirrored path still names the same directory."""
         path = await self._paths.path_of(folder_id)
         state = (await self._store.get_entries([folder_id])).get(folder_id)
@@ -195,9 +191,7 @@ class FilesystemScanner:
             and entry.identity == state.identity
         )
 
-    async def _pass(
-        self, scope: set[MirrorStableId], *, scoped: set[MirrorStableId] | None
-    ) -> None:
+    async def _pass(self, scope: set[NodeId], *, scoped: set[NodeId] | None) -> None:
         async with self._pass_lock:
             async with reconcile_session(
                 scope,
@@ -212,7 +206,7 @@ class FilesystemScanner:
                         session.preserve(folder_id)
                     else:
                         roots.append((folder_id, path))
-                claimed = set[MirrorStableId]()
+                claimed = set[NodeId]()
                 await parallel_bfs(
                     roots,
                     partial(
@@ -230,7 +224,7 @@ class FilesystemScanner:
         async with self._pass_lock:
             yield
 
-    async def current(self, node_id: MirrorStableId) -> tuple[Entry, Previous] | None:
+    async def current(self, node_id: NodeId) -> tuple[Entry, Previous] | None:
         """*node_id* at its mirrored path, if that path still names the same object."""
         path = await self._paths.path_of(node_id)
         record = await self._storage.get_node_by_id(node_id)
@@ -262,18 +256,18 @@ class FilesystemScanner:
 
     @staticmethod
     def observation(
-        entry: Entry, node_id: MirrorStableId, parent_id: MirrorStableId, hash_: str
+        entry: Entry, node_id: NodeId, parent_id: NodeId, hash_: str
     ) -> NodeObservation:
         return NodeObservation(
             record=_record(entry, node_id, parent_id, hash_),
             locator=entry.state.to_locator(),
         )
 
-    async def folder_path(self, folder_id: MirrorStableId) -> str | None:
+    async def folder_path(self, folder_id: NodeId) -> str | None:
         """The directory of a mount or mirrored folder, or ``None`` if unusable."""
         return await self._folder_path(folder_id)
 
-    async def _folder_path(self, folder_id: MirrorStableId) -> str | None:
+    async def _folder_path(self, folder_id: NodeId) -> str | None:
         """The directory to list, or ``None`` when it cannot be read safely."""
         name = mount_name(folder_id)
         if name is not None:
@@ -283,7 +277,7 @@ class FilesystemScanner:
             return root
         return await self._paths.path_of(folder_id)
 
-    async def locate(self, node_id: MirrorStableId) -> NodeObservation | None:
+    async def locate(self, node_id: NodeId) -> NodeObservation | None:
         """Current observation of *node_id* at its mirrored path, if still there."""
         path = await self._paths.path_of(node_id)
         record = await self._storage.get_node_by_id(node_id)
@@ -344,8 +338,8 @@ class FilesystemScanner:
         folder: _Folder,
         *,
         session: ReconcileSession,
-        claimed: set[MirrorStableId],
-        scoped: set[MirrorStableId] | None,
+        claimed: set[NodeId],
+        scoped: set[NodeId] | None,
     ) -> list[_Folder]:
         """List one folder; return the subfolders this pass should list too.
 
@@ -395,9 +389,9 @@ class FilesystemScanner:
         self,
         entry: Entry,
         by_name: dict[str, NodeRecord],
-        states: dict[MirrorStableId, EntryState],
-        claimed: set[MirrorStableId],
-    ) -> tuple[MirrorStableId, Previous | None]:
+        states: dict[NodeId, EntryState],
+        claimed: set[NodeId],
+    ) -> tuple[NodeId, Previous | None]:
         """The node ID for *entry*, and what that node was last observed as."""
         same_name = by_name.get(entry.name)
         if same_name is not None and same_name.id not in claimed:
@@ -420,9 +414,7 @@ class FilesystemScanner:
         claimed.add(node_id)
         return node_id, None
 
-    async def _moved_from(
-        self, candidate: MirrorStableId, entry: Entry
-    ) -> Previous | None:
+    async def _moved_from(self, candidate: NodeId, entry: Entry) -> Previous | None:
         """*candidate*'s last observation, if its old path no longer names *entry*."""
         record = await self._storage.get_node_by_id(candidate)
         state = (await self._store.get_entries([candidate])).get(candidate)
@@ -441,8 +433,8 @@ class FilesystemScanner:
     async def _observe(
         self,
         entry: Entry,
-        node_id: MirrorStableId,
-        parent_id: MirrorStableId,
+        node_id: NodeId,
+        parent_id: NodeId,
         previous: Previous | None,
     ) -> NodeObservation | None:
         """An observation to apply, or ``None`` when nothing changed or it is withheld.

@@ -4,7 +4,7 @@ from logging import getLogger
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 
 from ..keys import NODE_OPERATIONS_KEY, STORAGE_KEY, UPLOAD_SERVICE_KEY
 from ..lib.names import normalize_name
@@ -32,7 +32,7 @@ def _conflict_response(e: OperationConflictError) -> web.Response:
 @require_ready
 async def get_node(request: web.Request) -> web.Response:
     storage = request.app[STORAGE_KEY]
-    node_id = MirrorStableId(request.match_info["id"])
+    node_id = NodeId(request.match_info["id"])
     record = await storage.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
@@ -42,7 +42,7 @@ async def get_node(request: web.Request) -> web.Response:
 @require_ready
 async def download_node(request: web.Request) -> web.StreamResponse:
     storage = request.app[STORAGE_KEY]
-    node_id = MirrorStableId(request.match_info["id"])
+    node_id = NodeId(request.match_info["id"])
     record = await storage.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
@@ -82,7 +82,7 @@ async def create_node(request: web.Request) -> web.Response:
     if not name or not parent_id_raw:
         raise web.HTTPBadRequest()
     name = normalize_name(name)
-    parent_id = MirrorStableId(parent_id_raw)
+    parent_id = NodeId(parent_id_raw)
 
     try:
         record = await operations.create_folder(parent_id, name)
@@ -98,7 +98,7 @@ async def update_node(request: web.Request) -> web.Response:
     """Rename and/or move a node."""
     storage = request.app[STORAGE_KEY]
     operations = request.app[NODE_OPERATIONS_KEY]
-    node_id = MirrorStableId(request.match_info["id"])
+    node_id = NodeId(request.match_info["id"])
 
     if is_virtual(node_id):
         raise web.HTTPForbidden(reason="Cannot modify virtual nodes")
@@ -112,7 +112,7 @@ async def update_node(request: web.Request) -> web.Response:
     if new_name:
         new_name = normalize_name(new_name)
     new_parent_id = (
-        MirrorStableId(body["parent_id"]) if body.get("parent_id") is not None else None
+        NodeId(body["parent_id"]) if body.get("parent_id") is not None else None
     )
 
     try:
@@ -130,7 +130,7 @@ async def update_node(request: web.Request) -> web.Response:
 async def delete_node(request: web.Request) -> web.Response:
     storage = request.app[STORAGE_KEY]
     operations = request.app[NODE_OPERATIONS_KEY]
-    node_id = MirrorStableId(request.match_info["id"])
+    node_id = NodeId(request.match_info["id"])
 
     if is_virtual(node_id):
         raise web.HTTPForbidden(reason="Cannot delete virtual nodes")
@@ -146,7 +146,7 @@ async def delete_node(request: web.Request) -> web.Response:
 @require_ready
 async def upload_node(request: web.Request) -> web.Response:
     upload_service: UploadService = request.app[UPLOAD_SERVICE_KEY]
-    parent_id = MirrorStableId(request.match_info["parent_id"])
+    parent_id = NodeId(request.match_info["parent_id"])
 
     if parent_id == SERVER_ROOT_ID:
         raise web.HTTPForbidden(reason="Cannot upload to virtual root")

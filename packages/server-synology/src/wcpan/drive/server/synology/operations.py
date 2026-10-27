@@ -7,7 +7,7 @@ from logging import getLogger
 
 from aiohttp.client_exceptions import ClientConnectionResetError
 from wcpan.drive.protocol.lib import guess_mime_type, utc_now
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.services.operations import (
     OperationConflictError,
     OperationUnavailableError,
@@ -44,7 +44,7 @@ class SynologyNodeOperations:
         self._syno_paths = syno_paths
         self._node_sync = node_sync
 
-    async def create_folder(self, parent_id: MirrorStableId, name: str) -> NodeRecord:
+    async def create_folder(self, parent_id: NodeId, name: str) -> NodeRecord:
         async with self._node_sync.observe() as read:
             parent_ref = await self._syno_paths.synology_parent_ref(parent_id)
             try:
@@ -65,7 +65,7 @@ class SynologyNodeOperations:
                     "Synology did not return permanent_link for new folder"
                 )
             record = NodeRecord(
-                id=MirrorStableId(permanent_link),
+                id=NodeId(permanent_link),
                 parent_id=parent_id,
                 name=info["name"],
                 is_directory=True,
@@ -94,7 +94,7 @@ class SynologyNodeOperations:
         record: NodeRecord,
         *,
         name: str | None,
-        parent_id: MirrorStableId | None,
+        parent_id: NodeId | None,
     ) -> NodeRecord:
         async with self._node_sync.observe() as read:
             updated = record
@@ -170,9 +170,7 @@ class SynologyNodeOperations:
                 raise original from e
             raise OperationUnavailableError(str(e)) from e
 
-    async def _upsert_existing_child(
-        self, parent_id: MirrorStableId, name: str
-    ) -> NodeRecord:
+    async def _upsert_existing_child(self, parent_id: NodeId, name: str) -> NodeRecord:
         """Mirror the node that holds *name* under *parent_id* (conflict recovery)."""
         async with self._node_sync.observe() as read:
             info = await self._syno_paths.find_child_by_name(
@@ -190,7 +188,7 @@ class SynologyNodeOperations:
             return await self._node_sync.upsert(observation, read=read)
 
     async def _resolve_after_move(
-        self, record: NodeRecord, parent_id: MirrorStableId
+        self, record: NodeRecord, parent_id: NodeId
     ) -> NodeObservation | None:
         info = await self._drive_api.get_file(_stable_node_ref(record))
         if info is None:

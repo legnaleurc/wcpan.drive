@@ -1,6 +1,6 @@
 """Synology mount resolution: configured source paths and their root file IDs."""
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.synology import (
     SynologyClient,
@@ -27,7 +27,7 @@ class MountRegistry:
         self,
         *,
         mounts: dict[str, SynologyPath],
-        root_ids: dict[SynologyFileId, MirrorStableId],
+        root_ids: dict[SynologyFileId, NodeId],
     ) -> None:
         self._mounts = mounts
         self._root_ids = root_ids
@@ -39,7 +39,7 @@ class MountRegistry:
     def lookup_mount_virtual_id(
         self,
         synology_id: SynologyFileId,
-    ) -> MirrorStableId | None:
+    ) -> NodeId | None:
         """Return the mount virtual ID for a Synology file ID, or None."""
         return self._root_ids.get(synology_id)
 
@@ -51,7 +51,7 @@ async def create_mount_registry(
 ) -> MountRegistry:
     """Resolve Synology root IDs for all mounts. Raises RuntimeError on any failure."""
     _check_no_nested_mounts(mounts)
-    root_ids: dict[SynologyFileId, MirrorStableId] = {}
+    root_ids: dict[SynologyFileId, NodeId] = {}
     for name, syno_path in mounts.items():
         info = await get_file_metadata_by_path(syno_path, drive_api=drive_api)
         if info is None:

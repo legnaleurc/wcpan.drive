@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import NewType
 
 
-MirrorStableId = NewType("MirrorStableId", str)
+NodeId = NewType("NodeId", str)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -14,8 +14,8 @@ class NodeRecord:
     computed; the backend defines the identifier and clients interpret it.
     """
 
-    id: MirrorStableId
-    parent_id: MirrorStableId | None
+    id: NodeId
+    parent_id: NodeId | None
     name: str
     is_directory: bool
     created_time: int

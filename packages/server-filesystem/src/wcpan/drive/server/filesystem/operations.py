@@ -14,7 +14,7 @@ from dataclasses import replace
 from logging import getLogger
 from typing import Any, BinaryIO
 
-from wcpan.drive.protocol.types import MediaInfo, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
 from wcpan.drive.server.services.operations import (
     OperationConflictError,
@@ -100,7 +100,7 @@ class _Writes:
         if self._read_only:
             raise OperationNotSupportedError(_READ_ONLY)
 
-    async def _folder(self, folder_id: MirrorStableId) -> str:
+    async def _folder(self, folder_id: NodeId) -> str:
         if folder_id == SERVER_ROOT_ID:
             raise OperationNotSupportedError("Cannot change the server root")
         path = await self._scanner.folder_path(folder_id)
@@ -117,9 +117,7 @@ class _Writes:
             raise OperationUnavailableError(f"{path} is not a file or directory")
         return entry
 
-    async def _mirrored_child(
-        self, parent_id: MirrorStableId, name: str
-    ) -> NodeRecord | None:
+    async def _mirrored_child(self, parent_id: NodeId, name: str) -> NodeRecord | None:
         """The node an existing entry maps to, reading its folder first."""
         await self._scanner.scan_folders([parent_id])
         await self._node_sync.wait_enrichment_drained()
@@ -155,7 +153,7 @@ class FilesystemOperations(_Writes):
         self._paths = paths
         self._store = store
 
-    async def create_folder(self, parent_id: MirrorStableId, name: str) -> NodeRecord:
+    async def create_folder(self, parent_id: NodeId, name: str) -> NodeRecord:
         self._check_writable()
         _check_name(name)
         async with self._scanner.exclusive():
@@ -184,7 +182,7 @@ class FilesystemOperations(_Writes):
         record: NodeRecord,
         *,
         name: str | None,
-        parent_id: MirrorStableId | None,
+        parent_id: NodeId | None,
     ) -> NodeRecord:
         self._check_writable()
         new_name = name if name and name != record.name else None
@@ -250,7 +248,7 @@ class FilesystemOperations(_Writes):
         await self._scanner.scan_folders(folders)
         raise _translate(failure) from failure
 
-    async def _still_exists(self, node_id: MirrorStableId) -> bool:
+    async def _still_exists(self, node_id: NodeId) -> bool:
         path = await self._paths.path_of(node_id)
         return path is not None and await self._blocking(os.path.lexists, path)
 
@@ -302,9 +300,7 @@ def _upload_error(e: OSError, name: str) -> Exception:
 class FilesystemUploader(_Writes):
     """Stages uploads next to their destination and renames them into place."""
 
-    async def find_conflict(
-        self, parent_id: MirrorStableId, name: str
-    ) -> NodeRecord | None:
+    async def find_conflict(self, parent_id: NodeId, name: str) -> NodeRecord | None:
         self._check_writable()
         folder = await self._folder(parent_id)
         if not await self._blocking(os.path.lexists, os.path.join(folder, name)):
@@ -313,7 +309,7 @@ class FilesystemUploader(_Writes):
 
     async def upload(
         self,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         name: str,
         content: AsyncIterable[bytes],
         *,

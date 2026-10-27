@@ -4,7 +4,7 @@ from collections.abc import AsyncIterable
 from dataclasses import replace
 from logging import getLogger
 
-from wcpan.drive.protocol.types import MediaInfo, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 from wcpan.drive.server.lib.names import normalize_name
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
@@ -42,9 +42,7 @@ class SynologyUploader:
         self._syno_paths = syno_paths
         self._node_sync = node_sync
 
-    async def find_conflict(
-        self, parent_id: MirrorStableId, name: str
-    ) -> NodeRecord | None:
+    async def find_conflict(self, parent_id: NodeId, name: str) -> NodeRecord | None:
         existing = await self._syno_paths.find_child_by_name(
             self._drive_api, parent_id, name
         )
@@ -62,7 +60,7 @@ class SynologyUploader:
 
     async def upload(
         self,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         name: str,
         content: AsyncIterable[bytes],
         *,
@@ -100,7 +98,7 @@ class SynologyUploader:
     async def _resolve_name_conflict(
         self,
         *,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         name: str,
     ) -> NodeRecord:
         name = normalize_name(name)
@@ -126,7 +124,7 @@ class SynologyUploader:
         self,
         *,
         info: SynologyFileInfo,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         media_info: MediaInfo | None,
         read: ReadSeq,
     ) -> NodeRecord:

@@ -2,7 +2,7 @@
 
 import os
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.lib.mounts import mount_name
 from wcpan.drive.server.services.storage import StorageService
 
@@ -18,7 +18,7 @@ class NodePaths:
     def mounts(self) -> dict[str, str]:
         return self._mounts
 
-    async def path_of(self, node_id: MirrorStableId) -> str | None:
+    async def path_of(self, node_id: NodeId) -> str | None:
         """``None`` for virtual nodes or a node whose ancestors are incomplete."""
         ancestors = await self._storage.get_ancestors(node_id)
         if not ancestors:

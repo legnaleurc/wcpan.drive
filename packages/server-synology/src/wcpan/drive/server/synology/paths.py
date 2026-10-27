@@ -1,6 +1,6 @@
 """Bridge between mirror node IDs and Synology Drive API references."""
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.lib.mounts import mount_name
 from wcpan.drive.server.lib.names import normalize_name
 from wcpan.drive.server.services.operations import LocateUndecidedError
@@ -45,7 +45,7 @@ class SynologyPathService:
 
     async def synology_parent_ref(
         self,
-        parent_node_id: MirrorStableId,
+        parent_node_id: NodeId,
     ) -> SynologyParentRef:
         """Translate a mirror parent node ID into a Synology API parent ref."""
         key = mount_name(parent_node_id)
@@ -56,7 +56,7 @@ class SynologyPathService:
     async def resolve_parent(
         self,
         parent_ref: SynologyFileId,
-    ) -> MirrorStableId | None:
+    ) -> NodeId | None:
         """Mirror node ID for a Synology parent: a stored node or a mount root."""
         parent = await self._store.get_node_by_locator(
             SynologyLocator(parent_ref.file_id)
@@ -68,7 +68,7 @@ class SynologyPathService:
     async def locate(
         self,
         drive_api: SynologyClient,
-        node_id: MirrorStableId,
+        node_id: NodeId,
     ) -> NodeObservation | None:
         """Fetch *node_id* directly; ``None`` unless it exists under a mirrored parent.
 
@@ -91,7 +91,7 @@ class SynologyPathService:
     async def list_children(
         self,
         drive_api: SynologyClient,
-        parent_node_id: MirrorStableId,
+        parent_node_id: NodeId,
     ) -> list[SynologyFileInfo]:
         """List children of a mirror parent node ID."""
         folder_ref = await self.synology_parent_ref(parent_node_id)
@@ -107,7 +107,7 @@ class SynologyPathService:
     async def find_child_by_name(
         self,
         drive_api: SynologyClient,
-        parent_node_id: MirrorStableId,
+        parent_node_id: NodeId,
         name: str,
     ) -> SynologyFileInfo | None:
         parent_ref = await self.synology_parent_ref(parent_node_id)
@@ -119,7 +119,7 @@ class SynologyPathService:
 
     async def _resolve_locator_ref(
         self,
-        parent_node_id: MirrorStableId,
+        parent_node_id: NodeId,
     ) -> SynologyFileId:
         locators = await self._store.get_locators([parent_node_id])
         locator = locators.get(parent_node_id)

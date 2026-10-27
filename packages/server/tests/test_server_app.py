@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.app import create_app
 from wcpan.drive.server.keys import NODE_OPERATIONS_KEY, STORAGE_KEY
 from wcpan.drive.server.services.operations import (
@@ -99,7 +99,7 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         await self.ready()
         storage = self.app[STORAGE_KEY]
         for node_id in ("_", "_docs", "_pics"):
-            self.assertIsNotNone(await storage.get_node_by_id(MirrorStableId(node_id)))
+            self.assertIsNotNone(await storage.get_node_by_id(NodeId(node_id)))
 
     async def test_operations_go_to_the_mount_backend(self) -> None:
         record = MagicMock()

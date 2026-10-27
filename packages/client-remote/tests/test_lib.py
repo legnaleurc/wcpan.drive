@@ -15,16 +15,16 @@ from wcpan.drive.client.remote._lib import (
     node_record_from_dict,
     node_record_to_dict,
 )
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 
 _NOW = 1_704_067_200
 
 
 def _make_record(
-    node_id: MirrorStableId = MirrorStableId("file-id-001"),
+    node_id: NodeId = NodeId("file-id-001"),
     name: str = "test.txt",
-    parent_id: MirrorStableId | None = MirrorStableId("parent-id-001"),
+    parent_id: NodeId | None = NodeId("parent-id-001"),
     is_directory: bool = False,
 ) -> NodeRecord:
     return NodeRecord(
@@ -50,7 +50,7 @@ def _make_record(
 class TestNodeFromRecord(TestCase):
     def test_id_is_file_id(self):
         # given
-        record = _make_record(node_id=MirrorStableId("synology-file-id-xyz"))
+        record = _make_record(node_id=NodeId("synology-file-id-xyz"))
         # when
         node = node_from_record(record)
         # then
@@ -58,7 +58,7 @@ class TestNodeFromRecord(TestCase):
 
     def test_parent_id_preserved(self):
         # given
-        record = _make_record(parent_id=MirrorStableId("parent-file-id-abc"))
+        record = _make_record(parent_id=NodeId("parent-file-id-abc"))
         # when
         node = node_from_record(record)
         # then

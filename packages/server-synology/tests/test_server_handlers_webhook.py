@@ -5,7 +5,7 @@ import logging
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology.convert import SynologyLocator
 from wcpan.drive.server.synology.mounts import MountRegistry
@@ -37,8 +37,8 @@ _FAKE_SYNO_INFO = {
 
 
 def _make_node(
-    node_id: MirrorStableId = MirrorStableId("f1"),
-    parent_id: MirrorStableId = MirrorStableId("p1"),
+    node_id: NodeId = NodeId("f1"),
+    parent_id: NodeId = NodeId("p1"),
 ) -> NodeRecord:
     return NodeRecord(
         id=node_id,
@@ -134,7 +134,7 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
             SynologyFileId(file_id="unknown-parent"),
             "file_moved",
         )
-        node_sync.delete.assert_awaited_once_with(MirrorStableId("f1"), read=ANY)
+        node_sync.delete.assert_awaited_once_with(NodeId("f1"), read=ANY)
 
     async def test_file_moved_to_unknown_parent_no_op_when_node_absent(self):
         storage = MagicMock()
@@ -160,7 +160,7 @@ class TestFetchAndEnrich(IsolatedAsyncioTestCase):
         registry = MountRegistry(
             mounts={},
             root_ids={
-                SynologyFileId(file_id="real-parent"): MirrorStableId("_docs"),
+                SynologyFileId(file_id="real-parent"): NodeId("_docs"),
             },
         )
         drive_api = MagicMock()
@@ -478,7 +478,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         registry = MountRegistry(
             mounts={"video": "/team-folders/video/L"},
             root_ids={
-                SynologyFileId(file_id="mount-root"): MirrorStableId("_video"),
+                SynologyFileId(file_id="mount-root"): NodeId("_video"),
             },
         )
         service = _make_service(storage=storage, mount_registry=registry)
@@ -536,7 +536,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
                 service,
                 "_resolve_moved_dir_root_id",
                 new_callable=AsyncMock,
-                return_value=MirrorStableId("f1"),
+                return_value=NodeId("f1"),
             ),
             patch.object(
                 service,
@@ -546,7 +546,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         ):
             await service._execute_webhook_plan(plan, pending=pending)
 
-        mock_scan.assert_awaited_once_with(MirrorStableId("f1"))
+        mock_scan.assert_awaited_once_with(NodeId("f1"))
 
     async def test_moved_directory_destination_not_under_current_mount_scans(self):
         storage = MagicMock()
@@ -572,7 +572,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
                 service,
                 "_resolve_moved_dir_root_id",
                 new_callable=AsyncMock,
-                return_value=MirrorStableId("f1"),
+                return_value=NodeId("f1"),
             ),
             patch.object(
                 service,
@@ -582,7 +582,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         ):
             await service._execute_webhook_plan(plan, pending=pending)
 
-        mock_scan.assert_awaited_once_with(MirrorStableId("f1"))
+        mock_scan.assert_awaited_once_with(NodeId("f1"))
 
     async def test_moved_directory_missing_source_scans(self):
         storage = MagicMock()
@@ -607,7 +607,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
                 service,
                 "_resolve_moved_dir_root_id",
                 new_callable=AsyncMock,
-                return_value=MirrorStableId("f1"),
+                return_value=NodeId("f1"),
             ),
             patch.object(
                 service,
@@ -617,7 +617,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         ):
             await service._execute_webhook_plan(plan, pending=pending)
 
-        mock_scan.assert_awaited_once_with(MirrorStableId("f1"))
+        mock_scan.assert_awaited_once_with(NodeId("f1"))
 
     async def test_moved_directory_missing_destination_scans(self):
         storage = MagicMock()
@@ -643,7 +643,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
                 service,
                 "_resolve_moved_dir_root_id",
                 new_callable=AsyncMock,
-                return_value=MirrorStableId("f1"),
+                return_value=NodeId("f1"),
             ),
             patch.object(
                 service,
@@ -653,7 +653,7 @@ class TestExecuteWebhookPlan(IsolatedAsyncioTestCase):
         ):
             await service._execute_webhook_plan(plan, pending=pending)
 
-        mock_scan.assert_awaited_once_with(MirrorStableId("f1"))
+        mock_scan.assert_awaited_once_with(NodeId("f1"))
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.mounts import ensure_mount_nodes
 from wcpan.drive.server.services.off_main import OffMainService
@@ -34,7 +34,7 @@ class _RecordingSchema:
         pass
 
     def bind_locator(
-        self, con: sqlite3.Connection, node_id: MirrorStableId, locator: BackendLocator
+        self, con: sqlite3.Connection, node_id: NodeId, locator: BackendLocator
     ) -> None:
         self.bound.append((node_id, locator))
 
@@ -47,8 +47,8 @@ class _RecordingSchema:
 
 def _file(node_id: str, parent_id: str) -> NodeRecord:
     return NodeRecord(
-        id=MirrorStableId(node_id),
-        parent_id=MirrorStableId(parent_id),
+        id=NodeId(node_id),
+        parent_id=NodeId(parent_id),
         name=node_id,
         is_directory=False,
         created_time=0,
@@ -132,11 +132,11 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         self.assertEqual(self.b.bound, [("fb", "lb")])
 
     async def test_each_backend_retries_only_its_pending_media(self) -> None:
-        await self.storage.mark_enrichment_pending(MirrorStableId("fa"), "a")
-        await self.storage.mark_enrichment_pending(MirrorStableId("fb"), "b")
+        await self.storage.mark_enrichment_pending(NodeId("fa"), "a")
+        await self.storage.mark_enrichment_pending(NodeId("fb"), "b")
         located: list[str] = []
 
-        async def locate(node_id: MirrorStableId) -> None:
+        async def locate(node_id: NodeId) -> None:
             located.append(node_id)
 
         await self.node_sync.for_backend("a").retry_pending_enrichment(locate=locate)

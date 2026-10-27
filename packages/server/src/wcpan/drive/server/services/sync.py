@@ -6,7 +6,7 @@ from copy import copy
 from dataclasses import replace
 from logging import getLogger
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 from ..types import (
     MetadataQueue,
@@ -163,7 +163,7 @@ class NodeSyncService:
         await self._put_upserts([(enriched, read)])
         return enriched.record
 
-    async def delete(self, node_id: MirrorStableId, *, read: ReadSeq) -> None:
+    async def delete(self, node_id: NodeId, *, read: ReadSeq) -> None:
         """Enqueue a subtree removal unless a later read already observed the node.
 
         Used by: API (delete node), webhook (file_removed), scan (confirmed absence).
@@ -238,7 +238,7 @@ class NodeSyncService:
         return replace(observation, record=enriched)
 
     async def _mark_enrichment_pending(
-        self, node_id: MirrorStableId, backend: str | None, *, read: ReadSeq
+        self, node_id: NodeId, backend: str | None, *, read: ReadSeq
     ) -> None:
         """Persist retry work unless a later read already observed the node."""
         self._order.hold(read)
@@ -346,7 +346,7 @@ class NodeSyncService:
         """
         await self._write_queue.put(job)
 
-    async def touched_after(self, read: ReadSeq) -> set[MirrorStableId]:
+    async def touched_after(self, read: ReadSeq) -> set[NodeId]:
         """Nodes observed by reads that started after *read*, once queued writes land.
 
         Used by: scanner, so end-of-scan removals skip nodes seen by newer reads.

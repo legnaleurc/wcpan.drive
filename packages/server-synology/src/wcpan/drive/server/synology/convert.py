@@ -3,7 +3,7 @@
 from logging import getLogger
 
 from wcpan.drive.protocol.lib import guess_mime_type
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.types import BackendLocator, NodeObservation
 from wcpan.synology import SynologyFileInfo
 
@@ -19,7 +19,7 @@ SynologyLocator = BackendLocator
 
 def convert_file_info(
     info: SynologyFileInfo,
-    parent_id: MirrorStableId | None,
+    parent_id: NodeId | None,
 ) -> NodeObservation | None:
     is_dir = info["type"] == "dir"
     name = info["name"]
@@ -32,7 +32,7 @@ def convert_file_info(
         return None
     hash_ = "" if is_dir else info.get("hash", "")
     record = NodeRecord(
-        id=MirrorStableId(permanent_link),
+        id=NodeId(permanent_link),
         parent_id=parent_id,
         name=name,
         is_directory=is_dir,

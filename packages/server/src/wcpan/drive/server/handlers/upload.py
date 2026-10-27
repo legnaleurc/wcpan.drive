@@ -1,7 +1,7 @@
 """Resumable upload session handlers."""
 
 from aiohttp import web
-from wcpan.drive.protocol.types import MediaInfo, MirrorStableId
+from wcpan.drive.protocol.types import MediaInfo, NodeId
 
 from ..keys import READY_KEY, UPLOAD_SERVICE_KEY
 from ..services.paths import SERVER_ROOT_ID
@@ -39,7 +39,7 @@ def _media_info_from_body(body: dict[str, object]) -> MediaInfo | None:
 async def create_upload_session(request: web.Request) -> web.Response:
     """POST /api/v1/nodes/{parent_id}/uploads"""
     upload_service: UploadService = request.app[UPLOAD_SERVICE_KEY]
-    parent_id = MirrorStableId(request.match_info["parent_id"])
+    parent_id = NodeId(request.match_info["parent_id"])
 
     if parent_id == SERVER_ROOT_ID:
         raise web.HTTPForbidden(reason="Cannot upload to virtual root")

@@ -6,15 +6,15 @@ from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import MagicMock
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.services.operations import OperationUnavailableError
 from wcpan.drive.server.synology.operations import SynologyNodeOperations
 from wcpan.synology import SynologyNetworkError
 
 
 _RECORD = NodeRecord(
-    id=MirrorStableId("f1"),
-    parent_id=MirrorStableId("p1"),
+    id=NodeId("f1"),
+    parent_id=NodeId("p1"),
     name="f.bin",
     is_directory=False,
     created_time=0,

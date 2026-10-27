@@ -8,7 +8,7 @@ import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.services.storage import StorageService, row_to_record
 from wcpan.drive.server.types import BackendLocator
 from wcpan.synology import SynologyPath
@@ -42,7 +42,7 @@ class SynologySchema:
         con.executescript(_DDL)
 
     def bind_locator(
-        self, con: sqlite3.Connection, node_id: MirrorStableId, locator: BackendLocator
+        self, con: sqlite3.Connection, node_id: NodeId, locator: BackendLocator
     ) -> None:
         con.execute(
             """
@@ -78,8 +78,8 @@ class SynologyStore:
         return await self._storage.read(_get_node_by_locator, locator)
 
     async def get_locators(
-        self, node_ids: list[MirrorStableId]
-    ) -> dict[MirrorStableId, SynologyLocator]:
+        self, node_ids: list[NodeId]
+    ) -> dict[NodeId, SynologyLocator]:
         return await self._storage.read(_get_locators, node_ids)
 
     async def get_mount_max_ids(
@@ -153,8 +153,8 @@ def _get_node_by_locator(
 
 
 def _get_locators(
-    con: sqlite3.Connection, node_ids: list[MirrorStableId]
-) -> dict[MirrorStableId, SynologyLocator]:
+    con: sqlite3.Connection, node_ids: list[NodeId]
+) -> dict[NodeId, SynologyLocator]:
     if not node_ids:
         return {}
     placeholders = ",".join("?" * len(node_ids))
@@ -166,6 +166,4 @@ def _get_locators(
         )
     ) as cur:
         rows = cur.fetchall()
-    return {
-        MirrorStableId(row["node_id"]): SynologyLocator(row["file_id"]) for row in rows
-    }
+    return {NodeId(row["node_id"]): SynologyLocator(row["file_id"]) for row in rows}

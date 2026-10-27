@@ -9,7 +9,7 @@ import asyncio
 import errno
 from logging import getLogger
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 
 from .inotify import IN_IGNORED, IN_Q_OVERFLOW, Inotify
 
@@ -20,8 +20,8 @@ _L = getLogger(__name__)
 class DirectoryWatcher:
     def __init__(self, inotify: Inotify) -> None:
         self._inotify = inotify
-        self._nodes: dict[int, MirrorStableId] = {}
-        self._dirty = set[MirrorStableId]()
+        self._nodes: dict[int, NodeId] = {}
+        self._dirty = set[NodeId]()
         self._overflow = False
         self._changed = asyncio.Event()
         self._limit_reported = False
@@ -45,7 +45,7 @@ class DirectoryWatcher:
             self._loop.remove_reader(self._inotify.fd)
         self._inotify.close()
 
-    def watch(self, node_id: MirrorStableId, path: str) -> None:
+    def watch(self, node_id: NodeId, path: str) -> None:
         """Watch the directory at *path*; call before listing it."""
         try:
             wd = self._inotify.add_watch(path)
@@ -67,10 +67,10 @@ class DirectoryWatcher:
         """Return once some directory changed or events were lost."""
         await self._changed.wait()
 
-    def take(self) -> tuple[set[MirrorStableId], bool]:
+    def take(self) -> tuple[set[NodeId], bool]:
         """Changed directories, and whether events were lost since the last take."""
         dirty, overflow = self._dirty, self._overflow
-        self._dirty = set[MirrorStableId]()
+        self._dirty = set[NodeId]()
         self._overflow = False
         self._changed.clear()
         return dirty, overflow

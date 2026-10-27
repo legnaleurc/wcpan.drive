@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from unittest import IsolatedAsyncioTestCase
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.storage import (
@@ -23,8 +23,8 @@ _MOUNT = mount_id("docs")
 
 def _node(node_id: str, parent_id: str | None, *, name: str = "") -> NodeRecord:
     return NodeRecord(
-        id=MirrorStableId(node_id),
-        parent_id=MirrorStableId(parent_id) if parent_id is not None else None,
+        id=NodeId(node_id),
+        parent_id=NodeId(parent_id) if parent_id is not None else None,
         name=name or node_id,
         is_directory=True,
         created_time=0,
@@ -76,9 +76,7 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
     async def test_node_and_locator_are_written_together(self) -> None:
         await self.storage.apply_observations([_obs(_node("d", _MOUNT), "101")])
 
-        self.assertEqual(
-            await self.store.get_locators([MirrorStableId("d")]), {"d": "101"}
-        )
+        self.assertEqual(await self.store.get_locators([NodeId("d")]), {"d": "101"})
         found = await self.store.get_node_by_locator(SynologyLocator("101"))
         assert found is not None
         self.assertEqual(found.id, "d")
@@ -119,10 +117,10 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
             [_obs(_node("d", _MOUNT), "101"), _obs(_node("e", "d"), "102")]
         )
 
-        await self.storage.delete_subtree_and_emit_changes(MirrorStableId("d"))
+        await self.storage.delete_subtree_and_emit_changes(NodeId("d"))
 
         self.assertEqual(
-            await self.store.get_locators([MirrorStableId("d"), MirrorStableId("e")]),
+            await self.store.get_locators([NodeId("d"), NodeId("e")]),
             {},
         )
         self.assertIsNone(await self.store.get_node_by_locator(SynologyLocator("102")))
@@ -137,4 +135,4 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
             1,
         )
 
-        self.assertEqual(await self.store.get_locators([MirrorStableId("d")]), {})
+        self.assertEqual(await self.store.get_locators([NodeId("d")]), {})

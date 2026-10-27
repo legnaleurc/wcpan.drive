@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     mount_id,
@@ -57,8 +57,8 @@ def _node(
     is_directory: bool = False,
 ) -> NodeRecord:
     return NodeRecord(
-        id=MirrorStableId(node_id),
-        parent_id=MirrorStableId(parent_id) if parent_id is not None else None,
+        id=NodeId(node_id),
+        parent_id=NodeId(parent_id) if parent_id is not None else None,
         name=name if name is not None else node_id,
         is_directory=is_directory,
         created_time=_TS,
@@ -298,7 +298,7 @@ class TestBackfillOrdering(_RaceTestCase):
 
         real_get_children = self.storage.get_children
 
-        async def get_children(parent_id: MirrorStableId) -> list[NodeRecord]:
+        async def get_children(parent_id: NodeId) -> list[NodeRecord]:
             children = await real_get_children(parent_id)
             if parent_id == "a":
                 # A webhook commits the move after backfill read the old parent.
@@ -359,7 +359,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
             store=SynologyStore(storage=self.storage),
         )
 
-    async def commit(self) -> list[MirrorStableId]:
+    async def commit(self) -> list[NodeId]:
         """Run a pass over the mount whose listings reported only a and b."""
         async with reconcile_session(
             {_MOUNT},
@@ -505,7 +505,7 @@ class TestPendingEnrichment(_RaceTestCase):
         await self.storage.mark_enrichment_pending(self.old.id)
         self.fail_enrichment(failing=False)
 
-        async def locate(_node_id: MirrorStableId) -> NodeObservation:
+        async def locate(_node_id: NodeId) -> NodeObservation:
             return _obs(self.new)
 
         await self.node_sync.retry_pending_enrichment(locate=locate)
@@ -518,9 +518,9 @@ class TestPendingEnrichment(_RaceTestCase):
 
     async def test_retry_of_missing_node_removes_it(self) -> None:
         await self.storage.mark_enrichment_pending(self.old.id)
-        await self.storage.mark_enrichment_pending(MirrorStableId("never-published"))
+        await self.storage.mark_enrichment_pending(NodeId("never-published"))
 
-        async def locate(_node_id: MirrorStableId) -> None:
+        async def locate(_node_id: NodeId) -> None:
             return None
 
         await self.node_sync.retry_pending_enrichment(locate=locate)
@@ -532,7 +532,7 @@ class TestPendingEnrichment(_RaceTestCase):
     async def test_undecided_retry_keeps_pending(self) -> None:
         await self.storage.mark_enrichment_pending(self.old.id)
 
-        async def locate(_node_id: MirrorStableId) -> None:
+        async def locate(_node_id: NodeId) -> None:
             raise LocateUndecidedError("down")
 
         await self.node_sync.retry_pending_enrichment(locate=locate)

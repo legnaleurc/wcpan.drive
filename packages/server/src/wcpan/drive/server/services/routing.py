@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterable, Mapping
 from contextlib import AbstractAsyncContextManager
 
-from wcpan.drive.protocol.types import MediaInfo, MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 
 from ..lib.mounts import SERVER_ROOT_ID, mount_name
 from .operations import (
@@ -31,7 +31,7 @@ class BackendRouter:
         self._operations = operations
         self._uploaders = uploaders
 
-    async def backend_of(self, node_id: MirrorStableId) -> str:
+    async def backend_of(self, node_id: NodeId) -> str:
         """The backend instance serving the mount that contains *node_id*."""
         if node_id == SERVER_ROOT_ID:
             raise OperationNotSupportedError("Cannot change the server root")
@@ -46,7 +46,7 @@ class BackendRouter:
             raise OperationUnavailableError(f"{node_id} is not in a configured mount")
         return backend
 
-    async def create_folder(self, parent_id: MirrorStableId, name: str) -> NodeRecord:
+    async def create_folder(self, parent_id: NodeId, name: str) -> NodeRecord:
         backend = await self.backend_of(parent_id)
         return await self._operations[backend].create_folder(parent_id, name)
 
@@ -55,7 +55,7 @@ class BackendRouter:
         record: NodeRecord,
         *,
         name: str | None,
-        parent_id: MirrorStableId | None,
+        parent_id: NodeId | None,
     ) -> NodeRecord:
         backend = await self.backend_of(record.id)
         if parent_id is not None and parent_id != record.parent_id:
@@ -74,15 +74,13 @@ class BackendRouter:
     ) -> AbstractAsyncContextManager[AsyncIterable[bytes]]:
         return _RoutedDownload(self, record, range_)
 
-    async def find_conflict(
-        self, parent_id: MirrorStableId, name: str
-    ) -> NodeRecord | None:
+    async def find_conflict(self, parent_id: NodeId, name: str) -> NodeRecord | None:
         backend = await self.backend_of(parent_id)
         return await self._uploaders[backend].find_conflict(parent_id, name)
 
     async def upload(
         self,
-        parent_id: MirrorStableId,
+        parent_id: NodeId,
         name: str,
         content: AsyncIterable[bytes],
         *,

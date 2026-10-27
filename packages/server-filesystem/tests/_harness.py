@@ -9,7 +9,7 @@ from contextlib import suppress
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.filesystem.blocking import Blocking
 from wcpan.drive.server.filesystem.operations import (
     FilesystemOperations,
@@ -142,7 +142,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             parent = record.id
         return record
 
-    async def node_id(self, relative: str) -> MirrorStableId:
+    async def node_id(self, relative: str) -> NodeId:
         record = await self.node(relative)
         assert record is not None, relative
         return record.id

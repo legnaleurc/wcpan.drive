@@ -2,7 +2,7 @@ import mimetypes
 from datetime import UTC, datetime
 from typing import Literal, TypedDict
 
-from .types import MirrorStableId, NodeRecord
+from .types import NodeId, NodeRecord
 
 
 FOLDER_MIME_TYPE = "application/x-directory"
@@ -64,8 +64,8 @@ def node_record_to_dict(record: NodeRecord) -> NodeRecordDict:
 def node_record_from_dict(data: NodeRecordDict) -> NodeRecord:
     parent_id = data["parent_id"]
     return NodeRecord(
-        id=MirrorStableId(data["id"]),
-        parent_id=MirrorStableId(parent_id) if parent_id is not None else None,
+        id=NodeId(data["id"]),
+        parent_id=NodeId(parent_id) if parent_id is not None else None,
         name=data["name"],
         is_directory=data["is_directory"],
         created_time=data["created_time"],

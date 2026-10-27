@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from logging import getLogger
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 
 from ..types import ReadSeq
 from .operations import Locate, LocateUndecidedError
@@ -35,7 +35,7 @@ class ReconcileSession:
 
     def __init__(
         self,
-        scope: set[MirrorStableId],
+        scope: set[NodeId],
         read: ReadSeq,
         *,
         storage: StorageService,
@@ -47,18 +47,18 @@ class ReconcileSession:
         self._storage = storage
         self._node_sync = node_sync
         self._locate = locate
-        self._seen = set[MirrorStableId]()
-        self._preserve_roots = set[MirrorStableId]()
+        self._seen = set[NodeId]()
+        self._preserve_roots = set[NodeId]()
 
-    def saw(self, node_ids: Iterable[MirrorStableId]) -> None:
+    def saw(self, node_ids: Iterable[NodeId]) -> None:
         """Record nodes reported by a successful listing."""
         self._seen.update(node_ids)
 
-    def preserve(self, root: MirrorStableId) -> None:
+    def preserve(self, root: NodeId) -> None:
         """Keep the mirrored subtree under *root*; this pass did not cover it."""
         self._preserve_roots.add(root)
 
-    async def removal_roots(self) -> list[MirrorStableId]:
+    async def removal_roots(self) -> list[NodeId]:
         """Roots of the mirrored subtrees no listing in this pass accounted for.
 
         Waits for queued writes, so nodes observed by newer reads are excluded.
@@ -69,13 +69,13 @@ class ReconcileSession:
         preserved |= await self._node_sync.touched_after(self._read)
         return await self._storage.deferred_removal_roots(preserved, self._scope)
 
-    async def commit_removals(self) -> list[MirrorStableId]:
+    async def commit_removals(self) -> list[NodeId]:
         """Confirm and apply removals; returns the subtree roots removed."""
         roots = await self.removal_roots()
         semaphore = asyncio.Semaphore(_CONFIRM_CONCURRENCY)
-        removed: list[MirrorStableId] = []
+        removed: list[NodeId] = []
 
-        async def confirm(root: MirrorStableId) -> None:
+        async def confirm(root: NodeId) -> None:
             async with semaphore:
                 if await self._remove_unless_moved(root):
                     removed.append(root)
@@ -85,7 +85,7 @@ class ReconcileSession:
                 group.create_task(confirm(root))
         return sorted(removed)
 
-    async def _remove_unless_moved(self, node_id: MirrorStableId) -> bool:
+    async def _remove_unless_moved(self, node_id: NodeId) -> bool:
         """Remove *node_id* unless it still exists under a mirrored parent.
 
         Only an undecided lookup preserves the node; a node found elsewhere is
@@ -111,7 +111,7 @@ class ReconcileSession:
 
 @asynccontextmanager
 async def reconcile_session(
-    scope: set[MirrorStableId],
+    scope: set[NodeId],
     *,
     storage: StorageService,
     node_sync: NodeSyncService,

@@ -5,7 +5,7 @@ from contextlib import closing, contextmanager
 from functools import partial
 from typing import Concatenate, Protocol
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 from ..lib.mounts import SERVER_ROOT_ID
 from ..types import BackendLocator, NodeObservation
@@ -30,7 +30,7 @@ class BackendSchema(Protocol):
         ...
 
     def bind_locator(
-        self, con: sqlite3.Connection, node_id: MirrorStableId, locator: BackendLocator
+        self, con: sqlite3.Connection, node_id: NodeId, locator: BackendLocator
     ) -> None:
         """Persist the locator of *node_id* alongside its observation."""
         ...
@@ -351,7 +351,7 @@ def _upsert_node_and_emit_change(dsn: str, record: NodeRecord) -> None:
 
 def _delete_subtree_on_connection(
     con: sqlite3.Connection,
-    node_id: MirrorStableId,
+    node_id: NodeId,
     schemas: Schemas,
 ) -> None:
     """Delete node and all descendants; emit remove-changes for each.
@@ -391,13 +391,13 @@ def _delete_subtree_on_connection(
 
 
 def _delete_subtree_and_emit_changes(
-    dsn: str, node_id: MirrorStableId, schemas: Schemas
+    dsn: str, node_id: NodeId, schemas: Schemas
 ) -> None:
     with _read_write(dsn) as con:
         _delete_subtree_on_connection(con, node_id, schemas)
 
 
-def _node_exists(con: sqlite3.Connection, node_id: MirrorStableId) -> bool:
+def _node_exists(con: sqlite3.Connection, node_id: NodeId) -> bool:
     with closing(
         con.execute("SELECT 1 FROM nodes WHERE id = ?", (str(node_id),))
     ) as cur:
@@ -405,7 +405,7 @@ def _node_exists(con: sqlite3.Connection, node_id: MirrorStableId) -> bool:
 
 
 def _select_node_row(
-    con: sqlite3.Connection, node_id: MirrorStableId
+    con: sqlite3.Connection, node_id: NodeId
 ) -> tuple[object, ...] | None:
     with closing(
         con.execute("SELECT * FROM nodes WHERE id = ?", (str(node_id),))
@@ -416,7 +416,7 @@ def _select_node_row(
 
 def _apply_observations(
     dsn: str, observations: list[NodeObservation], schemas: Schemas
-) -> set[MirrorStableId]:
+) -> set[NodeId]:
     """Upsert nodes and their locators in order, skipping any whose parent is gone.
 
     The parent check and writes share one explicit transaction, so an observation
@@ -427,7 +427,7 @@ def _apply_observations(
     """
     if not observations:
         return set()
-    applied: set[MirrorStableId] = set()
+    applied: set[NodeId] = set()
     with _read_write(dsn) as con:
         con.execute("BEGIN")
         for observation in observations:
@@ -451,9 +451,7 @@ def _apply_observations(
     return applied
 
 
-def _mark_enrichment_pending(
-    dsn: str, node_id: MirrorStableId, backend: str | None
-) -> None:
+def _mark_enrichment_pending(dsn: str, node_id: NodeId, backend: str | None) -> None:
     with _read_write(dsn) as con:
         con.execute(
             """
@@ -464,7 +462,7 @@ def _mark_enrichment_pending(
         )
 
 
-def _get_pending_enrichment(dsn: str, backend: str | None) -> list[MirrorStableId]:
+def _get_pending_enrichment(dsn: str, backend: str | None) -> list[NodeId]:
     with _read_only(dsn) as con:
         with closing(
             con.execute(
@@ -473,7 +471,7 @@ def _get_pending_enrichment(dsn: str, backend: str | None) -> list[MirrorStableI
                 (backend or "",),
             )
         ) as cur:
-            return [MirrorStableId(row["node_id"]) for row in cur.fetchall()]
+            return [NodeId(row["node_id"]) for row in cur.fetchall()]
 
 
 def _bulk_upsert_nodes(dsn: str, records: list[NodeRecord]) -> None:
@@ -484,7 +482,7 @@ def _bulk_upsert_nodes(dsn: str, records: list[NodeRecord]) -> None:
         con.executemany(_UPSERT_NODE_SQL, [_node_row_values(r) for r in records])
 
 
-def _get_node_by_id(dsn: str, node_id: MirrorStableId) -> NodeRecord | None:
+def _get_node_by_id(dsn: str, node_id: NodeId) -> NodeRecord | None:
     with _read_only(dsn) as con:
         with closing(
             con.execute("SELECT * FROM nodes WHERE id = ?", (str(node_id),))
@@ -495,8 +493,8 @@ def _get_node_by_id(dsn: str, node_id: MirrorStableId) -> NodeRecord | None:
 
 def _get_nodes_by_ids(
     dsn: str,
-    node_ids: list[MirrorStableId],
-) -> dict[MirrorStableId, NodeRecord]:
+    node_ids: list[NodeId],
+) -> dict[NodeId, NodeRecord]:
     if not node_ids:
         return {}
     with _read_only(dsn) as con:
@@ -508,10 +506,10 @@ def _get_nodes_by_ids(
             )
         ) as cur:
             rows = cur.fetchall()
-    return {MirrorStableId(row["id"]): row_to_record(row) for row in rows}
+    return {NodeId(row["id"]): row_to_record(row) for row in rows}
 
 
-def _get_children(dsn: str, parent_id: MirrorStableId) -> list[NodeRecord]:
+def _get_children(dsn: str, parent_id: NodeId) -> list[NodeRecord]:
     with _read_only(dsn) as con:
         with closing(
             con.execute("SELECT * FROM nodes WHERE parent_id = ?", (str(parent_id),))
@@ -520,7 +518,7 @@ def _get_children(dsn: str, parent_id: MirrorStableId) -> list[NodeRecord]:
     return [row_to_record(r) for r in rows]
 
 
-def _collect_subtree_node_ids(dsn: str, root_id: MirrorStableId) -> set[MirrorStableId]:
+def _collect_subtree_node_ids(dsn: str, root_id: NodeId) -> set[NodeId]:
     """All node_id values in the DB subtree rooted at *root_id* (including *root_id*)."""
     sql = """
     WITH RECURSIVE descendants(node_id) AS (
@@ -533,10 +531,10 @@ def _collect_subtree_node_ids(dsn: str, root_id: MirrorStableId) -> set[MirrorSt
     """
     with _read_only(dsn) as con:
         with closing(con.execute(sql, (str(root_id),))) as cur:
-            return {MirrorStableId(row["node_id"]) for row in cur}
+            return {NodeId(row["node_id"]) for row in cur}
 
 
-def _get_ancestors(dsn: str, node_id: MirrorStableId) -> list[NodeRecord]:
+def _get_ancestors(dsn: str, node_id: NodeId) -> list[NodeRecord]:
     """Fetch the ancestor chain starting from *node_id*, stopping before virtual nodes.
 
     Returns all nodes from *node_id* up to (but not including) the first virtual
@@ -559,9 +557,9 @@ def _get_ancestors(dsn: str, node_id: MirrorStableId) -> list[NodeRecord]:
 
 def _deferred_removal_roots(
     dsn: str,
-    preserved: set[MirrorStableId],
-    scope: set[MirrorStableId],
-) -> list[MirrorStableId]:
+    preserved: set[NodeId],
+    scope: set[NodeId],
+) -> list[NodeId]:
     """Roots of the subtrees under *scope* whose nodes are not in *preserved*.
 
     The *scope* nodes themselves are never roots.
@@ -585,9 +583,9 @@ def _deferred_removal_roots(
         with closing(con.execute(sql, tuple(str(_) for _ in scope))) as cur:
             rows = cur.fetchall()
 
-    parent_by_id: dict[MirrorStableId, MirrorStableId | None] = {
-        MirrorStableId(row["node_id"]): (
-            MirrorStableId(row["parent_id"]) if row["parent_id"] is not None else None
+    parent_by_id: dict[NodeId, NodeId | None] = {
+        NodeId(row["node_id"]): (
+            NodeId(row["parent_id"]) if row["parent_id"] is not None else None
         )
         for row in rows
     }
@@ -608,7 +606,7 @@ def _get_changes_since(
     dsn: str,
     cursor: int,
     max_size: int = _MAX_CHANGES_PER_PAGE,
-) -> tuple[list[tuple[MirrorStableId, bool, NodeRecord | None]], int, bool]:
+) -> tuple[list[tuple[NodeId, bool, NodeRecord | None]], int, bool]:
     """Return (changes, new_cursor, has_more).
 
     Each change is (node_id, is_removed).
@@ -647,13 +645,13 @@ def _get_changes_since(
         key=lambda row: int(row["change_id"]),
     )
 
-    result: list[tuple[MirrorStableId, bool, NodeRecord | None]] = []
+    result: list[tuple[NodeId, bool, NodeRecord | None]] = []
     for row in deduped_rows:
         is_removed = bool(row["is_removed"])
         record: NodeRecord | None = None
         if not is_removed and row["name"] is not None:
             record = row_to_record(row)
-        result.append((MirrorStableId(row["node_id"]), is_removed, record))
+        result.append((NodeId(row["node_id"]), is_removed, record))
 
     new_cursor = rows[-1]["change_id"] if rows else cursor
     return result, new_cursor, has_more
@@ -661,10 +659,8 @@ def _get_changes_since(
 
 def row_to_record(row: sqlite3.Row) -> NodeRecord:
     return NodeRecord(
-        id=MirrorStableId(row["id"] if "id" in row.keys() else row["node_id"]),
-        parent_id=(
-            MirrorStableId(row["parent_id"]) if row["parent_id"] is not None else None
-        ),
+        id=NodeId(row["id"] if "id" in row.keys() else row["node_id"]),
+        parent_id=(NodeId(row["parent_id"]) if row["parent_id"] is not None else None),
         name=row["name"],
         is_directory=bool(row["is_directory"]),
         created_time=row["created_time"],
@@ -738,16 +734,16 @@ def reset_change_history(dsn: str, *, schemas: Schemas) -> int:
 
 def _build_deferred_preserved_set(
     dsn: str,
-    seen_ids: set[MirrorStableId],
-    preserve_roots: set[MirrorStableId],
-) -> set[MirrorStableId]:
+    seen_ids: set[NodeId],
+    preserve_roots: set[NodeId],
+) -> set[NodeId]:
     preserved = set(seen_ids)
     for root in preserve_roots:
         preserved |= _collect_subtree_node_ids(dsn, root)
     return preserved
 
 
-def _resolve_path_to_id(dsn: str, segments: list[str]) -> MirrorStableId | None:
+def _resolve_path_to_id(dsn: str, segments: list[str]) -> NodeId | None:
     """Resolve a list of directory names to a final node_id using one recursive query.
 
     Matches only nodes where is_directory = 1.
@@ -791,7 +787,7 @@ def _resolve_path_to_id(dsn: str, segments: list[str]) -> MirrorStableId | None:
     with _read_only(dsn) as con:
         with closing(con.execute(sql, params)) as cur:
             row = cur.fetchone()
-    return MirrorStableId(row["node_id"]) if row else None
+    return NodeId(row["node_id"]) if row else None
 
 
 class StorageService:
@@ -845,66 +841,64 @@ class StorageService:
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
         await self._off_main(_upsert_node_and_emit_change, self._dsn, record)
 
-    async def delete_subtree_and_emit_changes(self, node_id: MirrorStableId) -> None:
+    async def delete_subtree_and_emit_changes(self, node_id: NodeId) -> None:
         await self._off_main(
             _delete_subtree_and_emit_changes, self._dsn, node_id, self._schemas
         )
 
     async def apply_observations(
         self, observations: list[NodeObservation]
-    ) -> set[MirrorStableId]:
+    ) -> set[NodeId]:
         return await self._off_main(
             _apply_observations, self._dsn, observations, self._schemas
         )
 
     async def mark_enrichment_pending(
-        self, node_id: MirrorStableId, backend: str | None = None
+        self, node_id: NodeId, backend: str | None = None
     ) -> None:
         await self._off_main(_mark_enrichment_pending, self._dsn, node_id, backend)
 
-    async def get_pending_enrichment(
-        self, backend: str | None = None
-    ) -> list[MirrorStableId]:
+    async def get_pending_enrichment(self, backend: str | None = None) -> list[NodeId]:
         return await self._off_main(_get_pending_enrichment, self._dsn, backend)
 
-    async def resolve_path_to_id(self, segments: list[str]) -> MirrorStableId | None:
+    async def resolve_path_to_id(self, segments: list[str]) -> NodeId | None:
         return await self._off_main(_resolve_path_to_id, self._dsn, segments)
 
-    async def get_node_by_id(self, node_id: MirrorStableId) -> NodeRecord | None:
+    async def get_node_by_id(self, node_id: NodeId) -> NodeRecord | None:
         return await self._off_main(_get_node_by_id, self._dsn, node_id)
 
     async def get_nodes_by_ids(
         self,
-        node_ids: list[MirrorStableId],
-    ) -> dict[MirrorStableId, NodeRecord]:
+        node_ids: list[NodeId],
+    ) -> dict[NodeId, NodeRecord]:
         return await self._off_main(_get_nodes_by_ids, self._dsn, node_ids)
 
-    async def get_children(self, parent_id: MirrorStableId) -> list[NodeRecord]:
+    async def get_children(self, parent_id: NodeId) -> list[NodeRecord]:
         return await self._off_main(_get_children, self._dsn, parent_id)
 
-    async def get_ancestors(self, node_id: MirrorStableId) -> list[NodeRecord]:
+    async def get_ancestors(self, node_id: NodeId) -> list[NodeRecord]:
         return await self._off_main(_get_ancestors, self._dsn, node_id)
 
     async def collect_subtree_node_ids(
         self,
-        root_id: MirrorStableId,
-    ) -> set[MirrorStableId]:
+        root_id: NodeId,
+    ) -> set[NodeId]:
         return await self._off_main(_collect_subtree_node_ids, self._dsn, root_id)
 
     async def build_deferred_preserved_set(
         self,
-        seen_ids: set[MirrorStableId],
-        preserve_roots: set[MirrorStableId],
-    ) -> set[MirrorStableId]:
+        seen_ids: set[NodeId],
+        preserve_roots: set[NodeId],
+    ) -> set[NodeId]:
         return await self._off_main(
             _build_deferred_preserved_set, self._dsn, seen_ids, preserve_roots
         )
 
     async def deferred_removal_roots(
         self,
-        preserved: set[MirrorStableId],
-        scope: set[MirrorStableId],
-    ) -> list[MirrorStableId]:
+        preserved: set[NodeId],
+        scope: set[NodeId],
+    ) -> list[NodeId]:
         return await self._off_main(
             _deferred_removal_roots, self._dsn, preserved, scope
         )
@@ -916,7 +910,7 @@ class StorageService:
         self,
         cursor: int,
         max_size: int = _MAX_CHANGES_PER_PAGE,
-    ) -> tuple[list[tuple[MirrorStableId, bool, NodeRecord | None]], int, bool]:
+    ) -> tuple[list[tuple[NodeId, bool, NodeRecord | None]], int, bool]:
         return await self._off_main(_get_changes_since, self._dsn, cursor, max_size)
 
     async def cleanup_dangling_nodes(self) -> int:

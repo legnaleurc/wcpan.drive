@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from logging import getLogger
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.debounce import TaskIdDebouncer
 from wcpan.drive.server.lib.mounts import mount_name
@@ -46,7 +46,7 @@ class _WebhookActionPlan:
     fetch_immediately: bool = False
     wait_for_writes: bool = False
     scan_moved_dir_subtree: bool = False
-    delete_id: MirrorStableId | None = None
+    delete_id: NodeId | None = None
     schedule_delayed_upsert: bool = False
 
 
@@ -106,7 +106,7 @@ class WebhookService:
             if resolved is None:
                 if event_type in ("file_moved", "file_renamed"):
                     existing = await self._storage.get_node_by_id(
-                        MirrorStableId(permanent_link_ref.permanent_link)
+                        NodeId(permanent_link_ref.permanent_link)
                     )
                     if existing is not None:
                         _L.debug(
@@ -167,7 +167,7 @@ class WebhookService:
                 file_ref=file_ref,
                 permanent_link_ref=permanent_link_ref,
                 parent_file_ref=parent_file_ref,
-                delete_id=MirrorStableId(permanent_link_ref.permanent_link),
+                delete_id=NodeId(permanent_link_ref.permanent_link),
             )
 
         if event_type == "file_modified" and file_type == "file":
@@ -282,7 +282,7 @@ class WebhookService:
             return False
 
         source_node = await self._storage.get_node_by_id(
-            MirrorStableId(plan.permanent_link_ref.permanent_link)
+            NodeId(plan.permanent_link_ref.permanent_link)
         )
         if source_node is None:
             source_node = await self._store.get_node_by_locator(
@@ -320,16 +320,14 @@ class WebhookService:
         ancestor_mount = mount_name(top.parent_id)
         return ancestor_mount in self._mount_registry.mounts
 
-    async def _scan_moved_dir_subtree(self, folder_id: MirrorStableId) -> None:
+    async def _scan_moved_dir_subtree(self, folder_id: NodeId) -> None:
         """BFS-populate children of a moved directory not delivered by the webhook."""
 
-        async def _visit(current_id: MirrorStableId) -> list[MirrorStableId]:
+        async def _visit(current_id: NodeId) -> list[NodeId]:
             async with self._node_sync.observe() as read:
                 return await _visit_observed(current_id, read)
 
-        async def _visit_observed(
-            current_id: MirrorStableId, read: ReadSeq
-        ) -> list[MirrorStableId]:
+        async def _visit_observed(current_id: NodeId, read: ReadSeq) -> list[NodeId]:
             try:
                 items = await self._syno_paths.list_children(
                     self._drive_api, current_id
@@ -341,7 +339,7 @@ class WebhookService:
                 return []
             dir_records: list[NodeObservation] = []
             file_records: list[NodeObservation] = []
-            children: list[MirrorStableId] = []
+            children: list[NodeId] = []
             for item in items:
                 observation = convert_file_info(item, parent_id=current_id)
                 if observation is None:
@@ -364,16 +362,16 @@ class WebhookService:
         self,
         file_ref: SynologyFileId,
         permanent_link_ref: SynologyPermanentLink,
-    ) -> MirrorStableId | None:
+    ) -> NodeId | None:
         record = await self._storage.get_node_by_id(
-            MirrorStableId(permanent_link_ref.permanent_link)
+            NodeId(permanent_link_ref.permanent_link)
         )
         if record is not None:
             return record.id
         info = await self._drive_api.get_file(permanent_link_ref)
         if info is not None:
             permanent_link = info.get("permanent_link")
-            return MirrorStableId(permanent_link or permanent_link_ref.permanent_link)
+            return NodeId(permanent_link or permanent_link_ref.permanent_link)
         record = await self._store.get_node_by_locator(
             SynologyLocator(file_ref.file_id)
         )

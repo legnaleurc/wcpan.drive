@@ -4,7 +4,7 @@ import logging
 from functools import partial
 from pathlib import PurePosixPath
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, mount_id, mount_name
 from wcpan.drive.server.services.paths import VirtualPathService
@@ -82,7 +82,7 @@ class BackfillService:
 
     async def _reconcile_subtree(
         self,
-        root_node_id: MirrorStableId,
+        root_node_id: NodeId,
         *,
         dry_run: bool = False,
     ) -> dict[str, int]:
@@ -113,7 +113,7 @@ class BackfillService:
                 initial, session=session, dry_run=dry_run
             )
 
-    async def _mount_of(self, node_id: MirrorStableId) -> MirrorStableId | None:
+    async def _mount_of(self, node_id: NodeId) -> NodeId | None:
         if mount_name(node_id) is not None:
             return node_id
         ancestors = await self._storage.get_ancestors(node_id)
@@ -121,7 +121,7 @@ class BackfillService:
 
     async def _reconcile_in_session(
         self,
-        initial: list[MirrorStableId],
+        initial: list[NodeId],
         *,
         session: ReconcileSession,
         dry_run: bool,
@@ -129,13 +129,11 @@ class BackfillService:
         cs = self._node_sync
         checked = added = updated = list_errors = 0
 
-        async def _visit(parent_id: MirrorStableId) -> list[MirrorStableId]:
+        async def _visit(parent_id: NodeId) -> list[NodeId]:
             async with cs.observe() as read:
                 return await _visit_observed(parent_id, read)
 
-        async def _visit_observed(
-            parent_id: MirrorStableId, read: ReadSeq
-        ) -> list[MirrorStableId]:
+        async def _visit_observed(parent_id: NodeId, read: ReadSeq) -> list[NodeId]:
             nonlocal checked, added, updated, list_errors
             try:
                 items = await self._syno_paths.list_children(self._drive_api, parent_id)
@@ -146,9 +144,9 @@ class BackfillService:
                 return []
 
             db_children = await self._storage.get_children(parent_id)
-            db_by_id: dict[MirrorStableId, NodeRecord] = {r.id: r for r in db_children}
+            db_by_id: dict[NodeId, NodeRecord] = {r.id: r for r in db_children}
             db_locators = await self._store.get_locators(list(db_by_id))
-            children: list[MirrorStableId] = []
+            children: list[NodeId] = []
 
             checked += len(items)
             listed = [

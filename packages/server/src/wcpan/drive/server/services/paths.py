@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from wcpan.drive.protocol.types import MirrorStableId, NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 from ..lib.mounts import SERVER_ROOT_ID, is_virtual, mount_name
 from ..types import VirtualPath
@@ -90,7 +90,7 @@ class VirtualPathService:
     async def resolve_to_directory_node_id(
         self,
         virtual_path: VirtualPath,
-    ) -> MirrorStableId:
+    ) -> NodeId:
         """Resolve a server virtual path (``/`` = root ``_``) to a directory ``node_id``."""
         segments = _virtual_path_segments(virtual_path)
 

@@ -6,7 +6,7 @@ Each write therefore carries the sequence number of its read, and is admitted on
 if no observation from a later-started read was already applied to the node.
 """
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 
 from ..types import ReadSeq
 
@@ -27,7 +27,7 @@ class ObservationOrder:
     def __init__(self) -> None:
         self._next = 0
         self._outstanding: dict[ReadSeq, int] = {}
-        self._applied: dict[MirrorStableId, ReadSeq] = {}
+        self._applied: dict[NodeId, ReadSeq] = {}
         self._prune_at = _MIN_PRUNE_SIZE
 
     def begin(self) -> ReadSeq:
@@ -47,16 +47,16 @@ class ObservationOrder:
         del self._outstanding[seq]
         self._maybe_prune()
 
-    def admits(self, node_id: MirrorStableId, seq: ReadSeq) -> bool:
+    def admits(self, node_id: NodeId, seq: ReadSeq) -> bool:
         """True unless *node_id* already holds an observation from a later read."""
         return self._applied.get(node_id, seq) <= seq
 
-    def record(self, node_id: MirrorStableId, seq: ReadSeq) -> None:
+    def record(self, node_id: NodeId, seq: ReadSeq) -> None:
         """Note that an observation from *seq* was applied to *node_id*."""
         if self.admits(node_id, seq):
             self._applied[node_id] = seq
 
-    def touched_after(self, seq: ReadSeq) -> set[MirrorStableId]:
+    def touched_after(self, seq: ReadSeq) -> set[NodeId]:
         """Nodes written or removed by reads that started after *seq*.
 
         Complete while *seq* is outstanding, since pruning keeps those entries.

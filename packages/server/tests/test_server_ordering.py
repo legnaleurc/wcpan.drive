@@ -2,12 +2,12 @@
 
 from unittest import TestCase
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.services import ordering
 from wcpan.drive.server.services.ordering import ObservationOrder
 
 
-_X = MirrorStableId("x")
+_X = NodeId("x")
 
 
 class TestObservationOrder(TestCase):
@@ -33,7 +33,7 @@ class TestObservationOrder(TestCase):
     def test_touched_after_reports_only_later_reads(self) -> None:
         order = ObservationOrder()
         scan = order.begin()
-        before = MirrorStableId("before")
+        before = NodeId("before")
         order.record(before, scan)
         later = order.begin()
         order.record(_X, later)
@@ -49,7 +49,7 @@ class TestObservationOrder(TestCase):
         # Force pruning by filling past the threshold with finished reads.
         for i in range(ordering._MIN_PRUNE_SIZE + 1):
             seq = order.begin()
-            order.record(MirrorStableId(f"n{i}"), seq)
+            order.record(NodeId(f"n{i}"), seq)
             order.release(seq)
 
         # "stale" is still outstanding, so the newer entry must survive pruning.
@@ -62,7 +62,7 @@ class TestObservationOrder(TestCase):
         order.release(first)
         for i in range(ordering._MIN_PRUNE_SIZE + 1):
             seq = order.begin()
-            order.record(MirrorStableId(f"n{i}"), seq)
+            order.record(NodeId(f"n{i}"), seq)
             order.release(seq)
 
         self.assertNotIn(_X, order.touched_after(-1))  # type: ignore[arg-type]
@@ -77,7 +77,7 @@ class TestObservationOrder(TestCase):
         order.release(newer)
         for i in range(ordering._MIN_PRUNE_SIZE + 1):
             seq = order.begin()
-            order.record(MirrorStableId(f"n{i}"), seq)
+            order.record(NodeId(f"n{i}"), seq)
             order.release(seq)
 
         self.assertFalse(order.admits(_X, stale))

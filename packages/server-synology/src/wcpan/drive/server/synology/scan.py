@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
 
-from wcpan.drive.protocol.types import MirrorStableId
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
@@ -50,12 +50,12 @@ class StartupScanService:
 
     async def _scan_mount_level(
         self,
-        mid: MirrorStableId,
+        mid: NodeId,
         syno_path: SynologyPath,
         last_max_id: int,
         acc: ScanAccumulator,
         read: ReadSeq,
-    ) -> tuple[int, int, list[tuple[MirrorStableId, int, bool]]]:
+    ) -> tuple[int, int, list[tuple[NodeId, int, bool]]]:
         """Scan the first level of a mount using the same child listing path service."""
         try:
             items = await self._syno_paths.list_children(self._drive_api, mid)
@@ -80,7 +80,7 @@ class StartupScanService:
             default=last_max_id,
         )
         highest = last_max_id
-        subfolders: list[tuple[MirrorStableId, int, bool]] = []
+        subfolders: list[tuple[NodeId, int, bool]] = []
         pending_upserts: list[NodeObservation] = []
 
         for item in items:
@@ -112,7 +112,7 @@ class StartupScanService:
 
     async def _scan_subtree_bfs(
         self,
-        initial: list[tuple[MirrorStableId, int, bool]],
+        initial: list[tuple[NodeId, int, bool]],
         last_max_id: int,
         acc: ScanAccumulator,
     ) -> None:
@@ -120,15 +120,15 @@ class StartupScanService:
         acc.highest = last_max_id
 
         async def _visit(
-            entry: tuple[MirrorStableId, int, bool],
-        ) -> list[tuple[MirrorStableId, int, bool]]:
+            entry: tuple[NodeId, int, bool],
+        ) -> list[tuple[NodeId, int, bool]]:
             async with self._node_sync.observe() as read:
                 return await _visit_observed(entry, read)
 
         async def _visit_observed(
-            entry: tuple[MirrorStableId, int, bool],
+            entry: tuple[NodeId, int, bool],
             read: ReadSeq,
-        ) -> list[tuple[MirrorStableId, int, bool]]:
+        ) -> list[tuple[NodeId, int, bool]]:
             folder_id, this_max_id, force_scan = entry
 
             if not force_scan and last_max_id > 0 and this_max_id <= last_max_id:
@@ -194,7 +194,7 @@ class StartupScanService:
 
             pending_dir_upserts: list[NodeObservation] = []
             pending_file_records: list[NodeObservation] = []
-            children: list[tuple[MirrorStableId, int, bool]] = []
+            children: list[tuple[NodeId, int, bool]] = []
 
             for item in items:
                 sync_id = item.get("sync_id", 0)
