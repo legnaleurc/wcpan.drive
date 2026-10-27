@@ -1,4 +1,4 @@
-"""FileService implementation that talks to the wcpan.drive.client.remote server."""
+"""Backend implementation that talks to the wcpan.drive.client.remote server."""
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -7,9 +7,9 @@ from typing import cast, override
 from aiohttp import ClientSession
 from wcpan.drive.client.exceptions import NodeExistsError, NodeNotFoundError
 from wcpan.drive.client.types import (
+    Backend,
     ChangeAction,
     CreateHasher,
-    FileService,
     MediaInfo,
     Node,
     PrivateDict,
@@ -32,7 +32,7 @@ from .readable import ClientReadableFile
 from .writable import create_writable
 
 
-class ClientFileService(FileService):
+class RemoteBackend(Backend):
     def __init__(self, *, session: ClientSession, server_url: str) -> None:
         self._session = session
         self._url = server_url.rstrip("/")

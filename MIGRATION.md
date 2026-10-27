@@ -48,3 +48,18 @@ maintenance commands moved under `backend NAME`, for example
 `backend synology backfill /`. The Synology locator is private backend state
 (schema 5, now 7), and node payloads no longer carry `mutable_id`, so
 clients from before this migration cannot read them. The remaining work is specified in PLAN.md.
+
+## Client naming
+
+The client service interfaces are renamed to match the server vocabulary:
+`FileService` is now `Backend` and `SnapshotService` is now `Cache`, with
+`BackendFactory`, `BackendMiddleware`, `CacheFactory`, and `CacheMiddleware`
+replacing the `Create*Service*` aliases. `create_drive()` and `SourceConfig`
+take `backend=` and `cache=` instead of `file=` and `snapshot=`. Provider entry
+points are `wcpan.drive.client.google.create_backend`,
+`wcpan.drive.client.remote.create_backend`,
+`wcpan.drive.client.sqlite.create_cache`, and
+`wcpan.drive.client.crypt.create_middleware`. The CLI configuration is now
+version 4: rename each source's `file` key to `backend` and `snapshot` to
+`cache`, and update the function names above. `SqliteSnapshotError` is now
+`SqliteCacheError`. The protocol's `MirrorStableId` is now `NodeId`.

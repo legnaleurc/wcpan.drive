@@ -1,4 +1,4 @@
-"""Tests for ClientFileService helpers."""
+"""Tests for RemoteBackend helpers."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -9,7 +9,7 @@ from wcpan.drive.client.remote.exceptions import (
     SynologyAccessError,
     SynologyServerError,
 )
-from wcpan.drive.client.remote.service import ClientFileService, _check
+from wcpan.drive.client.remote.service import RemoteBackend, _check
 from wcpan.drive.client.types import Node
 
 
@@ -124,7 +124,7 @@ class TestCreateDirectory409(IsolatedAsyncioTestCase):
             def post(self, *a, **k):
                 return _Fake409Response(409, body)
 
-        svc = ClientFileService(session=_Sess(), server_url="http://srv")  # type: ignore[arg-type]
+        svc = RemoteBackend(session=_Sess(), server_url="http://srv")  # type: ignore[arg-type]
         node = await svc.create_directory(
             "d", _parent_node(), exist_ok=True, private=None
         )
@@ -137,7 +137,7 @@ class TestCreateDirectory409(IsolatedAsyncioTestCase):
             def post(self, *a, **k):
                 return _Fake409Response(409, body)
 
-        svc = ClientFileService(session=_Sess2(), server_url="http://srv")  # type: ignore[arg-type]
+        svc = RemoteBackend(session=_Sess2(), server_url="http://srv")  # type: ignore[arg-type]
         with self.assertRaises(NodeExistsError) as ctx:
             await svc.create_directory(
                 "d", _parent_node(), exist_ok=False, private=None
@@ -149,7 +149,7 @@ class TestCreateDirectory409(IsolatedAsyncioTestCase):
             def post(self, *a, **k):
                 return _Fake409Response(409, {})
 
-        svc = ClientFileService(session=_Sess(), server_url="http://srv")  # type: ignore[arg-type]
+        svc = RemoteBackend(session=_Sess(), server_url="http://srv")  # type: ignore[arg-type]
         with self.assertRaises(SynologyServerError) as ctx:
             await svc.create_directory("d", _parent_node(), exist_ok=True, private=None)
         self.assertEqual(ctx.exception.status, 409)
@@ -220,9 +220,7 @@ class TestGetChangesReplay(IsolatedAsyncioTestCase):
                 "changes": [self._remove_change("n1")],
             },
         }
-        svc = ClientFileService(
-            session=_FakeChangesSession(pages), server_url="http://srv"
-        )  # type: ignore[arg-type]
+        svc = RemoteBackend(session=_FakeChangesSession(pages), server_url="http://srv")  # type: ignore[arg-type]
         actions_by_page = []
         async for actions, cursor in svc.get_changes("0"):
             actions_by_page.append((actions, cursor))
@@ -245,9 +243,7 @@ class TestGetChangesReplay(IsolatedAsyncioTestCase):
                 ],
             }
         }
-        svc = ClientFileService(
-            session=_FakeChangesSession(pages), server_url="http://srv"
-        )  # type: ignore[arg-type]
+        svc = RemoteBackend(session=_FakeChangesSession(pages), server_url="http://srv")  # type: ignore[arg-type]
 
         seen = []
         async for actions, cursor in svc.get_changes("0"):

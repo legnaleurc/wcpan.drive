@@ -19,11 +19,11 @@ from wcpan.drive.client.exceptions import (
 )
 from wcpan.drive.client.lib import dispatch_change
 from wcpan.drive.client.types import (
+    Backend,
+    Cache,
     ChangeAction,
-    FileService,
     Node,
     ReadableFile,
-    SnapshotService,
     SourceConfig,
     UpdateAction,
     WritableFile,
@@ -63,65 +63,61 @@ def make_node(
 
 class CreateDriveTestCase(IsolatedAsyncioTestCase):
     async def testCreate(self) -> None:
-        file_service = Mock(spec=FileService)
-        file_service.api_version = 6
-        create_file_service = create_mocked_acm(file_service)
+        backend = Mock(spec=Backend)
+        backend.api_version = 6
+        create_backend = create_mocked_acm(backend)
 
-        create_file_service_middleware_1 = create_mocked_acm(file_service)
-        create_file_service_middleware_2 = create_mocked_acm(file_service)
+        create_backend_middleware_1 = create_mocked_acm(backend)
+        create_backend_middleware_2 = create_mocked_acm(backend)
 
-        snapshot_service = Mock(spec=SnapshotService)
-        snapshot_service.api_version = 6
-        create_snapshot_service = create_mocked_acm(snapshot_service)
+        cache = Mock(spec=Cache)
+        cache.api_version = 6
+        create_cache = create_mocked_acm(cache)
 
-        create_snapshot_service_middleware_1 = create_mocked_acm(snapshot_service)
-        create_snapshot_service_middleware_2 = create_mocked_acm(snapshot_service)
+        create_cache_middleware_1 = create_mocked_acm(cache)
+        create_cache_middleware_2 = create_mocked_acm(cache)
 
         async with create_drive(
-            file=compose_service(
-                create_file_service,
-                create_file_service_middleware_1,
-                create_file_service_middleware_2,
+            backend=compose_service(
+                create_backend,
+                create_backend_middleware_1,
+                create_backend_middleware_2,
             ),
-            snapshot=compose_service(
-                create_snapshot_service,
-                create_snapshot_service_middleware_1,
-                create_snapshot_service_middleware_2,
+            cache=compose_service(
+                create_cache,
+                create_cache_middleware_1,
+                create_cache_middleware_2,
             ),
         ):
-            create_file_service.assert_called_once()
-            create_file_service_middleware_1.assert_called_once_with(file_service)
-            create_file_service_middleware_2.assert_called_once_with(file_service)
-            create_snapshot_service.assert_called_once()
-            create_snapshot_service_middleware_1.assert_called_once_with(
-                snapshot_service
-            )
-            create_snapshot_service_middleware_2.assert_called_once_with(
-                snapshot_service
-            )
+            create_backend.assert_called_once()
+            create_backend_middleware_1.assert_called_once_with(backend)
+            create_backend_middleware_2.assert_called_once_with(backend)
+            create_cache.assert_called_once()
+            create_cache_middleware_1.assert_called_once_with(cache)
+            create_cache_middleware_2.assert_called_once_with(cache)
 
     async def testMultiMode(self) -> None:
-        file_service_1 = Mock(spec=FileService)
-        file_service_1.api_version = 6
-        file_service_2 = Mock(spec=FileService)
-        file_service_2.api_version = 6
+        backend_1 = Mock(spec=Backend)
+        backend_1.api_version = 6
+        backend_2 = Mock(spec=Backend)
+        backend_2.api_version = 6
 
-        snapshot_service_1 = Mock(spec=SnapshotService)
-        snapshot_service_1.api_version = 6
-        snapshot_service_2 = Mock(spec=SnapshotService)
-        snapshot_service_2.api_version = 6
+        cache_1 = Mock(spec=Cache)
+        cache_1.api_version = 6
+        cache_2 = Mock(spec=Cache)
+        cache_2.api_version = 6
 
         async with create_multi_drive(
             sources=[
                 SourceConfig(
                     name="google",
-                    file=create_mocked_acm(file_service_1),
-                    snapshot=create_mocked_acm(snapshot_service_1),
+                    backend=create_mocked_acm(backend_1),
+                    cache=create_mocked_acm(cache_1),
                 ),
                 SourceConfig(
                     name="local",
-                    file=create_mocked_acm(file_service_2),
-                    snapshot=create_mocked_acm(snapshot_service_2),
+                    backend=create_mocked_acm(backend_2),
+                    cache=create_mocked_acm(cache_2),
                 ),
             ]
         ) as drive:
@@ -164,7 +160,7 @@ class GetHasherTestCase(IsolatedAsyncioTestCase):
         aexpect(self._fs.get_hasher_factory).assert_awaited_once_with(node)
 
 
-class SnapshotTestCase(IsolatedAsyncioTestCase):
+class CacheTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._drive, self._fs, self._ss = await self.enterAsyncContext(
             create_mocked_drive()
@@ -683,12 +679,8 @@ class MultiDriveGetChildrenTestCase(IsolatedAsyncioTestCase):
     async def testGetChildrenOfRoot(self) -> None:
         google_root = make_node(node_id="groot", name="", is_directory=True)
         local_root = make_node(node_id="lroot", name="", is_directory=True)
-        aexpect(
-            self._sources["google"].snapshot_service.get_root
-        ).return_value = google_root
-        aexpect(
-            self._sources["local"].snapshot_service.get_root
-        ).return_value = local_root
+        aexpect(self._sources["google"].cache.get_root).return_value = google_root
+        aexpect(self._sources["local"].cache.get_root).return_value = local_root
 
         virtual_root = await self._drive.get_root()
         children = await self._drive.get_children(virtual_root)
@@ -708,9 +700,9 @@ class MultiDriveGetChildrenTestCase(IsolatedAsyncioTestCase):
         backend_child = make_node(
             node_id="child1", parent_id="groot", name="docs", is_directory=True
         )
-        aexpect(
-            self._sources["google"].snapshot_service.get_children_by_id
-        ).return_value = [backend_child]
+        aexpect(self._sources["google"].cache.get_children_by_id).return_value = [
+            backend_child
+        ]
 
         source_root = make_node(
             node_id="google:groot",
@@ -724,7 +716,7 @@ class MultiDriveGetChildrenTestCase(IsolatedAsyncioTestCase):
         self.assertEqual(children[0].id, "google:child1")
         self.assertEqual(children[0].parent_id, "google:groot")
         aexpect(
-            self._sources["google"].snapshot_service.get_children_by_id
+            self._sources["google"].cache.get_children_by_id
         ).assert_awaited_once_with("groot")
 
 
@@ -735,9 +727,7 @@ class MultiDriveGetChildByNameTestCase(IsolatedAsyncioTestCase):
 
     async def testGetChildByNameFromVirtualRoot(self) -> None:
         backend_root = make_node(node_id="groot", name="", is_directory=True)
-        aexpect(
-            self._sources["google"].snapshot_service.get_root
-        ).return_value = backend_root
+        aexpect(self._sources["google"].cache.get_root).return_value = backend_root
 
         virtual_root = await self._drive.get_root()
         node = await self._drive.get_child_by_name("google", virtual_root)
@@ -758,9 +748,7 @@ class MultiDriveGetNodeByPathTestCase(IsolatedAsyncioTestCase):
 
     async def testGetSourceRootPath(self) -> None:
         backend_root = make_node(node_id="groot", is_directory=True)
-        aexpect(
-            self._sources["google"].snapshot_service.get_root
-        ).return_value = backend_root
+        aexpect(self._sources["google"].cache.get_root).return_value = backend_root
 
         node = await self._drive.get_node_by_path(PurePath("/google"))
         self.assertEqual(node.id, "google:groot")
@@ -772,13 +760,13 @@ class MultiDriveGetNodeByPathTestCase(IsolatedAsyncioTestCase):
             node_id="file1", parent_id="docs", name="file.txt", is_directory=False
         )
         aexpect(
-            self._sources["google"].snapshot_service.get_node_by_path
+            self._sources["google"].cache.get_node_by_path
         ).return_value = backend_node
 
         node = await self._drive.get_node_by_path(PurePath("/google/docs/file.txt"))
         self.assertEqual(node.id, "google:file1")
         aexpect(
-            self._sources["google"].snapshot_service.get_node_by_path
+            self._sources["google"].cache.get_node_by_path
         ).assert_awaited_once_with(PurePath("/docs/file.txt"))
 
     async def testUnknownSource(self) -> None:
@@ -808,7 +796,7 @@ class MultiDriveResolvePathTestCase(IsolatedAsyncioTestCase):
 
     async def testResolveDeepNode(self) -> None:
         aexpect(
-            self._sources["google"].snapshot_service.resolve_path_by_id
+            self._sources["google"].cache.resolve_path_by_id
         ).return_value = PurePath("/docs/file.txt")
 
         node = make_node(
@@ -820,7 +808,7 @@ class MultiDriveResolvePathTestCase(IsolatedAsyncioTestCase):
         path = await self._drive.resolve_path(node)
         self.assertEqual(path, PurePath("/google/docs/file.txt"))
         aexpect(
-            self._sources["google"].snapshot_service.resolve_path_by_id
+            self._sources["google"].cache.resolve_path_by_id
         ).assert_awaited_once_with("file1")
 
 
@@ -830,10 +818,10 @@ class MultiDriveSyncTestCase(IsolatedAsyncioTestCase):
         self._drive, self._sources = await self.enterAsyncContext(ctx)
 
     async def testSyncYieldsScopedChanges(self) -> None:
-        google_fs = self._sources["google"].file_service
-        google_ss = self._sources["google"].snapshot_service
-        local_fs = self._sources["local"].file_service
-        local_ss = self._sources["local"].snapshot_service
+        google_fs = self._sources["google"].backend
+        google_ss = self._sources["google"].cache
+        local_fs = self._sources["local"].backend
+        local_ss = self._sources["local"].cache
 
         aexpect(google_fs.is_authenticated).return_value = True
         aexpect(local_fs.is_authenticated).return_value = True
@@ -865,22 +853,18 @@ class MultiDriveSyncTestCase(IsolatedAsyncioTestCase):
         self.assertEqual(rv[1][1], "google:old_id")
 
     async def testSyncUnauthorized(self) -> None:
-        aexpect(
-            self._sources["google"].file_service.is_authenticated
-        ).return_value = False
-        aexpect(
-            self._sources["local"].file_service.is_authenticated
-        ).return_value = True
+        aexpect(self._sources["google"].backend.is_authenticated).return_value = False
+        aexpect(self._sources["local"].backend.is_authenticated).return_value = True
 
         with self.assertRaises(AuthenticationError):
             async for _ in self._drive.sync():
                 pass
 
     async def testSyncBothSourcesEmitChanges(self) -> None:
-        google_fs = self._sources["google"].file_service
-        google_ss = self._sources["google"].snapshot_service
-        local_fs = self._sources["local"].file_service
-        local_ss = self._sources["local"].snapshot_service
+        google_fs = self._sources["google"].backend
+        google_ss = self._sources["google"].cache
+        local_fs = self._sources["local"].backend
+        local_ss = self._sources["local"].cache
 
         aexpect(google_fs.is_authenticated).return_value = True
         aexpect(local_fs.is_authenticated).return_value = True
@@ -938,24 +922,16 @@ class MultiDriveMoveTestCase(IsolatedAsyncioTestCase):
             name="dir",
             is_directory=True,
         )
-        aexpect(
-            self._sources["google"].file_service.is_authenticated
-        ).return_value = True
-        aexpect(
-            self._sources["local"].file_service.is_authenticated
-        ).return_value = True
+        aexpect(self._sources["google"].backend.is_authenticated).return_value = True
+        aexpect(self._sources["local"].backend.is_authenticated).return_value = True
 
         with self.assertRaises(ValueError, msg="cannot move across sources"):
             await self._drive.move(google_node, new_parent=local_parent)
 
     async def testMoveVirtualRootRaises(self) -> None:
         virtual_root = await self._drive.get_root()
-        aexpect(
-            self._sources["google"].file_service.is_authenticated
-        ).return_value = True
-        aexpect(
-            self._sources["local"].file_service.is_authenticated
-        ).return_value = True
+        aexpect(self._sources["google"].backend.is_authenticated).return_value = True
+        aexpect(self._sources["local"].backend.is_authenticated).return_value = True
 
         with self.assertRaises(ValueError):
             await self._drive.move(virtual_root, new_name="newname")
@@ -967,12 +943,8 @@ class MultiDriveMoveTestCase(IsolatedAsyncioTestCase):
             name="google",
             is_directory=True,
         )
-        aexpect(
-            self._sources["google"].file_service.is_authenticated
-        ).return_value = True
-        aexpect(
-            self._sources["local"].file_service.is_authenticated
-        ).return_value = True
+        aexpect(self._sources["google"].backend.is_authenticated).return_value = True
+        aexpect(self._sources["local"].backend.is_authenticated).return_value = True
 
         with self.assertRaises(ValueError):
             await self._drive.move(source_root, new_name="newname")
@@ -986,12 +958,12 @@ class MultiDriveFindNodesTestCase(IsolatedAsyncioTestCase):
     async def testFindNodesByRegexMergesResults(self) -> None:
         google_node = make_node(node_id="g1", parent_id="groot", name="photo.jpg")
         local_node = make_node(node_id="l1", parent_id="lroot", name="photo.png")
-        aexpect(
-            self._sources["google"].snapshot_service.find_nodes_by_regex
-        ).return_value = [google_node]
-        aexpect(
-            self._sources["local"].snapshot_service.find_nodes_by_regex
-        ).return_value = [local_node]
+        aexpect(self._sources["google"].cache.find_nodes_by_regex).return_value = [
+            google_node
+        ]
+        aexpect(self._sources["local"].cache.find_nodes_by_regex).return_value = [
+            local_node
+        ]
 
         results = await self._drive.find_nodes_by_regex(r"photo")
 
@@ -1009,16 +981,16 @@ class MultiDriveGetNodeByIdTestCase(IsolatedAsyncioTestCase):
     async def testGetNodeById(self) -> None:
         backend_node = make_node(node_id="abc", parent_id="groot", name="file.txt")
         aexpect(
-            self._sources["google"].snapshot_service.get_node_by_id
+            self._sources["google"].cache.get_node_by_id
         ).return_value = backend_node
 
         result = await self._drive.get_node_by_id("google:abc")
 
         self.assertEqual(result.id, "google:abc")
         self.assertEqual(result.parent_id, "google:groot")
-        aexpect(
-            self._sources["google"].snapshot_service.get_node_by_id
-        ).assert_awaited_once_with("abc")
+        aexpect(self._sources["google"].cache.get_node_by_id).assert_awaited_once_with(
+            "abc"
+        )
 
     async def testGetNodeByIdUnknownSource(self) -> None:
         with self.assertRaises(NodeNotFoundError):
@@ -1031,12 +1003,8 @@ class MultiDriveGetTrashedNodesTestCase(IsolatedAsyncioTestCase):
         self._drive, self._sources = await self.enterAsyncContext(ctx)
 
     async def testGetTrashedNodesEmpty(self) -> None:
-        aexpect(
-            self._sources["google"].snapshot_service.get_trashed_nodes
-        ).return_value = []
-        aexpect(
-            self._sources["local"].snapshot_service.get_trashed_nodes
-        ).return_value = []
+        aexpect(self._sources["google"].cache.get_trashed_nodes).return_value = []
+        aexpect(self._sources["local"].cache.get_trashed_nodes).return_value = []
 
         result = await self._drive.get_trashed_nodes()
 
@@ -1049,12 +1017,12 @@ class MultiDriveGetTrashedNodesTestCase(IsolatedAsyncioTestCase):
         local_node = make_node(
             node_id="l1", parent_id="lroot", name="local_trash.txt", is_trashed=True
         )
-        aexpect(
-            self._sources["google"].snapshot_service.get_trashed_nodes
-        ).return_value = [google_node]
-        aexpect(
-            self._sources["local"].snapshot_service.get_trashed_nodes
-        ).return_value = [local_node]
+        aexpect(self._sources["google"].cache.get_trashed_nodes).return_value = [
+            google_node
+        ]
+        aexpect(self._sources["local"].cache.get_trashed_nodes).return_value = [
+            local_node
+        ]
 
         result = await self._drive.get_trashed_nodes()
 
@@ -1069,12 +1037,11 @@ class MultiDriveGetTrashedNodesTestCase(IsolatedAsyncioTestCase):
         child = make_node(
             node_id="f1", parent_id="d1", name="file.txt", is_trashed=True
         )
-        aexpect(
-            self._sources["google"].snapshot_service.get_trashed_nodes
-        ).return_value = [trashed_dir, child]
-        aexpect(
-            self._sources["local"].snapshot_service.get_trashed_nodes
-        ).return_value = []
+        aexpect(self._sources["google"].cache.get_trashed_nodes).return_value = [
+            trashed_dir,
+            child,
+        ]
+        aexpect(self._sources["local"].cache.get_trashed_nodes).return_value = []
 
         result = await self._drive.get_trashed_nodes(flatten=True)
 
@@ -1089,12 +1056,11 @@ class MultiDriveGetTrashedNodesTestCase(IsolatedAsyncioTestCase):
         child = make_node(
             node_id="f1", parent_id="d1", name="file.txt", is_trashed=True
         )
-        aexpect(
-            self._sources["google"].snapshot_service.get_trashed_nodes
-        ).return_value = [trashed_dir, child]
-        aexpect(
-            self._sources["local"].snapshot_service.get_trashed_nodes
-        ).return_value = []
+        aexpect(self._sources["google"].cache.get_trashed_nodes).return_value = [
+            trashed_dir,
+            child,
+        ]
+        aexpect(self._sources["local"].cache.get_trashed_nodes).return_value = []
 
         result = await self._drive.get_trashed_nodes(flatten=False)
 
@@ -1110,28 +1076,22 @@ class MultiDriveGetHasherTestCase(IsolatedAsyncioTestCase):
 
     async def testGetHasherFactory(self) -> None:
         node = make_node(node_id="local:file1", parent_id="local:root", name="file.txt")
-        aexpect(
-            self._sources["local"].file_service.get_hasher_factory
-        ).return_value = 99
+        aexpect(self._sources["local"].backend.get_hasher_factory).return_value = 99
         rv = await self._drive.get_hasher_factory(node)
 
         self.assertEqual(rv, 99)
         unscoped = aexpect(
-            self._sources["local"].file_service.get_hasher_factory
+            self._sources["local"].backend.get_hasher_factory
         ).await_args.args[0]
         self.assertEqual(unscoped.id, "file1")
         self.assertEqual(unscoped.parent_id, "root")
-        aexpect(
-            self._sources["google"].file_service.get_hasher_factory
-        ).assert_not_awaited()
+        aexpect(self._sources["google"].backend.get_hasher_factory).assert_not_awaited()
 
     async def testGetHasherFactoryRoutesToCorrectSource(self) -> None:
         google_node = make_node(node_id="google:g1", parent_id="google:root")
         local_node = make_node(node_id="local:l1", parent_id="local:root")
-        aexpect(
-            self._sources["google"].file_service.get_hasher_factory
-        ).return_value = 1
-        aexpect(self._sources["local"].file_service.get_hasher_factory).return_value = 2
+        aexpect(self._sources["google"].backend.get_hasher_factory).return_value = 1
+        aexpect(self._sources["local"].backend.get_hasher_factory).return_value = 2
 
         rv_google = await self._drive.get_hasher_factory(google_node)
         rv_local = await self._drive.get_hasher_factory(local_node)
@@ -1146,12 +1106,8 @@ class MultiDriveDeleteTestCase(IsolatedAsyncioTestCase):
         self._drive, self._sources = await self.enterAsyncContext(ctx)
 
     async def testUnauthorized(self) -> None:
-        aexpect(
-            self._sources["google"].file_service.is_authenticated
-        ).return_value = False
-        aexpect(
-            self._sources["local"].file_service.is_authenticated
-        ).return_value = True
+        aexpect(self._sources["google"].backend.is_authenticated).return_value = False
+        aexpect(self._sources["local"].backend.is_authenticated).return_value = True
         node = make_node(
             node_id="google:file1", parent_id="google:root", name="file.txt"
         )
@@ -1166,8 +1122,8 @@ class MultiDriveDeleteTestCase(IsolatedAsyncioTestCase):
 
         await self._drive.delete(node)
 
-        aexpect(self._sources["google"].file_service.delete).assert_awaited_once()
-        call_args = aexpect(self._sources["google"].file_service.delete).call_args
+        aexpect(self._sources["google"].backend.delete).assert_awaited_once()
+        call_args = aexpect(self._sources["google"].backend.delete).call_args
         deleted_node = call_args[0][0]
         self.assertEqual(deleted_node.id, "file1")
         self.assertEqual(call_args[1]["permanent"], False)
@@ -1186,25 +1142,23 @@ async def to_async_iterable[T](rv: Iterable[T]) -> AsyncGenerator[T, None]:
 
 
 @asynccontextmanager
-async def create_mocked_drive() -> AsyncIterator[
-    tuple[Any, FileService, SnapshotService]
-]:
-    file_service = MagicMock(spec=FileService)
-    file_service.api_version = 6
-    create_file_service = create_mocked_acm(file_service)
+async def create_mocked_drive() -> AsyncIterator[tuple[Any, Backend, Cache]]:
+    backend = MagicMock(spec=Backend)
+    backend.api_version = 6
+    create_backend = create_mocked_acm(backend)
 
-    snapshot_service = MagicMock(spec=SnapshotService)
-    snapshot_service.api_version = 6
-    create_snapshot_service = create_mocked_acm(snapshot_service)
+    cache = MagicMock(spec=Cache)
+    cache.api_version = 6
+    create_cache = create_mocked_acm(cache)
 
     async with create_drive(
-        file=create_file_service,
-        snapshot=create_snapshot_service,
+        backend=create_backend,
+        cache=create_cache,
     ) as drive:
         yield (
             drive,
-            cast(FileService, file_service),
-            cast(SnapshotService, snapshot_service),
+            cast(Backend, backend),
+            cast(Cache, cache),
         )
 
 
@@ -1216,22 +1170,22 @@ async def create_mocked_multi_drive(source_names: list[str]) -> AsyncIterator[An
     source_states: dict[str, _SourceState] = {}
 
     for name in source_names:
-        fs = MagicMock(spec=FileService)
+        fs = MagicMock(spec=Backend)
         fs.api_version = 6
         # Default: authenticated
         fs.is_authenticated = AsyncMock(return_value=True)
 
-        ss = MagicMock(spec=SnapshotService)
+        ss = MagicMock(spec=Cache)
         ss.api_version = 6
 
         source_configs.append(
             SourceConfig(
                 name=name,
-                file=create_mocked_acm(fs),
-                snapshot=create_mocked_acm(ss),
+                backend=create_mocked_acm(fs),
+                cache=create_mocked_acm(ss),
             )
         )
-        source_states[name] = _SourceState(file_service=fs, snapshot_service=ss)
+        source_states[name] = _SourceState(backend=fs, cache=ss)
 
     async with create_multi_drive(sources=source_configs) as drive:
         yield drive, source_states

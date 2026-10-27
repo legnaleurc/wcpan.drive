@@ -9,9 +9,9 @@ from wcpan.drive.client.exceptions import (
     UnsupportedHashAlgorithmError,
 )
 from wcpan.drive.client.types import (
+    Backend,
     ChangeAction,
     CreateHasher,
-    FileService,
     MediaInfo,
     Node,
     PrivateDict,
@@ -32,16 +32,16 @@ _L = getLogger(__name__)
 
 
 @asynccontextmanager
-async def create_service(*, client_secret: str, oauth_token: str):
+async def create_backend(*, client_secret: str, oauth_token: str):
     storage = OAuth2Storage(
         client_secret=Path(client_secret), oauth_token=Path(oauth_token)
     )
     oauth = OAuth2Manager(storage)
     async with create_network(oauth) as network:
-        yield GoogleDriveFileService(network, oauth)
+        yield GoogleDriveBackend(network, oauth)
 
 
-class GoogleDriveFileService(FileService):
+class GoogleDriveBackend(Backend):
     def __init__(self, network: Network, oauth: OAuth2Manager) -> None:
         self._network = network
         self._oauth = oauth

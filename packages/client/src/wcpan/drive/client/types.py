@@ -7,13 +7,13 @@ adhere to these contracts.
 Key Concepts:
     - Node: Immutable representation of files and directories
     - Drive: High-level interface for drive operations
-    - FileService: Backend implementation for cloud storage APIs
-    - SnapshotService: Local cache for node metadata
+    - Backend: Cloud storage API operations
+    - Cache: Local cache for node metadata
     - MediaInfo: Metadata for image and video files
 
 The module follows a layered architecture:
     1. Drive (public API) - User-facing operations
-    2. FileService + SnapshotService - Backend implementations
+    2. Backend + Cache - Pluggable implementations
     3. Node + MediaInfo - Data representations
 
 Thread Safety:
@@ -23,7 +23,7 @@ Thread Safety:
 Example:
     Basic usage pattern::
 
-        >>> async with create_drive(file=my_file_service, snapshot=my_snapshot) as drive:
+        >>> async with create_drive(backend=my_backend, cache=my_cache) as drive:
         ...     root = await drive.get_root()
         ...     files = await drive.get_children(root)
 """
@@ -43,12 +43,13 @@ from typing import Literal, Self
 
 
 __all__ = (
+    "Backend",
+    "BackendFactory",
+    "BackendMiddleware",
+    "Cache",
+    "CacheFactory",
+    "CacheMiddleware",
     "ChangeAction",
-    "CreateFileService",
-    "CreateFileServiceMiddleware",
-    "CreateSnapshotService",
-    "CreateSnapshotServiceMiddleware",
-    "FileService",
     "Hasher",
     "MediaInfo",
     "Node",
@@ -332,7 +333,7 @@ class ReadableFile(AsyncIterable[bytes], metaclass=ABCMeta):
     """Async readable file interface for downloading cloud files.
 
     Provides sequential and seekable read access to cloud file content.
-    Returned by Drive.download_file() and FileService.download_file()
+    Returned by Drive.download_file() and Backend.download_file()
     as an async context manager.
 
     This interface extends AsyncIterable[bytes], allowing iteration over
@@ -531,7 +532,7 @@ type CreateHasher = Callable[[], Awaitable[Hasher]]
 """Factory function type for creating Hasher instances.
 
 Returns an awaitable that produces a new Hasher. Obtained from
-Drive.get_hasher_factory(node) or FileService.get_hasher_factory(node).
+Drive.get_hasher_factory(node) or Backend.get_hasher_factory(node).
 
 Example:
     Using hasher factory::
@@ -546,7 +547,7 @@ class WritableFile(metaclass=ABCMeta):
     """Async writable file interface for uploading files to cloud storage.
 
     Provides sequential and seekable write access for uploading content.
-    Returned by Drive.upload_file() and FileService.upload_file() as an
+    Returned by Drive.upload_file() and Backend.upload_file() as an
     async context manager.
 
     Supports resumable uploads through seek() and tell() for recovering
@@ -686,12 +687,12 @@ class WritableFile(metaclass=ABCMeta):
 class Service(metaclass=ABCMeta):
     """Base interface for all service implementations.
 
-    Defines the minimal contract for FileService and SnapshotService
+    Defines the minimal contract for Backend and Cache
     implementations. All services must declare their API version for
     compatibility checking.
 
     Implementations:
-        Subclass this to create FileService or SnapshotService implementations.
+        Subclass this to create Backend or Cache implementations.
     """
 
     @property
@@ -712,7 +713,7 @@ class Service(metaclass=ABCMeta):
         Example:
             Implementing api_version::
 
-                >>> class MyFileService(FileService):
+                >>> class MyBackend(Backend):
                 ...     @property
                 ...     def api_version(self) -> int:
                 ...         return 6
@@ -726,14 +727,14 @@ A callable that returns an async context manager yielding a Service
 instance. Used for dependency injection during drive creation.
 
 Type Parameters:
-    T: The specific Service subclass (FileService or SnapshotService).
+    T: The specific Service subclass (Backend or Cache).
 
 Example:
     Implementing a service factory::
 
         >>> @asynccontextmanager
-        >>> async def create_my_service() -> AsyncIterator[MyFileService]:
-        ...     service = MyFileService()
+        >>> async def create_my_service() -> AsyncIterator[MyBackend]:
+        ...     service = MyBackend()
         ...     try:
         ...         await service.initialize()
         ...         yield service
@@ -757,8 +758,8 @@ Example:
 
         >>> @asynccontextmanager
         >>> async def logging_middleware(
-        ...     service: FileService,
-        ... ) -> AsyncIterator[FileService]:
+        ...     service: Backend,
+        ... ) -> AsyncIterator[Backend]:
         ...     print(f"Service started: {service}")
         ...     try:
         ...         yield service
@@ -767,10 +768,10 @@ Example:
 """
 
 
-class FileService(Service, metaclass=ABCMeta):
+class Backend(Service, metaclass=ABCMeta):
     """Backend implementation interface for cloud storage operations.
 
-    FileService defines the contract for interacting with cloud storage
+    Backend defines the contract for interacting with cloud storage
     APIs. Implementations provide the actual I/O operations for a specific
     cloud provider (e.g., Google Drive, Dropbox, OneDrive).
 
@@ -782,7 +783,7 @@ class FileService(Service, metaclass=ABCMeta):
         - Raise appropriate exceptions on errors
 
     Used With:
-        Paired with a SnapshotService and passed to create_drive().
+        Paired with a Cache and passed to create_drive().
 
     Thread Safety:
         Implementations should handle concurrent operations safely.
@@ -790,7 +791,7 @@ class FileService(Service, metaclass=ABCMeta):
     Example:
         Basic implementation structure::
 
-            >>> class MyCloudService(FileService):
+            >>> class MyCloudBackend(Backend):
             ...     @property
             ...     def api_version(self) -> int:
             ...         return 6
@@ -805,15 +806,15 @@ class FileService(Service, metaclass=ABCMeta):
 
             >>> @asynccontextmanager
             >>> async def create_my_service():
-            ...     service = MyCloudService(credentials)
+            ...     service = MyCloudBackend(credentials)
             ...     try:
             ...         yield service
             ...     finally:
             ...         await service.close()
             >>>
             >>> async with create_drive(
-            ...     file=create_my_service,
-            ...     snapshot=create_snapshot,
+            ...     backend=create_my_service,
+            ...     cache=create_cache,
             ... ) as drive:
             ...     await drive.sync()
     """
@@ -845,7 +846,7 @@ class FileService(Service, metaclass=ABCMeta):
 
         Retrieves the root directory's metadata from the cloud API and
         returns it as a Node instance. This is typically cached by the
-        SnapshotService after the first call.
+        Cache after the first call.
 
         Returns:
             Node representing the root directory.
@@ -901,7 +902,7 @@ class FileService(Service, metaclass=ABCMeta):
             Usage in sync::
 
                 >>> async for changes, next_cursor in service.get_changes(cursor):
-                ...     await snapshot.apply_changes(changes, next_cursor)
+                ...     await cache.apply_changes(changes, next_cursor)
         """
 
     @abstractmethod
@@ -1195,24 +1196,24 @@ class FileService(Service, metaclass=ABCMeta):
         """
 
 
-type CreateFileService = CreateService[FileService]
-"""Factory type for creating FileService instances.
+type BackendFactory = CreateService[Backend]
+"""Factory type for creating Backend instances.
 
 See CreateService for details.
 """
 
 
-type CreateFileServiceMiddleware = CreateServiceMiddleware[FileService]
-"""Middleware factory type for wrapping FileService instances.
+type BackendMiddleware = CreateServiceMiddleware[Backend]
+"""Middleware factory type for wrapping Backend instances.
 
 See CreateServiceMiddleware for details.
 """
 
 
-class SnapshotService(Service, metaclass=ABCMeta):
+class Cache(Service, metaclass=ABCMeta):
     """Local cache interface for node metadata and change tracking.
 
-    SnapshotService defines the contract for maintaining a local cache of
+    Cache defines the contract for maintaining a local cache of
     the cloud drive's directory structure and file metadata. This enables:
     - Fast path lookups without API calls
     - Efficient change synchronization
@@ -1224,7 +1225,7 @@ class SnapshotService(Service, metaclass=ABCMeta):
         - Transaction support for atomic updates
 
     Used With:
-        Paired with a FileService and passed to create_drive().
+        Paired with a Backend and passed to create_drive().
 
     Thread Safety:
         Implementations should handle concurrent access safely.
@@ -1232,7 +1233,7 @@ class SnapshotService(Service, metaclass=ABCMeta):
     Example:
         Basic implementation structure::
 
-            >>> class SQLiteSnapshot(SnapshotService):
+            >>> class SQLiteCache(Cache):
             ...     @property
             ...     def api_version(self) -> int:
             ...         return 6
@@ -1538,15 +1539,15 @@ class SnapshotService(Service, metaclass=ABCMeta):
         """
 
 
-type CreateSnapshotService = CreateService[SnapshotService]
-"""Factory type for creating SnapshotService instances.
+type CacheFactory = CreateService[Cache]
+"""Factory type for creating Cache instances.
 
 See CreateService for details.
 """
 
 
-type CreateSnapshotServiceMiddleware = CreateServiceMiddleware[SnapshotService]
-"""Middleware factory type for wrapping SnapshotService instances.
+type CacheMiddleware = CreateServiceMiddleware[Cache]
+"""Middleware factory type for wrapping Cache instances.
 
 See CreateServiceMiddleware for details.
 """
@@ -1556,7 +1557,7 @@ class Drive(metaclass=ABCMeta):
     """High-level interface for cloud drive operations.
 
     Drive is the main user-facing API for interacting with cloud storage.
-    It combines FileService (cloud API) and SnapshotService (local cache)
+    It combines Backend (cloud API) and Cache (local metadata)
     to provide efficient, feature-rich operations.
 
     Key Features:
@@ -1583,8 +1584,8 @@ class Drive(metaclass=ABCMeta):
         Basic usage pattern::
 
             >>> async with create_drive(
-            ...     file=create_file_service,
-            ...     snapshot=create_snapshot_service,
+            ...     backend=create_backend,
+            ...     cache=create_cache,
             ... ) as drive:
             ...     # Check authentication
             ...     if not await drive.is_authenticated():
@@ -2033,8 +2034,8 @@ class Drive(metaclass=ABCMeta):
     def sync(self) -> AsyncIterator[ChangeAction]:
         """Synchronize the local cache with cloud storage.
 
-        Fetches changes from the cloud and updates the local snapshot.
-        This is the ONLY operation that modifies the cached snapshot.
+        Fetches changes from the cloud and updates the local cache.
+        This is the ONLY operation that modifies the cache.
 
         Should be called periodically or before operations that require
         up-to-date metadata.
@@ -2118,7 +2119,7 @@ class Drive(metaclass=ABCMeta):
         """Authenticate the drive for use.
 
         Establishes authentication credentials. The specific mechanism
-        depends on the underlying FileService implementation.
+        depends on the underlying Backend implementation.
 
         This method is NOT interactive. OAuth implementations should handle
         token exchange separately.
@@ -2152,10 +2153,10 @@ class SourceConfig:
 
     Attributes:
         name: Source name used as path prefix in multi-source mode.
-        file: Factory function returning a FileService context manager.
-        snapshot: Factory function returning a SnapshotService context manager.
+        backend: Factory function returning a Backend context manager.
+        cache: Factory function returning a Cache context manager.
     """
 
     name: str
-    file: CreateFileService
-    snapshot: CreateSnapshotService
+    backend: BackendFactory
+    cache: CacheFactory

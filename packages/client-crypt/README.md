@@ -1,5 +1,5 @@
 # wcpan.drive.client.crypt
 
-Crypt file service middleware for `wcpan.drive`.
+Crypt backend middleware for `wcpan.drive`.
 
-Please use `wcpan.drive.client.crypt.create_service` to create the middleware.
+Please use `wcpan.drive.client.crypt.create_middleware` to create the middleware.

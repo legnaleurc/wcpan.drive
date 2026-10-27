@@ -4,7 +4,7 @@ Client and server packages for asynchronous file access, developed in one uv wor
 
 This repository contains:
 
-- a client-side `FileService` implementation that talks to a running server
+- a client-side `Backend` implementation that talks to a running server
 - a server that mirrors Synology Drive metadata into a local SQLite database
 - a Synology API adapter for the server-side mirror
 
@@ -47,7 +47,7 @@ Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm i
 Each provider defines its identifiers: Google reports `md5`, the Synology backend
 reports `md4`, and the remote client accepts `md4`, `md5`, `sha1`, and `sha256`. Use `Drive.get_hasher_factory(node)` to verify
 a file; it raises `UnsupportedHashAlgorithmError` instead of guessing. The client
-service API version is 6. Existing client SQLite snapshots (schema 6) are
+service API version is 6. Existing client SQLite caches (schema 6) are
 rejected and must be rebuilt or migrated manually to schema 7.
 
 The server database is at schema 7 and migrates older databases (schema 3 to 6)
@@ -103,13 +103,13 @@ uvx --with=wcpan-drive-server-synology --with=wcpan-drive-server-filesystem \
 ### Client
 
 The client connects to a running `wcpan.drive.server` server instance and
-implements the `wcpan.drive.client` `FileService` interface.
+implements the `wcpan.drive.client` `Backend` interface.
 
 ```python
-from wcpan.drive.client.remote import create_service
+from wcpan.drive.client.remote import create_backend
 
-async with create_service(server_url="http://localhost:8080") as file_service:
-    root = await file_service.get_root()
+async with create_backend(server_url="http://localhost:8080") as backend:
+    root = await backend.get_root()
     print(f"Root: {root}")
 ```
 

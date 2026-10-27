@@ -1,6 +1,6 @@
 # wcpan.drive.client.sqlite
 
-sqlite3 snapshot service for wcpan.drive.
+SQLite cache for wcpan.drive.
 
 ## Example Usage
 
@@ -8,21 +8,21 @@ sqlite3 snapshot service for wcpan.drive.
 from contextlib import asynccontextmanager
 
 from wcpan.drive.client.api import create_drive
-from wcpan.drive.client.types import FileService
-from wcpan.drive.client.sqlite import create_service
+from wcpan.drive.client.types import BackendFactory
+from wcpan.drive.client.sqlite import create_cache
 
 
 @asynccontextmanager
-async def create_sqlite_service():
-    async with create_service(dsn="/path/to/sqlite") as snapshot:
-        yield snapshot
+async def create_sqlite_cache():
+    async with create_cache(dsn="/path/to/sqlite") as cache:
+        yield cache
 
 
-# Assumes we already know how to create FileService
-async def simple_demo(create_file_service: FileService):
+# Assumes we already know how to create Backend
+async def simple_demo(create_backend: BackendFactory):
     async with create_drive(
-        file=create_file_service,
-        snapshot=create_sqlite_service,
+        backend=create_backend,
+        cache=create_sqlite_cache,
     ) as drive:
         ...
 ```

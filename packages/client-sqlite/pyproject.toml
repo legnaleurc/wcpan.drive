@@ -1,7 +1,7 @@
 [project]
 name = "wcpan-drive-client-sqlite"
 version = "0.1.0"
-description = "sqlite3 snapshot service for wcpan.drive"
+description = "SQLite cache for wcpan.drive"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13,<4.0"

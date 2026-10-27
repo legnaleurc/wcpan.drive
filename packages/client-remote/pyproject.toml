@@ -1,7 +1,7 @@
 [project]
 name = "wcpan-drive-client-remote"
 version = "0.1.0"
-description = "Remote file service provider for wcpan.drive"
+description = "Backend for wcpan.drive that talks to a wcpan.drive.server"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13,<4.0"

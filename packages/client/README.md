@@ -3,7 +3,7 @@
 Asynchronous generic cloud drive library.
 
 This package provides the core abstractions only. It requires a
-`SnapshotService` and `FileService` implementation to work.
+`Cache` and `Backend` implementation to work.
 
 ## Documentation
 
@@ -16,8 +16,8 @@ from wcpan.drive.client.api import create_drive
 from wcpan.drive.client.lib import download_file_to_local, upload_file_from_local
 
 async with create_drive(
-    file=create_my_file_service,
-    snapshot=create_my_snapshot_service,
+    backend=create_my_backend,
+    cache=create_my_cache,
 ) as drive:
     if not await drive.is_authenticated():
         await drive.authenticate()

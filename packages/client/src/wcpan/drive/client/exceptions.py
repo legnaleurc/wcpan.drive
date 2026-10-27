@@ -56,8 +56,8 @@ class DriveError(Exception):
 class InvalidServiceError(DriveError):
     """Raised when service API version does not match requirements.
 
-    This exception occurs during drive creation when the FileService or
-    SnapshotService implementation reports an API version that differs
+    This exception occurs during drive creation when the Backend or
+    Cache implementation reports an API version that differs
     from the expected version. This typically indicates incompatible
     service implementations or middleware.
 
@@ -65,7 +65,7 @@ class InvalidServiceError(DriveError):
         Handling version mismatches::
 
             >>> try:
-            ...     async with create_drive(file=my_service, snapshot=my_snapshot) as drive:
+            ...     async with create_drive(backend=my_service, cache=my_cache) as drive:
             ...         pass
             ... except InvalidServiceError as e:
             ...     print(f"Service version mismatch: {e}")

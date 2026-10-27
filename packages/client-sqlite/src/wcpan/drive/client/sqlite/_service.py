@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import PurePath
 
 from wcpan.drive.client.exceptions import NodeNotFoundError
-from wcpan.drive.client.types import ChangeAction, Node, SnapshotService
+from wcpan.drive.client.types import Cache, ChangeAction, Node
 
 from ._lib import OffMainProcess
 from ._outer import (
@@ -23,14 +23,14 @@ from ._outer import (
 
 
 @asynccontextmanager
-async def create_service(*, dsn: str):
+async def create_cache(*, dsn: str):
     with ProcessPoolExecutor() as pool:
         bg = OffMainProcess(dsn=dsn, pool=pool)
         await bg(initialize)
-        yield SqliteSnapshotService(bg)
+        yield SqliteCache(bg)
 
 
-class SqliteSnapshotService(SnapshotService):
+class SqliteCache(Cache):
     def __init__(self, bg: OffMainProcess) -> None:
         self._bg = bg
 

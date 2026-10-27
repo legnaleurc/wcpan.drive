@@ -9,8 +9,8 @@ from wcpan.drive.client.crypt._lib import (
     InvalidCryptVersion,
     encrypt_name,
 )
-from wcpan.drive.client.crypt._service import CryptFileService
-from wcpan.drive.client.types import FileService, Node
+from wcpan.drive.client.crypt._service import CryptBackend
+from wcpan.drive.client.types import Backend, Node
 
 from ._lib import (
     aexpect,
@@ -25,7 +25,7 @@ from ._lib import (
 class GetChangesTestCase(IsolatedAsyncioTestCase):
     async def testRemoved(self):
         upstream = AsyncMock()
-        fs = CryptFileService(upstream)
+        fs = CryptBackend(upstream)
 
         async def fake_fetch_changes(dummy: object):
             yield (
@@ -46,7 +46,7 @@ class GetChangesTestCase(IsolatedAsyncioTestCase):
 
     async def testPlainNode(self):
         upstream = AsyncMock()
-        fs = CryptFileService(upstream)
+        fs = CryptBackend(upstream)
 
         plain_node = create_node("name", None)
 
@@ -69,7 +69,7 @@ class GetChangesTestCase(IsolatedAsyncioTestCase):
 
     async def testCryptNode(self):
         upstream = AsyncMock()
-        fs = CryptFileService(upstream)
+        fs = CryptBackend(upstream)
 
         crypted_node = create_node(
             encrypt_name("name"),
@@ -95,7 +95,7 @@ class GetChangesTestCase(IsolatedAsyncioTestCase):
 
     async def testInvalid(self):
         upstream = AsyncMock()
-        fs = CryptFileService(upstream)
+        fs = CryptBackend(upstream)
 
         async def fake_fetch_changes(dummy: object):
             yield (
@@ -115,8 +115,8 @@ class GetChangesTestCase(IsolatedAsyncioTestCase):
 
 class MoveTestCase(IsolatedAsyncioTestCase):
     async def testPlain(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         # should not touch normal files
         node = create_node("name_1", None)
@@ -127,8 +127,8 @@ class MoveTestCase(IsolatedAsyncioTestCase):
         )
 
     async def testCrypt(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         # should not accept invalid crypt version
         node = create_node(
@@ -142,8 +142,8 @@ class MoveTestCase(IsolatedAsyncioTestCase):
             await fs.move(node, new_parent=new_parent, new_name="new_name")
 
     async def testInvalid(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         # should not accept invalid crypt version
         node = create_node(
@@ -160,8 +160,8 @@ class MoveTestCase(IsolatedAsyncioTestCase):
 
 class CreateDirectoryTestCase(IsolatedAsyncioTestCase):
     async def testInvalid(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         # should not accept invalid crypt version
         node = create_node("name", None)
@@ -176,8 +176,8 @@ class CreateDirectoryTestCase(IsolatedAsyncioTestCase):
             )
 
     async def testCrypt(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         # should create encrypted file by default
         node = create_node("name", None)
@@ -200,8 +200,8 @@ class CreateDirectoryTestCase(IsolatedAsyncioTestCase):
 
 class DownloadTestCase(IsolatedAsyncioTestCase):
     async def testInvalid(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         # should not accept invalid crypt version
         node = create_node(
@@ -215,8 +215,8 @@ class DownloadTestCase(IsolatedAsyncioTestCase):
                 pass
 
     async def testPlain(self):
-        upstream = create_mock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_mock(Backend)
+        fs = CryptBackend(upstream)
 
         expect(upstream.download_file).return_value.__aenter__.return_value = 42
         expect(upstream.download_file).return_value.__aexit__.return_value = None
@@ -228,8 +228,8 @@ class DownloadTestCase(IsolatedAsyncioTestCase):
             self.assertNotIsInstance(rv, DecryptReadableFile)
 
     async def testCrypt(self):
-        upstream = create_mock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_mock(Backend)
+        fs = CryptBackend(upstream)
 
         expect(upstream.download_file).return_value.__aenter__.return_value = 42
         expect(upstream.download_file).return_value.__aexit__.return_value = None
@@ -248,8 +248,8 @@ class DownloadTestCase(IsolatedAsyncioTestCase):
 
 class UploadTestCase(IsolatedAsyncioTestCase):
     async def testInvalid(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         # should not accept invalid crypt version
         node = create_node("name", None)
@@ -267,8 +267,8 @@ class UploadTestCase(IsolatedAsyncioTestCase):
                 pass
 
     async def testCrypt(self):
-        upstream = create_mock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_mock(Backend)
+        fs = CryptBackend(upstream)
 
         expect(upstream.upload_file).return_value.__aenter__.return_value = 42
         expect(upstream.upload_file).return_value.__aexit__.return_value = None
@@ -304,8 +304,8 @@ class SimpleTestCase(IsolatedAsyncioTestCase):
     async def testGetHahserFactory(self):
         import pickle
 
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         # upstream should be pickleable
         aexpect(upstream.get_hasher_factory).return_value = fake_create_hasher
@@ -323,8 +323,8 @@ class SimpleTestCase(IsolatedAsyncioTestCase):
         self.assertIsInstance(hasher, EncryptHasher)
 
     async def testIsAuthenticated(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
         aexpect(upstream.is_authenticated).return_value = False
 
         rv = await fs.is_authenticated()
@@ -332,8 +332,8 @@ class SimpleTestCase(IsolatedAsyncioTestCase):
         self.assertFalse(rv)
 
     async def testAuthenticate(self):
-        upstream = create_amock(FileService)
-        fs = CryptFileService(upstream)
+        upstream = create_amock(Backend)
+        fs = CryptBackend(upstream)
 
         await fs.authenticate()
         aexpect(upstream.authenticate).assert_awaited_once_with()

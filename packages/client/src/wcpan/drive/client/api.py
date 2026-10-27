@@ -22,8 +22,8 @@ Architecture:
        - Change synchronization
 
     2. **Services (Backend)**: Implementation layer
-       - FileService: Cloud storage API operations
-       - SnapshotService: Local metadata caching
+       - Backend: Cloud storage API operations
+       - Cache: Local metadata caching
        - Middleware: Cross-cutting concerns (logging, caching, etc.)
 
     3. **Types**: Core data structures
@@ -39,8 +39,8 @@ Quick Start:
         >>>
         >>> # Create drive with your service implementations
         >>> async with create_single_drive(
-        ...     file=create_my_file_service,
-        ...     snapshot=create_my_snapshot_service,
+        ...     backend=create_my_backend,
+        ...     cache=create_my_cache,
         ... ) as drive:
         ...     # Authenticate
         ...     await drive.authenticate()
@@ -73,12 +73,12 @@ Quick Start:
 
 Implementing Services:
     To use wcpan.drive.client with a specific cloud provider, implement
-    FileService and SnapshotService::
+    Backend and Cache::
 
-        >>> from wcpan.drive.client.types import FileService, SnapshotService
+        >>> from wcpan.drive.client.types import Backend, Cache
         >>> from contextlib import asynccontextmanager
         >>>
-        >>> class MyCloudService(FileService):
+        >>> class MyCloudBackend(Backend):
         ...     @property
         ...     def api_version(self) -> int:
         ...         return 6
@@ -91,7 +91,7 @@ Implementing Services:
         >>>
         >>> @asynccontextmanager
         >>> async def create_my_service():
-        ...     service = MyCloudService(credentials)
+        ...     service = MyCloudBackend(credentials)
         ...     try:
         ...         yield service
         ...     finally:

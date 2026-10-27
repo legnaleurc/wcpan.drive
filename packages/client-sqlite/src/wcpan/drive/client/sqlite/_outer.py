@@ -14,7 +14,7 @@ from ._inner import (
     node_from_query,
 )
 from ._lib import read_only, read_write, sqlite3_regexp
-from .exceptions import SqliteSnapshotError
+from .exceptions import SqliteCacheError
 
 
 KEY_ROOT_ID = "root_id"
@@ -29,13 +29,11 @@ def initialize(dsn: str, /):
         query.execute("PRAGMA user_version;")
         rv = query.fetchone()
         if not rv:
-            raise SqliteSnapshotError("no user_version")
+            raise SqliteCacheError("no user_version")
         version = int(rv[0])
 
         if version != 0 and version != CURRENT_SCHEMA_VERSION:
-            raise SqliteSnapshotError(
-                "schema has been changed, please rebuild snapshot"
-            )
+            raise SqliteCacheError("schema has been changed, please rebuild the cache")
 
         # initialize table
         for sql in SQL_CREATE_TABLES:

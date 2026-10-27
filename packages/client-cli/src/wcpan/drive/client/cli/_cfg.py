@@ -17,8 +17,8 @@ class FunctionDict(TypedDict):
 
 class SourceDict(TypedDict):
     name: str
-    file: list[FunctionDict]
-    snapshot: list[FunctionDict]
+    backend: list[FunctionDict]
+    cache: list[FunctionDict]
 
 
 class MainDict(TypedDict):
@@ -32,7 +32,7 @@ async def create_drive_from_config(path: Path):
         main: MainDict = safe_load(fin)
 
     version = main["version"]
-    if version != 3:
+    if version != 4:
         raise RuntimeError("wrong version")
 
     sources = [_parse_source(s) for s in main["sources"]]
@@ -42,12 +42,12 @@ async def create_drive_from_config(path: Path):
 
 
 def _parse_source(source: SourceDict) -> SourceConfig:
-    file_fns = [_deserialize(f) for f in source["file"]]
-    snap_fns = [_deserialize(f) for f in source["snapshot"]]
+    backend_fns = [_deserialize(f) for f in source["backend"]]
+    cache_fns = [_deserialize(f) for f in source["cache"]]
     return SourceConfig(
         name=source["name"],
-        file=compose_service(file_fns[0], *file_fns[1:]),
-        snapshot=compose_service(snap_fns[0], *snap_fns[1:]),
+        backend=compose_service(backend_fns[0], *backend_fns[1:]),
+        cache=compose_service(cache_fns[0], *cache_fns[1:]),
     )
 
 

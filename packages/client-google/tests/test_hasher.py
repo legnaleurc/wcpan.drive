@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from wcpan.drive.client.exceptions import UnsupportedHashAlgorithmError
 from wcpan.drive.client.google._hasher import Md5Hasher, create_hasher
 from wcpan.drive.client.google._lib import node_from_api
-from wcpan.drive.client.google._service import GoogleDriveFileService
+from wcpan.drive.client.google._service import GoogleDriveBackend
 
 
 def _api_file(**kwargs: object) -> dict[str, object]:
@@ -39,7 +39,7 @@ class NodeFromApiTestCase(IsolatedAsyncioTestCase):
 
 class GetHasherFactoryTestCase(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self._fs = GoogleDriveFileService(MagicMock(), MagicMock())
+        self._fs = GoogleDriveBackend(MagicMock(), MagicMock())
         self._node = node_from_api(_api_file(md5Checksum="abc", size="1"))  # type: ignore
 
     async def testMd5(self) -> None:

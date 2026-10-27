@@ -5,9 +5,9 @@ from typing import override
 
 from wcpan.drive.client.exceptions import NodeExistsError
 from wcpan.drive.client.types import (
+    Backend,
     ChangeAction,
     CreateHasher,
-    FileService,
     MediaInfo,
     Node,
     PrivateDict,
@@ -28,12 +28,12 @@ from ._lib import (
 
 
 @asynccontextmanager
-async def create_service(file_service: FileService):
-    yield CryptFileService(file_service)
+async def create_middleware(backend: Backend):
+    yield CryptBackend(backend)
 
 
-class CryptFileService(FileService):
-    def __init__(self, fs: FileService):
+class CryptBackend(Backend):
+    def __init__(self, fs: Backend):
         self._fs = fs
 
     @property

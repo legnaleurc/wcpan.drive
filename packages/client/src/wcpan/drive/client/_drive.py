@@ -20,19 +20,19 @@ from .lib import (
     normalize_path,
 )
 from .types import (
+    Backend,
+    BackendFactory,
+    Cache,
+    CacheFactory,
     ChangeAction,
-    CreateFileService,
     CreateHasher,
     CreateService,
     CreateServiceMiddleware,
-    CreateSnapshotService,
     Drive,
-    FileService,
     MediaInfo,
     Node,
     ReadableFile,
     Service,
-    SnapshotService,
     SourceConfig,
     WritableFile,
 )
@@ -93,37 +93,33 @@ async def create_multi_drive(
     if len(sources) == 1:
         source = sources[0]
         async with (
-            _create_service(source.snapshot) as snapshot_service,
-            _create_service(source.file) as file_service,
+            _create_service(source.cache) as cache,
+            _create_service(source.backend) as backend,
         ):
-            yield _SingleDrive(
-                file_service=file_service, snapshot_service=snapshot_service
-            )
+            yield _SingleDrive(backend=backend, cache=cache)
     else:
         async with AsyncExitStack() as stack:
             source_states: dict[str, _SourceState] = {}
             for source in sources:
-                ss = await stack.enter_async_context(_create_service(source.snapshot))
-                fs = await stack.enter_async_context(_create_service(source.file))
-                source_states[source.name] = _SourceState(
-                    file_service=fs, snapshot_service=ss
-                )
+                ss = await stack.enter_async_context(_create_service(source.cache))
+                fs = await stack.enter_async_context(_create_service(source.backend))
+                source_states[source.name] = _SourceState(backend=fs, cache=ss)
             yield _MultiDrive(source_states)
 
 
 @asynccontextmanager
 async def create_drive(
     *,
-    file: CreateFileService,
-    snapshot: CreateSnapshotService,
+    backend: BackendFactory,
+    cache: CacheFactory,
 ) -> AsyncGenerator[Drive]:
     """Create a configured Drive instance for single-source usage.
 
     Args:
-        file: Factory function returning a FileService context manager.
-              Also accepts the output of compose_service().
-        snapshot: Factory function returning a SnapshotService context manager.
-                  Also accepts the output of compose_service().
+        backend: Factory function returning a Backend context manager.
+                 Also accepts the output of compose_service().
+        cache: Factory function returning a Cache context manager.
+               Also accepts the output of compose_service().
 
     Yields:
         A fully configured Drive instance ready for operations.
@@ -132,7 +128,7 @@ async def create_drive(
         InvalidServiceError: If the service reports an incompatible API version.
     """
     async with create_multi_drive(
-        sources=[SourceConfig(name="", file=file, snapshot=snapshot)]
+        sources=[SourceConfig(name="", backend=backend, cache=cache)]
     ) as drive:
         yield drive
 
@@ -141,29 +137,29 @@ class _SingleDrive(Drive):
     def __init__(
         self,
         *,
-        file_service: FileService,
-        snapshot_service: SnapshotService,
+        backend: Backend,
+        cache: Cache,
     ) -> None:
         self._sync_lock = Lock()
-        self._fs = file_service
-        self._ss = snapshot_service
+        self._backend = backend
+        self._cache = cache
 
     @override
     async def get_root(self) -> Node:
-        return await self._ss.get_root()
+        return await self._cache.get_root()
 
     @override
     async def get_node_by_id(self, node_id: str) -> Node:
-        return await self._ss.get_node_by_id(node_id)
+        return await self._cache.get_node_by_id(node_id)
 
     @override
     async def get_node_by_path(self, path: PurePath) -> Node:
         path = normalize_path(path)
-        return await self._ss.get_node_by_path(path)
+        return await self._cache.get_node_by_path(path)
 
     @override
     async def resolve_path(self, node: Node) -> PurePath:
-        return await self._ss.resolve_path_by_id(node.id)
+        return await self._cache.resolve_path_by_id(node.id)
 
     @override
     async def get_child_by_name(
@@ -171,15 +167,15 @@ class _SingleDrive(Drive):
         name: str,
         parent: Node,
     ) -> Node:
-        return await self._ss.get_child_by_name(name, parent.id)
+        return await self._cache.get_child_by_name(name, parent.id)
 
     @override
     async def get_children(self, parent: Node) -> list[Node]:
-        return await self._ss.get_children_by_id(parent.id)
+        return await self._cache.get_children_by_id(parent.id)
 
     @override
     async def get_trashed_nodes(self, flatten: bool = False) -> list[Node]:
-        rv = await self._ss.get_trashed_nodes()
+        rv = await self._cache.get_trashed_nodes()
         if flatten:
             return rv
 
@@ -192,7 +188,7 @@ class _SingleDrive(Drive):
 
     @override
     async def find_nodes_by_regex(self, pattern: str) -> list[Node]:
-        return await self._ss.find_nodes_by_regex(pattern)
+        return await self._cache.find_nodes_by_regex(pattern)
 
     @override
     async def walk(
@@ -248,7 +244,7 @@ class _SingleDrive(Drive):
             if node:
                 raise NodeExistsError(node)
 
-        return await self._fs.create_directory(
+        return await self._backend.create_directory(
             name,
             parent,
             exist_ok=exist_ok,
@@ -264,7 +260,7 @@ class _SingleDrive(Drive):
         if not await self.is_authenticated():
             raise AuthenticationError()
 
-        async with self._fs.download_file(node) as file:
+        async with self._backend.download_file(node) as file:
             yield file
 
     @asynccontextmanager
@@ -292,7 +288,7 @@ class _SingleDrive(Drive):
         if node:
             raise NodeExistsError(node)
 
-        async with self._fs.upload_file(
+        async with self._backend.upload_file(
             name,
             parent,
             size=size,
@@ -308,21 +304,21 @@ class _SingleDrive(Drive):
         if not await self.is_authenticated():
             raise AuthenticationError()
 
-        await self._fs.purge_trash()
+        await self._backend.purge_trash()
 
     @override
     async def delete(self, node: Node, *, permanent: bool = False) -> None:
         if not await self.is_authenticated():
             raise AuthenticationError()
 
-        await self._fs.delete(node, permanent=permanent)
+        await self._backend.delete(node, permanent=permanent)
 
     @override
     async def restore(self, node: Node) -> Node:
         if not await self.is_authenticated():
             raise AuthenticationError()
 
-        return await self._fs.restore(node)
+        return await self._backend.restore(node)
 
     @override
     async def move(
@@ -352,7 +348,7 @@ class _SingleDrive(Drive):
             if await _contains(self, node, new_parent):
                 raise ValueError("new_parent is a descendant of the source node")
 
-        return await self._fs.move(
+        return await self._backend.move(
             node,
             new_parent=new_parent,
             new_name=new_name,
@@ -364,40 +360,40 @@ class _SingleDrive(Drive):
             raise AuthenticationError()
 
         async with self._sync_lock:
-            initial_cursor = await self._fs.get_initial_cursor()
+            initial_cursor = await self._backend.get_initial_cursor()
 
-            cursor = await self._ss.get_current_cursor()
+            cursor = await self._cache.get_current_cursor()
             if not cursor:
                 cursor = initial_cursor
 
             # no data before, get the root node and cache it
             if cursor == initial_cursor:
-                node = await self._fs.get_root()
-                await self._ss.set_root(node)
+                node = await self._backend.get_root()
+                await self._cache.set_root(node)
 
-            async for changes, next_ in self._fs.get_changes(cursor):
-                await self._ss.apply_changes(changes, next_)
+            async for changes, next_ in self._backend.get_changes(cursor):
+                await self._cache.apply_changes(changes, next_)
 
                 for change in changes:
                     yield change
 
     @override
     async def get_hasher_factory(self, node: Node) -> CreateHasher:
-        return await self._fs.get_hasher_factory(node)
+        return await self._backend.get_hasher_factory(node)
 
     @override
     async def is_authenticated(self) -> bool:
-        return await self._fs.is_authenticated()
+        return await self._backend.is_authenticated()
 
     @override
     async def authenticate(self) -> None:
-        return await self._fs.authenticate()
+        return await self._backend.authenticate()
 
 
 @dataclass
 class _SourceState:
-    file_service: FileService
-    snapshot_service: SnapshotService
+    backend: Backend
+    cache: Cache
     lock: Lock = field(default_factory=Lock)
 
 
@@ -417,7 +413,7 @@ class _MultiDrive(Drive):
         if source_name not in self._sources:
             raise NodeNotFoundError(node_id)
         state = self._sources[source_name]
-        node = await state.snapshot_service.get_node_by_id(original_id)
+        node = await state.cache.get_node_by_id(original_id)
         return _scope_node(source_name, node)
 
     @override
@@ -434,11 +430,11 @@ class _MultiDrive(Drive):
         state = self._sources[source_name]
 
         if len(parts) == 2:
-            root = await state.snapshot_service.get_root()
+            root = await state.cache.get_root()
             return replace(_scope_node(source_name, root), name=source_name)
 
         remaining = PurePath("/", *parts[2:])
-        node = await state.snapshot_service.get_node_by_path(remaining)
+        node = await state.cache.get_node_by_path(remaining)
         return _scope_node(source_name, node)
 
     @override
@@ -451,7 +447,7 @@ class _MultiDrive(Drive):
         if node.parent_id == _VIRTUAL_ROOT_ID:
             return PurePath("/", source_name)
         state = self._sources[source_name]
-        path = await state.snapshot_service.resolve_path_by_id(original_id)
+        path = await state.cache.resolve_path_by_id(original_id)
         return PurePath("/", source_name, *path.parts[1:])
 
     @override
@@ -460,13 +456,13 @@ class _MultiDrive(Drive):
             if name not in self._sources:
                 raise NodeNotFoundError(name)
             state = self._sources[name]
-            root = await state.snapshot_service.get_root()
+            root = await state.cache.get_root()
             return replace(_scope_node(name, root), name=name)
         source_name, original_id = _parse_id(parent.id)
         if source_name not in self._sources:
             raise NodeNotFoundError(parent.id)
         state = self._sources[source_name]
-        child = await state.snapshot_service.get_child_by_name(name, original_id)
+        child = await state.cache.get_child_by_name(name, original_id)
         return _scope_node(source_name, child)
 
     @override
@@ -474,21 +470,21 @@ class _MultiDrive(Drive):
         if parent.id == _VIRTUAL_ROOT_ID:
             roots: list[Node] = []
             for source_name, state in self._sources.items():
-                root = await state.snapshot_service.get_root()
+                root = await state.cache.get_root()
                 roots.append(replace(_scope_node(source_name, root), name=source_name))
             return roots
         source_name, original_id = _parse_id(parent.id)
         if source_name not in self._sources:
             raise NodeNotFoundError(parent.id)
         state = self._sources[source_name]
-        children = await state.snapshot_service.get_children_by_id(original_id)
+        children = await state.cache.get_children_by_id(original_id)
         return [_scope_node(source_name, child) for child in children]
 
     @override
     async def get_trashed_nodes(self, flatten: bool = False) -> list[Node]:
         all_nodes: list[Node] = []
         for source_name, state in self._sources.items():
-            trashed = await state.snapshot_service.get_trashed_nodes()
+            trashed = await state.cache.get_trashed_nodes()
             scoped = [_scope_node(source_name, n) for n in trashed]
             if flatten:
                 all_nodes.extend(scoped)
@@ -509,7 +505,7 @@ class _MultiDrive(Drive):
     async def find_nodes_by_regex(self, pattern: str) -> list[Node]:
         results: list[Node] = []
         for source_name, state in self._sources.items():
-            nodes = await state.snapshot_service.find_nodes_by_regex(pattern)
+            nodes = await state.cache.find_nodes_by_regex(pattern)
             results.extend(_scope_node(source_name, n) for n in nodes)
         return results
 
@@ -570,7 +566,7 @@ class _MultiDrive(Drive):
             if node:
                 raise NodeExistsError(node)
 
-        result = await state.file_service.create_directory(
+        result = await state.backend.create_directory(
             name, unscoped_parent, exist_ok=exist_ok, private=None
         )
         return _scope_node(source_name, result)
@@ -589,7 +585,7 @@ class _MultiDrive(Drive):
         state = self._sources[source_name]
         unscoped_node = _unscope_node(source_name, node)
 
-        async with state.file_service.download_file(unscoped_node) as file:
+        async with state.backend.download_file(unscoped_node) as file:
             yield file
 
     @asynccontextmanager
@@ -625,7 +621,7 @@ class _MultiDrive(Drive):
         if node:
             raise NodeExistsError(node)
 
-        async with state.file_service.upload_file(
+        async with state.backend.upload_file(
             name,
             unscoped_parent,
             size=size,
@@ -640,7 +636,7 @@ class _MultiDrive(Drive):
         if not await self.is_authenticated():
             raise AuthenticationError()
         for state in self._sources.values():
-            await state.file_service.purge_trash()
+            await state.backend.purge_trash()
 
     @override
     async def delete(self, node: Node, *, permanent: bool = False) -> None:
@@ -652,7 +648,7 @@ class _MultiDrive(Drive):
             raise NodeNotFoundError(node.id)
         state = self._sources[source_name]
         unscoped_node = _unscope_node(source_name, node)
-        await state.file_service.delete(unscoped_node, permanent=permanent)
+        await state.backend.delete(unscoped_node, permanent=permanent)
 
     @override
     async def restore(self, node: Node) -> Node:
@@ -664,7 +660,7 @@ class _MultiDrive(Drive):
             raise NodeNotFoundError(node.id)
         state = self._sources[source_name]
         unscoped_node = _unscope_node(source_name, node)
-        result = await state.file_service.restore(unscoped_node)
+        result = await state.backend.restore(unscoped_node)
         return _scope_node(source_name, result)
 
     @override
@@ -711,7 +707,7 @@ class _MultiDrive(Drive):
             _unscope_node(source_name, new_parent) if new_parent else None
         )
 
-        result = await state.file_service.move(
+        result = await state.backend.move(
             unscoped_node,
             new_parent=unscoped_new_parent,
             new_name=new_name,
@@ -728,8 +724,8 @@ class _MultiDrive(Drive):
 
         async def sync_source(source_name: str, state: _SourceState) -> None:
             async with state.lock:
-                fs = state.file_service
-                ss = state.snapshot_service
+                fs = state.backend
+                ss = state.cache
 
                 initial_cursor = await fs.get_initial_cursor()
 
@@ -767,19 +763,19 @@ class _MultiDrive(Drive):
             raise NodeNotFoundError(node.id)
         state = self._sources[source_name]
         unscoped_node = _unscope_node(source_name, node)
-        return await state.file_service.get_hasher_factory(unscoped_node)
+        return await state.backend.get_hasher_factory(unscoped_node)
 
     @override
     async def is_authenticated(self) -> bool:
         for state in self._sources.values():
-            if not await state.file_service.is_authenticated():
+            if not await state.backend.is_authenticated():
                 return False
         return True
 
     @override
     async def authenticate(self) -> None:
         for state in self._sources.values():
-            await state.file_service.authenticate()
+            await state.backend.authenticate()
 
 
 class _ScopedWritableFile(WritableFile):
