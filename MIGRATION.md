@@ -46,5 +46,5 @@ path needs updating. Install `wcpan-drive-server` alongside the backend
 packages: the backend packages no longer provide the command. Backend
 maintenance commands moved under `backend NAME`, for example
 `backend synology backfill /`. The Synology locator is private backend state
-(schema 5, now 7); the wire format keeps only an empty `mutable_id`
-placeholder. The remaining work is specified in PLAN.md.
+(schema 5, now 7), and node payloads no longer carry `mutable_id`, so
+clients from before this migration cannot read them. The remaining work is specified in PLAN.md.

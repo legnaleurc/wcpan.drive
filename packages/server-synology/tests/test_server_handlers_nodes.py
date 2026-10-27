@@ -430,8 +430,8 @@ class TestUpdateNode(IsolatedAsyncioTestCase):
         delete_mock.assert_not_awaited()
         self.assertEqual(record.id, "n1")
         self.assertEqual(record.parent_id, "new-parent")
-        # The locator stays private; the wire carries only the empty placeholder.
-        self.assertEqual(body["mutable_id"], "")
+        # The locator stays private.
+        self.assertNotIn("mutable_id", body)
         wq = app[WRITE_QUEUE_KEY]
         while not wq.empty():
             await wq.get_nowait()()

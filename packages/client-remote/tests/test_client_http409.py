@@ -11,7 +11,6 @@ class TestNodeFrom409(IsolatedAsyncioTestCase):
         now = 1_704_067_200
         payload = {
             "id": "n1",
-            "mutable_id": "n1",
             "parent_id": "p",
             "name": "x",
             "is_directory": True,

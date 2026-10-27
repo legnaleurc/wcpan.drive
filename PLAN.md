@@ -495,8 +495,8 @@ backend minting globally unique IDs rather than an enforced namespace.
 
 - Preserve existing client imports, HTTP routes, error behavior, and CLI behavior
   during the internal refactor unless a separately reviewed migration requires change.
-- Release a client decoder that tolerates absent `mutable_id` before removing the
-  field from server responses. Keep a compatibility field during transition.
+- `mutable_id` is removed from server responses in the same `0.1.0` release
+  as the client decoder that tolerates its absence; older clients must upgrade.
 - Keep Synology credentials, native mount paths, and webhook settings in backend
   configuration; generic server settings remain in the server configuration.
 - Provide explicit database migration and rollback/backup guidance before extraction.
@@ -561,8 +561,7 @@ transaction. A change row is emitted only when the public node row changes, so
 locator-only updates are silent. Bindings are deleted with their subtree and by
 dangling-node GC. Schema 5 migrates existing locators and preserves node IDs and
 the change feed (`packages/server-synology/tests/test_server_mount_max_ids.py`). The protocol decoder
-tolerates an absent `mutable_id`; the encoder still emits it as an empty
-placeholder until old decoders are retired.
+ignores `mutable_id` from older servers, and the encoder no longer emits it.
 
 Deferred: source-instance scoping of locators and checkpoints needs backend
 instance names (configuration version 3), so it moves to stage 3. The existing

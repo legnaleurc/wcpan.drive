@@ -4,10 +4,12 @@ Each test uses given-when-then sections and unittest assertions.
 """
 
 from dataclasses import replace
+from typing import cast
 from unittest import TestCase
 
 from wcpan.drive.client.remote._lib import (
     FOLDER_MIME_TYPE,
+    NodeRecordDict,
     guess_mime_type,
     node_from_record,
     node_record_from_dict,
@@ -158,19 +160,15 @@ class TestNodeRecordRoundtrip(TestCase):
 
 
 class TestNodeRecordLocatorCompatibility(TestCase):
-    def test_encoder_emits_empty_placeholder(self):
+    def test_encoder_omits_locator(self):
         d = node_record_to_dict(_make_record())
-        self.assertEqual(d["mutable_id"], "")
-
-    def test_decoder_accepts_missing_field(self):
-        d = node_record_to_dict(_make_record())
-        del d["mutable_id"]
-        self.assertEqual(node_record_from_dict(d), _make_record())
+        self.assertNotIn("mutable_id", d)
 
     def test_decoder_ignores_legacy_locator(self):
-        d = node_record_to_dict(_make_record())
+        # Older servers still send the key.
+        d: dict[str, object] = dict(node_record_to_dict(_make_record()))
         d["mutable_id"] = "12345"
-        self.assertEqual(node_record_from_dict(d), _make_record())
+        self.assertEqual(node_record_from_dict(cast(NodeRecordDict, d)), _make_record())
 
 
 class TestNodeHashFields(TestCase):

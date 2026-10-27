@@ -100,7 +100,6 @@ class TestCreateDirectory409(IsolatedAsyncioTestCase):
         t = 1_704_067_200
         return {
             "id": "existing-dir",
-            "mutable_id": "existing-dir",
             "parent_id": "p",
             "name": "d",
             "is_directory": True,
@@ -187,7 +186,6 @@ class TestGetChangesReplay(IsolatedAsyncioTestCase):
             "removed": False,
             "node": {
                 "id": node_id,
-                "mutable_id": node_id,
                 "parent_id": parent_id,
                 "name": node_id,
                 "is_directory": False,

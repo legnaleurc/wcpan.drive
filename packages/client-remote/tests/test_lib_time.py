@@ -47,7 +47,6 @@ class TestNodeRecordFromDictTimestamp(TestCase):
         # given
         data = {
             "id": "n1",
-            "mutable_id": "n1",
             "parent_id": None,
             "name": "f.txt",
             "is_directory": False,

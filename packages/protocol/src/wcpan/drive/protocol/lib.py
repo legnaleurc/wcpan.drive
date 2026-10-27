@@ -1,6 +1,6 @@
 import mimetypes
 from datetime import UTC, datetime
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, TypedDict
 
 from .types import MirrorStableId, NodeRecord
 
@@ -10,9 +10,6 @@ FOLDER_MIME_TYPE = "application/x-directory"
 
 class NodeRecordDict(TypedDict):
     id: str
-    # Deprecated placeholder: decoders up to 0.1.0 require the key. Always empty;
-    # backend locators are not part of the wire format.
-    mutable_id: NotRequired[str]
     parent_id: str | None
     name: str
     is_directory: bool
@@ -46,7 +43,6 @@ type ChangeDict = RemovedChangeDict | UpsertChangeDict
 def node_record_to_dict(record: NodeRecord) -> NodeRecordDict:
     return {
         "id": str(record.id),
-        "mutable_id": "",
         "parent_id": str(record.parent_id) if record.parent_id is not None else None,
         "name": record.name,
         "is_directory": record.is_directory,

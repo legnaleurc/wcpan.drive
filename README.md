@@ -60,9 +60,9 @@ migration cannot be undone in place, so stop the server and copy the database
 file, together with any `-wal` and `-shm` files, before upgrading; restore that
 copy to roll back.
 
-Node payloads no longer expose the Synology `file_id`. Responses keep a
-deprecated, always-empty `mutable_id` key for older decoders that require it, and
-current clients accept payloads without it.
+Node payloads no longer expose the Synology `file_id` or the `mutable_id` key.
+Clients from before this migration require that key and cannot read current
+responses; current clients ignore it from older servers.
 
 ```bash
 uv sync --all-packages --locked
