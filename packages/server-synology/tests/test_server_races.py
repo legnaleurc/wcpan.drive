@@ -10,9 +10,9 @@ from contextlib import suppress
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
+from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
@@ -40,7 +40,16 @@ from wcpan.drive.server.workers import (
     noop_after_write,
     write_worker,
 )
-from wcpan.synology import SynologyApiError, SynologyNetworkError, SynologyPath
+from wcpan.synology import (
+    SynologyApiError,
+    SynologyClient,
+    SynologyFileInfo,
+    SynologyNetworkError,
+    SynologyPath,
+    SynologyPermanentLink,
+)
+
+from ._lib import DecoyTestCase
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -80,11 +89,13 @@ def _obs(record: NodeRecord) -> NodeObservation:
     return NodeObservation(record=record, locator=SynologyLocator(record.id))
 
 
-def _syno_item(node_id: str, *, is_dir: bool = False) -> dict[str, object]:
+def _syno_item(
+    node_id: str, *, is_dir: bool = False, parent_id: str = ""
+) -> SynologyFileInfo:
     return {
         "file_id": node_id,
         "permanent_link": node_id,
-        "parent_id": "",
+        "parent_id": parent_id,
         "name": node_id,
         "type": "dir" if is_dir else "file",
         "content_type": "dir" if is_dir else "file",
@@ -113,7 +124,7 @@ class _Gate:
         return record
 
 
-class _RaceTestCase(IsolatedAsyncioTestCase):
+class _RaceTestCase(DecoyTestCase):
     async def asyncSetUp(self) -> None:
         fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
@@ -351,11 +362,14 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         self.b = _node("b", _MOUNT, is_directory=True)
         self.x = _node("x", "a")
         await self.mirror.apply_observations([_obs(self.a), _obs(self.b), _obs(self.x)])
-        self.drive_api = MagicMock()
+        self.drive_api = self.decoy.mock(cls=SynologyClient)
         self.syno_paths = SynologyPathService(
             registry=MountRegistry(mounts=self.mounts, root_ids={}),
             store=SynologyStore(mirror=self.mirror),
         )
+
+    async def _rehearse_get_x(self):
+        return await self.drive_api.get_file(SynologyPermanentLink("x"))
 
     async def commit(self) -> list[NodeId]:
         """Run a pass over the mount whose listings reported only a and b."""
@@ -371,8 +385,8 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         return removed
 
     async def test_node_moved_during_pass_is_kept_under_new_parent(self) -> None:
-        self.drive_api.get_file = AsyncMock(
-            return_value={**_syno_item("x"), "parent_id": "b"}
+        self.decoy.when(await self._rehearse_get_x()).then_return(
+            _syno_item("x", parent_id="b")
         )
 
         self.assertEqual(await self.commit(), [])
@@ -382,15 +396,13 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         self.assertEqual(stored.parent_id, self.b.id)
 
     async def test_missing_node_is_removed(self) -> None:
-        self.drive_api.get_file = AsyncMock(return_value=None)
-
         self.assertEqual(await self.commit(), [self.x.id])
 
         self.assertIsNone(await self.mirror.get_node_by_id(self.x.id))
 
     async def test_api_error_falls_back_to_removal(self) -> None:
-        self.drive_api.get_file = AsyncMock(
-            side_effect=SynologyApiError("not found", error_code=408)
+        self.decoy.when(await self._rehearse_get_x()).then_raise(
+            SynologyApiError("not found", error_code=408)
         )
 
         await self.commit()
@@ -398,8 +410,8 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         self.assertIsNone(await self.mirror.get_node_by_id(self.x.id))
 
     async def test_node_moved_outside_mounts_is_removed(self) -> None:
-        self.drive_api.get_file = AsyncMock(
-            return_value={**_syno_item("x"), "parent_id": "elsewhere"}
+        self.decoy.when(await self._rehearse_get_x()).then_return(
+            _syno_item("x", parent_id="elsewhere")
         )
 
         await self.commit()
@@ -407,15 +419,15 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         self.assertIsNone(await self.mirror.get_node_by_id(self.x.id))
 
     async def test_network_failure_preserves_node(self) -> None:
-        self.drive_api.get_file = AsyncMock(side_effect=SynologyNetworkError("down"))
+        self.decoy.when(await self._rehearse_get_x()).then_raise(
+            SynologyNetworkError("down")
+        )
 
         self.assertEqual(await self.commit(), [])
 
         self.assertIsNotNone(await self.mirror.get_node_by_id(self.x.id))
 
     async def test_preserved_subtree_is_not_looked_up(self) -> None:
-        self.drive_api.get_file = AsyncMock(return_value=None)
-
         async with reconcile_session(
             {_MOUNT},
             mirror=self.mirror,
@@ -427,7 +439,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
             self.assertEqual(await session.commit_removals(), [])
         await self.drain()
 
-        self.drive_api.get_file.assert_not_awaited()
+        self.decoy.verify(await self.drive_api.get_file(matchers.Anything()), times=0)
         self.assertIsNotNone(await self.mirror.get_node_by_id(self.x.id))
 
 
@@ -441,11 +453,11 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
             registry=MountRegistry(mounts=self.mounts, root_ids={}),
             store=SynologyStore(mirror=self.mirror),
         )
-        drive_api = MagicMock()
+        drive_api = self.decoy.mock(cls=SynologyClient)
         # x moved from a to b after b was listed and before a was.
-        drive_api.get_file = AsyncMock(
-            return_value={**_syno_item("x"), "parent_id": "b"}
-        )
+        self.decoy.when(
+            await drive_api.get_file(SynologyPermanentLink("x"))
+        ).then_return(_syno_item("x", parent_id="b"))
         backfill = BackfillService(
             drive_api=drive_api,
             mirror=self.mirror,

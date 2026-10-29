@@ -4,14 +4,16 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from unittest import IsolatedAsyncioTestCase, TestCase
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest import TestCase
+from unittest.mock import AsyncMock, patch
 
+from decoy import matchers
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.server.services.enricher import (
     MediaEnrichmentError,
     MediaEnrichService,
 )
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import LocalPathService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -24,6 +26,8 @@ from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
 )
+
+from ._lib import DecoyTestCase
 
 
 def _convert(info, parent_id):
@@ -173,7 +177,7 @@ class TestConvertSynologyFileInfo(TestCase):
         self.assertEqual(record.ms_duration, 0)
 
 
-class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
+class TestEnrichPreservesApiDimensions(DecoyTestCase):
     async def test_enrich_without_force_refresh_does_not_probe_when_api_filled(self):
         record = _convert(
             {
@@ -193,7 +197,7 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
         )
         record = replace(record, width=800, height=600)
         local_path_svc = LocalPathService(
-            mirror=MagicMock(),
+            mirror=self.decoy.mock(cls=MirrorStore),
             mounts={},
         )
         enricher = MediaEnrichService(local_path_service=local_path_svc)
@@ -231,7 +235,7 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(1) as pool:
                 off_main = OffMainService(pool=pool)
                 local_path_svc = LocalPathService(
-                    mirror=MagicMock(),
+                    mirror=self.decoy.mock(cls=MirrorStore),
                     mounts={},
                 )
                 enricher = MediaEnrichService(
@@ -279,7 +283,7 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(1) as pool:
                 off_main = OffMainService(pool=pool)
                 local_path_svc = LocalPathService(
-                    mirror=MagicMock(),
+                    mirror=self.decoy.mock(cls=MirrorStore),
                     mounts={},
                 )
                 enricher = MediaEnrichService(
@@ -303,13 +307,13 @@ class TestEnrichPreservesApiDimensions(IsolatedAsyncioTestCase):
             probe_path.unlink(missing_ok=True)
 
 
-class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
+class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
     async def test_process_metadata_reconcile_insert_enqueues_write(self) -> None:
         wq = create_write_queue()
         mq = create_metadata_queue()
         with ThreadPoolExecutor(1) as pool:
             off_main = OffMainService(pool=pool)
-            mirror = MagicMock()
+            mirror = self.decoy.mock(cls=MirrorStore)
             cs = NodeSyncService(
                 mirror=mirror,
                 write_queue=wq,
@@ -333,7 +337,10 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
             observation = convert_file_info(info, parent_id="par")
             assert observation is not None
             record = observation.record
-            mirror.apply_observations = AsyncMock(return_value={record.id})
+            applied = matchers.Captor()
+            self.decoy.when(await mirror.apply_observations(applied)).then_return(
+                {record.id}
+            )
             async with cs.observe() as read:
                 await cs.reconcile_insert(observation, read=read)
             item = await mq.get()
@@ -349,6 +356,7 @@ class TestNodeSyncServiceMetadataQueue(IsolatedAsyncioTestCase):
                 await job()
             finally:
                 wq.task_done()
-            mirror.apply_observations.assert_awaited_once_with(
-                [NodeObservation(record=record, locator=SynologyLocator("n1"))]
+            self.assertEqual(
+                applied.values,
+                [[NodeObservation(record=record, locator=SynologyLocator("n1"))]],
             )

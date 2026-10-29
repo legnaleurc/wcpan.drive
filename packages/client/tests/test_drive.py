@@ -903,14 +903,17 @@ class MultiDriveFindNodesTestCase(_MultiDriveTestCase):
         )
 
     async def testVirtualRootAncestorQueriesAllSources(self) -> None:
-        self.decoy.when(await self._google.query_nodes(NodeQuery())).then_return([])
-        self.decoy.when(await self._local.query_nodes(NodeQuery())).then_return([])
+        self.decoy.when(await self._google.query_nodes(NodeQuery())).then_return(
+            [make_node(node_id="g1", parent_id="groot")]
+        )
+        self.decoy.when(await self._local.query_nodes(NodeQuery())).then_return(
+            [make_node(node_id="l1", parent_id="lroot")]
+        )
         root = await self._drive.get_root()
 
-        await self._drive.find_nodes().descendant_of(root).all()
+        results = await self._drive.find_nodes().descendant_of(root).all()
 
-        self.decoy.verify(await self._google.query_nodes(NodeQuery()), times=1)
-        self.decoy.verify(await self._local.query_nodes(NodeQuery()), times=1)
+        self.assertEqual({n.id for n in results}, {"google:g1", "local:l1"})
 
     async def testScopedAncestorQueriesOneSource(self) -> None:
         self.decoy.when(
@@ -969,7 +972,9 @@ class MultiDriveSummaryTestCase(_MultiDriveTestCase):
         self.assertEqual(result, NodeSummary(count=5, total_size=142))
 
     async def testScopedAncestor(self) -> None:
-        await self._stub_summaries(NodeQuery(ancestor_id="l1"))
+        self.decoy.when(
+            await self._local.summarize_nodes(NodeQuery(ancestor_id="l1"))
+        ).then_return(NodeSummary(count=3, total_size=100))
         ancestor = make_node(node_id="local:l1")
         result = await self._drive.find_nodes().descendant_of(ancestor).summarize()
         self.assertEqual(result, NodeSummary(count=3, total_size=100))

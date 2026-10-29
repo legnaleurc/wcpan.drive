@@ -5,8 +5,7 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
@@ -17,10 +16,12 @@ from wcpan.drive.server.synology.scan import StartupScanService
 from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.types import WriteQueue
 from wcpan.drive.server.workers import create_write_queue
-from wcpan.synology import SynologyPath
+from wcpan.synology import SynologyClient, SynologyPath
+
+from ._lib import DecoyTestCase
 
 
-class TestScannerWriteBack(IsolatedAsyncioTestCase):
+class TestScannerWriteBack(DecoyTestCase):
     async def _drain_writes(self, q: WriteQueue) -> None:
         try:
             while True:
@@ -59,7 +60,7 @@ class TestScannerWriteBack(IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=(scan_result, pre_scan_result)),
                 ):
                     svc = StartupScanService(
-                        drive_api=MagicMock(),
+                        drive_api=self.decoy.mock(cls=SynologyClient),
                         mirror=mirror,
                         store=SynologyStore(mirror=mirror),
                         syno_paths=SynologyPathService(

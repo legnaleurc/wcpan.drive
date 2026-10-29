@@ -8,7 +8,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
@@ -31,7 +31,9 @@ from wcpan.drive.server.workers import (
     noop_after_write,
     write_worker,
 )
-from wcpan.synology import SynologyPath
+from wcpan.synology import SynologyClient, SynologyPath
+
+from ._lib import DecoyTestCase
 
 
 _TS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp())
@@ -40,7 +42,7 @@ _TS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp())
 async def _reconcile_with_worker(
     mirror: MirrorStore,
     mounts: dict[str, str],
-    drive_api: object,
+    drive_api: SynologyClient,
     root_id: str,
     *,
     dry_run: bool,
@@ -201,7 +203,7 @@ class TestVirtualPathToDirectoryNodeId(IsolatedAsyncioTestCase):
             await self.svc.resolve_to_directory_node_id("/docs/Nope")
 
 
-class TestReconcileSubtree(IsolatedAsyncioTestCase):
+class TestReconcileSubtree(DecoyTestCase):
     async def test_updates_mismatch_and_preserves_width(self) -> None:
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
@@ -224,7 +226,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     ]
                 )
                 mounts = {"docs": "/volume1/docs"}
-                drive_api = MagicMock()
+                drive_api = self.decoy.mock(cls=SynologyClient)
 
                 async def _list_children(_nw: object, parent_id: str) -> list[dict]:
                     if parent_id == "dir-1":
@@ -272,7 +274,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     ]
                 )
                 mounts = {"docs": "/volume1/docs"}
-                drive_api = MagicMock()
+                drive_api = self.decoy.mock(cls=SynologyClient)
 
                 async def _list_children(_nw: object, parent_id: str) -> list[dict]:
                     if parent_id == "dir-1":
@@ -316,7 +318,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     ]
                 )
                 mounts = {"docs": "/volume1/docs"}
-                drive_api = MagicMock()
+                drive_api = self.decoy.mock(cls=SynologyClient)
 
                 async def _list_children(_nw: object, parent_id: str) -> list[dict]:
                     if parent_id == "dir-1":
@@ -363,7 +365,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     ]
                 )
                 mounts = {"docs": "/volume1/docs"}
-                drive_api = MagicMock()
+                drive_api = self.decoy.mock(cls=SynologyClient)
                 listed: list[str] = []
 
                 async def _list_children(_nw: object, parent_id: str) -> list[dict]:
@@ -408,7 +410,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     ]
                 )
                 mounts = {"docs": "/volume1/docs"}
-                drive_api = MagicMock()
+                drive_api = self.decoy.mock(cls=SynologyClient)
 
                 async def _list_children(_nw: object, parent_id: str) -> list[dict]:
                     if parent_id == "dir-1":
@@ -452,8 +454,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     ]
                 )
                 mounts = {"docs": "/volume1/docs"}
-                drive_api = MagicMock()
-                drive_api.get_file = AsyncMock(return_value=None)
+                drive_api = self.decoy.mock(cls=SynologyClient)
 
                 async def _list_children(_nw: object, parent_id: str) -> list[dict]:
                     if parent_id == "dir-1":
@@ -499,7 +500,7 @@ class TestReconcileSubtree(IsolatedAsyncioTestCase):
                     ]
                 )
                 mounts = {"docs": "/volume1/docs"}
-                drive_api = MagicMock()
+                drive_api = self.decoy.mock(cls=SynologyClient)
 
                 async def _list_children(_nw: object, parent_id: str) -> list[dict]:
                     if parent_id == "dir-1":

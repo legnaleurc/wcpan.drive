@@ -5,11 +5,14 @@ import json
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Any
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 from aiohttp import web
+from aiohttp.base_protocol import BaseProtocol
+from aiohttp.streams import StreamReader
+from aiohttp.test_utils import make_mocked_request
+from decoy import matchers
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.handlers.upload import (
     create_upload_session,
     delete_upload_session,
@@ -24,6 +27,7 @@ from wcpan.drive.server.keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
+from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     _L,
@@ -33,17 +37,22 @@ from wcpan.drive.server.services.upload import (
 from wcpan.drive.server.synology.convert import SynologyLocator
 from wcpan.drive.server.synology.mounts import MountRegistry
 from wcpan.drive.server.synology.paths import SynologyPathService
+from wcpan.drive.server.synology.store import SynologyStore
 from wcpan.drive.server.synology.upload import SynologyUploader
 from wcpan.synology import (
+    SynologyChildRef,
+    SynologyClient,
+    SynologyFileId,
+    SynologyFileInfo,
     SynologyNameTooLongError,
     SynologyNetworkError,
     SynologyUploadError,
 )
 
+from ._lib import DecoyTestCase, make_request
 
-# Test-local slots for the Synology fakes; the backend no longer uses app keys.
-SYNOLOGY_DRIVE_API_KEY: web.AppKey[Any] = web.AppKey("synology_drive_api")
-SYNOLOGY_PATH_KEY: web.AppKey[Any] = web.AppKey("synology_path")
+
+_P1 = SynologyFileId(file_id="p1")
 
 
 class _MockOffMain:
@@ -56,94 +65,78 @@ class _MockOffMain:
         return fn(*args, **kwargs)
 
 
-def _make_app(store: UploadSessionStore) -> dict:
-    app: dict = {}
-    off_main = _MockOffMain()
-    wq: asyncio.Queue = asyncio.Queue()
-    mirror = MagicMock()
-
-    async def _get_locators(node_ids: list[str]):
-        return {"p1": SynologyLocator("p1")} if "p1" in node_ids else {}
-
-    mirror.get_locators = AsyncMock(side_effect=_get_locators)
-    syno_paths = SynologyPathService(
-        registry=MountRegistry(mounts={"tmp": "/team-folders/download"}, root_ids={}),
-        store=mirror,
-    )
-    node_sync = NodeSyncService(
-        mirror=mirror,
-        write_queue=wq,
-        off_main=off_main,
-        mounts={},
-        metadata_queue=asyncio.Queue(),
-    )  # type: ignore[arg-type]
-    drive_api = MagicMock()
-    drive_api.list_folder = AsyncMock(return_value=([], 0))
-    drive_api.get_file = AsyncMock(return_value=None)
-    app[READY_KEY] = True
-    app[OFF_MAIN_KEY] = off_main
-    app[MIRROR_KEY] = mirror
-    app[WRITE_QUEUE_KEY] = wq
-    app[SYNOLOGY_DRIVE_API_KEY] = drive_api
-    app[SYNOLOGY_PATH_KEY] = syno_paths
-    app[CHANGE_SERVICE_KEY] = node_sync
-    app[UPLOAD_SERVICE_KEY] = UploadService(
-        store=store,
-        uploader=SynologyUploader(
-            drive_api=drive_api,
-            syno_paths=syno_paths,
-            node_sync=node_sync,
-        ),
-    )
-    return app
-
-
-def _async_chunks(data: bytes, chunk_size: int = 65536):
-    """Return an async iterable that yields data in chunk_size pieces."""
-
-    async def _gen():
-        for i in range(0, max(len(data), 1), chunk_size):
-            yield data[i : i + chunk_size]
-
-    return _gen()
-
-
-def _make_request(
-    *,
-    app: dict | None = None,
-    match_info: dict | None = None,
-    headers: dict | None = None,
-    body: bytes = b"",
-    json_body: dict | None = None,
-) -> MagicMock:
-    req = MagicMock(spec=web.Request)
-    req.app = app if app is not None else {}
-    req.match_info = match_info or {}
-    req.headers = headers or {}
-    req.read = AsyncMock(return_value=body)
-    req.json = AsyncMock(return_value=json_body or {})
-    # Mock streaming content for iter_chunked
-    content = MagicMock()
-    content.iter_chunked = lambda _size: _async_chunks(body)
-    req.content = content
-    return req
-
-
-# ---------- create_upload_session ----------
-
-
-class TestCreateUploadSession(IsolatedAsyncioTestCase):
+class _UploadTestCase(DecoyTestCase):
     def setUp(self) -> None:
+        super().setUp()
         self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
         self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
+        self.drive_api = self.decoy.mock(cls=SynologyClient)
 
     def tearDown(self) -> None:
         self._store.close_all()
         self._tmp.cleanup()
 
+    async def asyncSetUp(self) -> None:
+        self.decoy.when(
+            await self.drive_api.list_folder(
+                matchers.Anything(), offset=matchers.Anything()
+            )
+        ).then_return(([], 0))
+
+    async def _make_app(self) -> web.Application:
+        app = web.Application()
+        off_main = _MockOffMain()
+        wq: asyncio.Queue = asyncio.Queue()
+        mirror = self.decoy.mock(cls=MirrorStore)
+        store = self.decoy.mock(cls=SynologyStore)
+        self.decoy.when(await store.get_locators(matchers.Anything())).then_return({})
+        self.decoy.when(await store.get_locators([NodeId("p1")])).then_return(
+            {NodeId("p1"): SynologyLocator("p1")}
+        )
+        syno_paths = SynologyPathService(
+            registry=MountRegistry(
+                mounts={"tmp": "/team-folders/download"}, root_ids={}
+            ),
+            store=store,
+        )
+        node_sync = NodeSyncService(
+            mirror=mirror,
+            write_queue=wq,
+            off_main=off_main,
+            mounts={},
+            metadata_queue=asyncio.Queue(),
+        )  # type: ignore[arg-type]
+        app[READY_KEY] = True
+        app[OFF_MAIN_KEY] = off_main  # type: ignore[assignment]
+        app[MIRROR_KEY] = mirror
+        app[WRITE_QUEUE_KEY] = wq
+        app[CHANGE_SERVICE_KEY] = node_sync
+        app[UPLOAD_SERVICE_KEY] = UploadService(
+            store=self._store,
+            uploader=SynologyUploader(
+                drive_api=self.drive_api,
+                syno_paths=syno_paths,
+                node_sync=node_sync,
+            ),
+        )
+        return app
+
+    async def _rehearse_upload(self, name: str = matchers.Anything()):
+        return await self.drive_api.upload(
+            parent_path=_P1,
+            name=name,
+            data=matchers.Anything(),
+            mime_type=matchers.AnythingOrNone(),
+        )
+
+
+# ---------- create_upload_session ----------
+
+
+class TestCreateUploadSession(_UploadTestCase):
     async def test_success_returns_201_with_location_and_upload_length(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin", "size": 1024},
         )
@@ -155,8 +148,8 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
     async def test_name_is_normalized_to_nfc(self):
         raw_name = "かなは\u3099.txt"
         normalized_name = unicodedata.normalize("NFC", raw_name)
-        app = _make_app(self._store)
-        req = _make_request(
+        app = await self._make_app()
+        req = make_request(
             app=app,
             match_info={"parent_id": "p1"},
             json_body={"name": raw_name, "size": 1024},
@@ -167,12 +160,16 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
         self.assertIsNotNone(session)
         assert session is not None
         self.assertEqual(session.name, normalized_name)
-        called_ref = app[SYNOLOGY_DRIVE_API_KEY].get_file.await_args.args[0]
-        self.assertEqual(called_ref.name, normalized_name)
+        self.decoy.verify(
+            await self.drive_api.get_file(
+                SynologyChildRef(parent_ref=_P1, name=normalized_name)
+            ),
+            times=1,
+        )
 
     async def test_missing_name_raises_400(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"size": 1024},
         )
@@ -180,8 +177,8 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
             await create_upload_session(req)
 
     async def test_missing_size_raises_400(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin"},
         )
@@ -189,8 +186,8 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
             await create_upload_session(req)
 
     async def test_invalid_size_raises_400(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin", "size": "abc"},
         )
@@ -198,8 +195,8 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
             await create_upload_session(req)
 
     async def test_zero_size_raises_400(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin", "size": 0},
         )
@@ -209,8 +206,8 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
     async def test_virtual_root_raises_403(self):
         from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"parent_id": SERVER_ROOT_ID},
             json_body={"name": "file.bin", "size": 1024},
         )
@@ -218,8 +215,8 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
             await create_upload_session(req)
 
     async def test_media_params_stored_in_media_info(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "img.jpg", "size": 500, "width": 800, "height": 600},
         )
@@ -235,25 +232,13 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
         self.assertEqual(session.media_info.height, 600)
 
     async def test_conflict_returns_409_with_existing_node(self):
-        app = _make_app(self._store)
-        app[SYNOLOGY_DRIVE_API_KEY].get_file = AsyncMock(
-            return_value={
-                "file_id": "p1",
-                "permanent_link": "p1",
-                "parent_id": "root",
-                "display_path": "/volume1/p1",
-                "name": "p1",
-                "type": "dir",
-                "content_type": "dir",
-                "size": 0,
-                "created_time": 0,
-                "modified_time": 0,
-                "change_time": 0,
-                "sync_id": 0,
-            }
-        )
-        app[SYNOLOGY_DRIVE_API_KEY].get_file = AsyncMock(
-            return_value={
+        app = await self._make_app()
+        self.decoy.when(
+            await self.drive_api.get_file(
+                SynologyChildRef(parent_ref=_P1, name="file.bin")
+            )
+        ).then_return(
+            {
                 "file_id": "existing-1",
                 "permanent_link": "existing-1",
                 "parent_id": "p1",
@@ -268,7 +253,7 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
                 "sync_id": 1,
             }
         )
-        req = _make_request(
+        req = make_request(
             app=app,
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin", "size": 1024},
@@ -281,21 +266,13 @@ class TestCreateUploadSession(IsolatedAsyncioTestCase):
 # ---------- head_upload_session ----------
 
 
-class TestHeadUploadSession(IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
-
-    def tearDown(self) -> None:
-        self._store.close_all()
-        self._tmp.cleanup()
-
+class TestHeadUploadSession(_UploadTestCase):
     async def test_returns_200_with_upload_offset_and_length(self):
         session = self._store.create("p", "f.bin", 2048, None, None)
         session.received = 512
 
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
         )
         resp = await head_upload_session(req)
@@ -306,8 +283,8 @@ class TestHeadUploadSession(IsolatedAsyncioTestCase):
     async def test_nothing_received_returns_200_with_zero_offset(self):
         session = self._store.create("p", "f.bin", 2048, None, None)
 
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
         )
         resp = await head_upload_session(req)
@@ -316,8 +293,8 @@ class TestHeadUploadSession(IsolatedAsyncioTestCase):
         self.assertEqual(resp.headers["Upload-Length"], "2048")
 
     async def test_unknown_session_raises_404(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": "nonexistent"},
         )
         with self.assertRaises(web.HTTPNotFound):
@@ -326,8 +303,8 @@ class TestHeadUploadSession(IsolatedAsyncioTestCase):
     async def test_head_refreshes_session_activity(self):
         session = self._store.create("p", "f.bin", 2048, None, None)
         session.last_activity = 10.0
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
         )
 
@@ -364,21 +341,13 @@ class TestHeadUploadSession(IsolatedAsyncioTestCase):
 # ---------- delete_upload_session ----------
 
 
-class TestDeleteUploadSession(IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
-
-    def tearDown(self) -> None:
-        self._store.close_all()
-        self._tmp.cleanup()
-
+class TestDeleteUploadSession(_UploadTestCase):
     async def test_returns_204_and_removes_session(self):
         session = self._store.create("p", "f.bin", 100, None, {})
         session_id = session.session_id
 
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session_id},
         )
         resp = await delete_upload_session(req)
@@ -386,8 +355,8 @@ class TestDeleteUploadSession(IsolatedAsyncioTestCase):
         self.assertIsNone(self._store.get(session_id))
 
     async def test_unknown_session_raises_404(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": "nonexistent"},
         )
         with self.assertRaises(web.HTTPNotFound):
@@ -397,15 +366,7 @@ class TestDeleteUploadSession(IsolatedAsyncioTestCase):
 # ---------- patch_upload_chunk ----------
 
 
-class TestPatchUploadChunk(IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
-
-    def tearDown(self) -> None:
-        self._store.close_all()
-        self._tmp.cleanup()
-
+class TestPatchUploadChunk(_UploadTestCase):
     def _make_session(self, total: int = 100):
         return self._store.create("p1", "f.bin", total, None, None)
 
@@ -413,8 +374,8 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
         session = self._make_session(total=200)
         chunk = b"x" * 100  # only half the file
 
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
             headers={"Upload-Offset": "0"},
             body=chunk,
@@ -427,8 +388,8 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
         session = self._make_session(total=200)
         session.received = 50  # server has 50 bytes
 
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
             headers={"Upload-Offset": "0"},
             body=b"x" * 100,
@@ -439,8 +400,8 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
 
     async def test_missing_upload_offset_raises_400(self):
         session = self._make_session()
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
             headers={},
             body=b"x" * 50,
@@ -450,8 +411,8 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
 
     async def test_non_integer_upload_offset_raises_400(self):
         session = self._make_session()
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
             headers={"Upload-Offset": "abc"},
             body=b"x" * 50,
@@ -461,8 +422,8 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
 
     async def test_negative_upload_offset_raises_400(self):
         session = self._make_session()
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
             headers={"Upload-Offset": "-1"},
             body=b"x" * 50,
@@ -472,8 +433,8 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
 
     async def test_body_exceeding_total_size_raises_400(self):
         session = self._make_session(total=50)
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": session.session_id},
             headers={"Upload-Offset": "0"},
             body=b"x" * 100,  # twice the declared size
@@ -482,8 +443,8 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
             await patch_upload_chunk(req)
 
     async def test_unknown_session_raises_404(self):
-        req = _make_request(
-            app=_make_app(self._store),
+        req = make_request(
+            app=await self._make_app(),
             match_info={"session_id": "nonexistent"},
             headers={"Upload-Offset": "0"},
             body=b"x" * 10,
@@ -495,29 +456,23 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
         session = self._make_session(total=50)
         chunk = b"y" * 50
 
-        app = _make_app(self._store)
-        with (
-            patch.object(
-                app[SYNOLOGY_DRIVE_API_KEY],
-                "upload",
-                new_callable=AsyncMock,
-                return_value={
-                    "file_id": "new-node-1",
-                    "permanent_link": "new-node-1",
-                    "parent_id": "p1",
-                    "name": "f.bin",
-                    "type": "file",
-                    "content_type": "file",
-                    "size": 50,
-                    "created_time": 0,
-                    "modified_time": 0,
-                    "change_time": 0,
-                    "sync_id": 1,
-                },
-            ),
-            patch.object(_L, "debug") as debug_log,
-        ):
-            req = _make_request(
+        app = await self._make_app()
+        uploaded: SynologyFileInfo = {
+            "file_id": "new-node-1",
+            "permanent_link": "new-node-1",
+            "parent_id": "p1",
+            "name": "f.bin",
+            "type": "file",
+            "content_type": "file",
+            "size": 50,
+            "created_time": 0,
+            "modified_time": 0,
+            "change_time": 0,
+            "sync_id": 1,
+        }
+        self.decoy.when(await self._rehearse_upload("f.bin")).then_return(uploaded)
+        with patch.object(_L, "debug") as debug_log:
+            req = make_request(
                 app=app,
                 match_info={"session_id": session.session_id},
                 headers={"Upload-Offset": "0"},
@@ -540,21 +495,13 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
 
     async def test_finalise_failure_logs_warning_and_keeps_session(self):
         session = self._make_session(total=50)
-        app = _make_app(self._store)
+        app = await self._make_app()
 
-        with (
-            patch.object(
-                app[SYNOLOGY_DRIVE_API_KEY],
-                "upload",
-                new_callable=AsyncMock,
-                side_effect=SynologyUploadError(
-                    "upload failed",
-                    file_name="f.bin",
-                ),
-            ),
-            patch.object(_L, "warning") as warning_log,
-        ):
-            req = _make_request(
+        self.decoy.when(await self._rehearse_upload()).then_raise(
+            SynologyUploadError("upload failed", file_name="f.bin")
+        )
+        with patch.object(_L, "warning") as warning_log:
+            req = make_request(
                 app=app,
                 match_info={"session_id": session.session_id},
                 headers={"Upload-Offset": "0"},
@@ -572,13 +519,11 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
 
     async def test_name_too_long_returns_typed_422(self):
         session = self._make_session(total=50)
-        app = _make_app(self._store)
-        app[SYNOLOGY_DRIVE_API_KEY].upload = AsyncMock(
-            side_effect=SynologyNameTooLongError(
-                "File name is too long", file_name="f.bin"
-            )
+        app = await self._make_app()
+        self.decoy.when(await self._rehearse_upload()).then_raise(
+            SynologyNameTooLongError("File name is too long", file_name="f.bin")
         )
-        req = _make_request(
+        req = make_request(
             app=app,
             match_info={"session_id": session.session_id},
             headers={"Upload-Offset": "0"},
@@ -592,18 +537,13 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
 
     async def test_finalise_network_failure_logs_warning_and_keeps_session(self):
         session = self._make_session(total=50)
-        app = _make_app(self._store)
+        app = await self._make_app()
 
-        with (
-            patch.object(
-                app[SYNOLOGY_DRIVE_API_KEY],
-                "upload",
-                new_callable=AsyncMock,
-                side_effect=SynologyNetworkError("connection reset"),
-            ),
-            patch.object(_L, "warning") as warning_log,
-        ):
-            req = _make_request(
+        self.decoy.when(await self._rehearse_upload()).then_raise(
+            SynologyNetworkError("connection reset")
+        )
+        with patch.object(_L, "warning") as warning_log:
+            req = make_request(
                 app=app,
                 match_info={"session_id": session.session_id},
                 headers={"Upload-Offset": "0"},
@@ -621,13 +561,13 @@ class TestPatchUploadChunk(IsolatedAsyncioTestCase):
 
     async def test_finalise_size_mismatch_logs_warning_and_keeps_session(self):
         session = self._make_session(total=50)
-        app = _make_app(self._store)
+        app = await self._make_app()
 
         with (
             patch("pathlib.Path.stat", return_value=Mock(st_size=49)),
             patch.object(_L, "warning") as warning_log,
         ):
-            req = _make_request(
+            req = make_request(
                 app=app,
                 match_info={"session_id": session.session_id},
                 headers={"Upload-Offset": "0"},

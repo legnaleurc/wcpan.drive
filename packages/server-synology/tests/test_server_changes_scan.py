@@ -5,10 +5,10 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, suppress
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import wcpan.drive.server.synology.scan as startup_scan_mod
+from decoy import matchers
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.lib.mounts import (
@@ -29,6 +29,9 @@ from wcpan.drive.server.types import (
     WriteQueue,
 )
 from wcpan.drive.server.workers import create_write_queue, metadata_worker
+from wcpan.synology import SynologyClient, SynologyFileId
+
+from ._lib import DecoyTestCase
 
 
 def _node(
@@ -88,7 +91,19 @@ async def _noop_enrich_node_sync(_self: object, record: NodeRecord) -> NodeRecor
     return record
 
 
-class TestDeferredScan(IsolatedAsyncioTestCase):
+class TestDeferredScan(DecoyTestCase):
+    async def _drive_api(self, count: int = 0) -> SynologyClient:
+        """A drive API whose folder counts are *count* and whose nodes are gone."""
+        drive_api = self.decoy.mock(cls=SynologyClient)
+        self.decoy.when(
+            await drive_api.list_folder(
+                matchers.Anything(),
+                offset=matchers.Anything(),
+                limit=matchers.Anything(),
+            )
+        ).then_return(([], count))
+        return drive_api
+
     def _push_incremental_scan_mocks(
         self,
         stack: ExitStack,
@@ -117,9 +132,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
             patch.object(NodeSyncService, "enrich", new=_noop_enrich_node_sync)
         )
         if mute_tree_log_exception:
-            stack.enter_context(
-                patch.object(startup_scan_mod._L, "exception", MagicMock())
-            )
+            stack.enter_context(patch.object(startup_scan_mod._L, "exception"))
 
     async def _drain_writes(self, q: WriteQueue) -> None:
         try:
@@ -175,7 +188,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     with ExitStack() as stack:
                         self._push_incremental_scan_mocks(stack, by_path=by_path)
                         svc = StartupScanService(
-                            drive_api=MagicMock(),
+                            drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
@@ -237,15 +250,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                 async def list_all(_net: object, folder_id: str) -> list:
                     raise AssertionError(f"unexpected list of {folder_id}")
 
-                async def list_folder_fn(
-                    folder_id: str, offset: int, limit: int
-                ) -> tuple:
-                    return [], 1
-
-                drive_api = MagicMock()
-                drive_api.list_folder = AsyncMock(side_effect=list_folder_fn)
                 # Unlisted nodes are confirmed missing before removal.
-                drive_api.get_file = AsyncMock(return_value=None)
+                drive_api = await self._drive_api(count=1)
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
@@ -343,7 +349,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                             stack, by_path=by_path, list_all=list_all
                         )
                         svc = StartupScanService(
-                            drive_api=MagicMock(),
+                            drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
@@ -419,7 +425,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                             stack, by_path=by_path, list_all=list_all
                         )
                         svc = StartupScanService(
-                            drive_api=MagicMock(),
+                            drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
@@ -497,7 +503,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                             stack, by_path=by_path, list_all=list_all
                         )
                         svc = StartupScanService(
-                            drive_api=MagicMock(),
+                            drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
@@ -579,7 +585,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                             mute_tree_log_exception=True,
                         )
                         svc = StartupScanService(
-                            drive_api=MagicMock(),
+                            drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
@@ -659,17 +665,13 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                         return [_syno_item("child1", "a.txt")]
                     return []
 
-                async def list_folder_fn(
-                    folder_id: str, offset: int, limit: int
-                ) -> tuple:
-                    if folder_id == "dirF":
-                        return [], 1
-                    return [], 0
-
-                drive_api = MagicMock()
-                drive_api.list_folder = AsyncMock(side_effect=list_folder_fn)
                 # Unlisted nodes are confirmed missing before removal.
-                drive_api.get_file = AsyncMock(return_value=None)
+                drive_api = await self._drive_api()
+                self.decoy.when(
+                    await drive_api.list_folder(
+                        SynologyFileId("dirF"), offset=0, limit=1
+                    )
+                ).then_return(([], 1))
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(
@@ -763,7 +765,7 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                             mute_tree_log_exception=True,
                         )
                         svc = StartupScanService(
-                            drive_api=MagicMock(),
+                            drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
@@ -831,13 +833,8 @@ class TestDeferredScan(IsolatedAsyncioTestCase):
                     entered.append(folder_id)
                     return []
 
-                async def list_one(folder_id: str, offset: int, limit: int) -> tuple:
-                    return [], 1
-
-                drive_api = MagicMock()
-                drive_api.list_folder = AsyncMock(side_effect=list_one)
                 # Unlisted nodes are confirmed missing before removal.
-                drive_api.get_file = AsyncMock(return_value=None)
+                drive_api = await self._drive_api(count=1)
                 q = create_write_queue()
                 mq: asyncio.Queue = asyncio.Queue()
                 cs = NodeSyncService(

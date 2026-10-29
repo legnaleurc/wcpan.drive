@@ -2,10 +2,11 @@
 
 import asyncio
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
 from wcpan.drive.server.synology.handlers import webhook_handler
+
+from ._lib import make_request
 
 
 class TestWebhookHttpHandler(IsolatedAsyncioTestCase):
@@ -15,8 +16,7 @@ class TestWebhookHttpHandler(IsolatedAsyncioTestCase):
             {"event_type": "file_created", "file_id": "f1"},
             {"event_type": "file_removed", "file_id": "f2"},
         ]
-        request = MagicMock(spec=web.Request)
-        request.json = AsyncMock(return_value=payload)
+        request = make_request(json_body=payload)
 
         resp = await webhook_handler(queue)(request)
         assert isinstance(resp, web.Response)

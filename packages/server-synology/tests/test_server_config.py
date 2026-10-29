@@ -1,19 +1,29 @@
 """Synology backend settings and instances."""
 
 import io
-import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
+from decoy import Decoy, matchers
 from wcpan.drive.server.backend import (
     BackendContext,
     BackendRoutes,
     CoreServices,
     enter_backend,
 )
+from wcpan.drive.server.services.mirror import MirrorStore
+from wcpan.drive.server.services.off_main import OffMainService
+from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology import create_backend
-from wcpan.drive.server.synology.config import SynologyConfig
+from wcpan.drive.server.synology.config import (
+    SynologyConfig,
+    create_synology_client,
+)
+from wcpan.drive.server.synology.mounts import MountRegistry, create_mount_registry
+from wcpan.synology import SynologyClient
+
+from ._lib import DecoyTestCase
 
 
 def _settings(**overrides):
@@ -27,10 +37,11 @@ def _settings(**overrides):
     return settings
 
 
-class TestSettings(unittest.IsolatedAsyncioTestCase):
+class TestSettings(DecoyTestCase):
     async def _config(self, **settings: object) -> SynologyConfig:
+        context = _context(offline=True, decoy=self.decoy)
         with patch(f"{_BACKEND}.SynologyBackend") as backend:
-            async with enter_backend(create_backend, _context(offline=True), settings):
+            async with enter_backend(create_backend, context, settings):
                 pass
         return backend.call_args.kwargs["config"]
 
@@ -61,22 +72,30 @@ class TestSettings(unittest.IsolatedAsyncioTestCase):
             settings = _settings()
             del settings[field]
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
-                enter_backend(create_backend, _context(offline=True), settings)
+                enter_backend(
+                    create_backend, _context(offline=True, decoy=self.decoy), settings
+                )
 
     def test_nested_webhook_is_rejected(self):
         settings = _settings(webhook={"callback_url": "https://public.example"})
         del settings["webhook_callback_url"]
         with self.assertRaisesRegex(ValueError, "unknown settings: webhook"):
-            enter_backend(create_backend, _context(offline=True), settings)
+            enter_backend(
+                create_backend, _context(offline=True, decoy=self.decoy), settings
+            )
 
 
-def _context(*, offline: bool, mounts: dict[str, str] | None = None) -> BackendContext:
-    mirror = MagicMock()
-    mirror.register_schema = AsyncMock()
+def _context(
+    *, offline: bool, decoy: Decoy, mounts: dict[str, str] | None = None
+) -> BackendContext:
     return BackendContext(
         name="nas",
         mounts=mounts or {"p": "/volume1/p"},
-        core=CoreServices(mirror=mirror, node_sync=MagicMock(), off_main=MagicMock()),
+        core=CoreServices(
+            mirror=decoy.mock(cls=MirrorStore),
+            node_sync=decoy.mock(cls=NodeSyncService),
+            off_main=decoy.mock(cls=OffMainService),
+        ),
         routes=BackendRoutes(name="nas"),
         offline=offline,
     )
@@ -86,9 +105,25 @@ def _no_connection(*_: object, **__: object) -> None:
     raise AssertionError("must not connect")
 
 
-class TestFactory(unittest.IsolatedAsyncioTestCase):
+class TestFactory(DecoyTestCase):
+    async def asyncSetUp(self) -> None:
+        self.client = self.decoy.mock(cls=SynologyClient)
+        connect = self.decoy.mock(func=create_synology_client)
+        self.decoy.when(connect(matchers.Anything())).then_enter_with(self.client)
+        resolve = self.decoy.mock(func=create_mount_registry)
+        self.decoy.when(
+            await resolve(matchers.Anything(), drive_api=self.client)
+        ).then_return(MountRegistry(mounts={}, root_ids={}))
+        for target, mock in (
+            (f"{_BACKEND}.create_synology_client", connect),
+            (f"{_BACKEND}.create_mount_registry", resolve),
+        ):
+            patcher = patch(target, mock)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     async def test_offline_instance_does_not_connect(self):
-        context = _context(offline=True)
+        context = _context(offline=True, decoy=self.decoy)
         with patch(f"{_BACKEND}.create_synology_client", _no_connection):
             async with create_backend(
                 context, **_settings(local_paths={"/volume1": "/mnt/nas"})
@@ -99,50 +134,46 @@ class TestFactory(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(backend.local_path("/volume2/a.jpg"))
                 with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
                     await backend.command(["--help"])
-        context.core.mirror.register_schema.assert_awaited_once()
+        self.decoy.verify(
+            await context.core.mirror.register_schema(
+                matchers.Anything(), matchers.Anything()
+            ),
+            times=1,
+        )
 
     async def test_backfill_connects_and_reconciles_this_instance(self):
         stats = dict.fromkeys(
             ("checked", "added", "updated", "removed", "list_errors"), 0
         )
+        context = _context(offline=True, decoy=self.decoy)
         with (
-            patch(f"{_BACKEND}.create_synology_client", return_value=_client()),
-            patch(f"{_BACKEND}.create_mount_registry", AsyncMock()),
             patch(
                 f"{_BACKEND}.BackfillService.run_virtual_path",
                 AsyncMock(return_value=stats),
             ) as run,
             redirect_stdout(io.StringIO()),
         ):
-            async with create_backend(_context(offline=True), **_settings()) as backend:
+            async with create_backend(context, **_settings()) as backend:
                 await backend.command(["backfill", "/p", "--dry-run"])
         run.assert_awaited_once_with("/p", dry_run=True)
 
     async def test_serving_registers_its_webhook_route(self):
-        client = MagicMock()
-        client.list_webhooks = AsyncMock(return_value=[])
-        client.create_webhook = AsyncMock(return_value="hook-1")
-        client.delete_webhook = AsyncMock()
-        context = _context(offline=False)
-        with (
-            patch(f"{_BACKEND}.create_synology_client", return_value=_client(client)),
-            patch(f"{_BACKEND}.create_mount_registry", AsyncMock()),
-        ):
-            async with create_backend(context, **_settings()) as backend:
-                self.assertIsNotNone(backend.operations)
-                self.assertIsNotNone(context.routes.find("POST", "webhook"))
-        client.create_webhook.assert_awaited_once_with(
-            url="https://public.example/api/v1/backends/nas/webhook",
-            app_id="wcpan-drive-server-synology",
+        app_id = "wcpan-drive-server-synology"
+        self.decoy.when(await self.client.list_webhooks(app_id=app_id)).then_return([])
+        self.decoy.when(
+            await self.client.create_webhook(
+                url="https://public.example/api/v1/backends/nas/webhook",
+                app_id=app_id,
+            )
+        ).then_return("hook-1")
+        context = _context(offline=False, decoy=self.decoy)
+        async with create_backend(context, **_settings()) as backend:
+            self.assertIsNotNone(backend.operations)
+            self.assertIsNotNone(context.routes.find("POST", "webhook"))
+        self.decoy.verify(
+            await self.client.delete_webhook(webhook_id="hook-1", app_id=app_id),
+            times=1,
         )
-        client.delete_webhook.assert_awaited_once()
 
 
 _BACKEND = "wcpan.drive.server.synology.backend"
-
-
-def _client(client: object | None = None) -> MagicMock:
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=client or MagicMock())
-    cm.__aexit__ = AsyncMock(return_value=None)
-    return cm

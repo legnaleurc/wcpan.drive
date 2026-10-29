@@ -3,12 +3,11 @@
 import asyncio
 import tempfile
 from pathlib import Path
-from typing import Any
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from decoy import matchers
 from wcpan.drive.protocol.lib import node_record_from_dict
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.nodes import create_node, upload_node
@@ -37,19 +36,20 @@ from wcpan.drive.server.synology.paths import SynologyPathService
 from wcpan.drive.server.synology.upload import SynologyUploader
 from wcpan.drive.server.types import NodeObservation
 from wcpan.drive.server.workers import create_write_queue
-from wcpan.synology import SynologyUploadConflictError
+from wcpan.synology import (
+    SynologyChildRef,
+    SynologyClient,
+    SynologyFileId,
+    SynologyFileInfo,
+    SynologyUploadConflictError,
+)
+
+from ._lib import DecoyTestCase
 
 
-# Test-local slots for the Synology fakes; the backend no longer uses app keys.
-SYNOLOGY_DRIVE_API_KEY: web.AppKey[Any] = web.AppKey("synology_drive_api")
-SYNOLOGY_PATH_KEY: web.AppKey[Any] = web.AppKey("synology_path")
+_PARENT = SynologyFileId(file_id="parent-a")
 
-
-# Patch targets for find_child_by_name — now a method on SynologyPathService
-_FIND_CHILD_CLS = SynologyPathService
-
-
-_EXISTING_DIR = {
+_EXISTING_DIR: SynologyFileInfo = {
     "file_id": "dir-existing",
     "permanent_link": "dir-existing",
     "parent_id": "",
@@ -63,7 +63,7 @@ _EXISTING_DIR = {
     "sync_id": 0,
 }
 
-_EXISTING_FILE = {
+_EXISTING_FILE: SynologyFileInfo = {
     "file_id": "file-existing",
     "permanent_link": "file-existing",
     "parent_id": "",
@@ -138,7 +138,10 @@ def _make_dir(node_id: str) -> NodeRecord:
 
 
 def _make_app(
-    mirror: _FakeMirror, session_store: UploadSessionStore
+    mirror: _FakeMirror,
+    session_store: UploadSessionStore,
+    *,
+    drive_api: SynologyClient,
 ) -> web.Application:
     app = web.Application()
     off_main = _FakeOffMain()
@@ -159,18 +162,16 @@ def _make_app(
     app[MIRROR_KEY] = mirror
     app[OFF_MAIN_KEY] = off_main
     app[WRITE_QUEUE_KEY] = wq
-    app[SYNOLOGY_PATH_KEY] = syno_paths
     app[CHANGE_SERVICE_KEY] = node_sync
-    app[SYNOLOGY_DRIVE_API_KEY] = MagicMock()
     app[NODE_OPERATIONS_KEY] = SynologyNodeOperations(
-        drive_api=app[SYNOLOGY_DRIVE_API_KEY],
+        drive_api=drive_api,
         syno_paths=syno_paths,
         node_sync=node_sync,
     )
     app[UPLOAD_SERVICE_KEY] = UploadService(
         store=session_store,
         uploader=SynologyUploader(
-            drive_api=app[SYNOLOGY_DRIVE_API_KEY],
+            drive_api=drive_api,
             syno_paths=syno_paths,
             node_sync=node_sync,
         ),
@@ -189,39 +190,51 @@ async def _passthrough_enrich(record: NodeRecord, *args, **kwargs) -> NodeRecord
     return record
 
 
-class TestCreateNodeConflict409(IsolatedAsyncioTestCase):
+class _ConflictTestCase(DecoyTestCase):
     def setUp(self) -> None:
+        super().setUp()
         self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
         self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
+        self.drive_api = self.decoy.mock(cls=SynologyClient)
+        self.app = _make_app(_FakeMirror(), self._store, drive_api=self.drive_api)
+        enrich = patch(_ENRICH, new_callable=AsyncMock, side_effect=_passthrough_enrich)
+        enrich.start()
+        self.addCleanup(enrich.stop)
 
     def tearDown(self) -> None:
         self._store.close_all()
         self._tmp.cleanup()
 
-    async def test_returns_node_record_json(self) -> None:
-        mirror = _FakeMirror()
-        app = _make_app(mirror, self._store)
+    async def _rehearse_get_child(self, name: str):
+        return await self.drive_api.get_file(
+            SynologyChildRef(parent_ref=_PARENT, name=name)
+        )
 
-        with (
-            patch.object(
-                app[SYNOLOGY_DRIVE_API_KEY], "create_folder", new_callable=AsyncMock
-            ) as mock_cf,
-            patch.object(
-                _FIND_CHILD_CLS,
-                "find_child_by_name",
-                new_callable=AsyncMock,
-                return_value=_EXISTING_DIR,
-            ),
-            patch(_ENRICH, new_callable=AsyncMock, side_effect=_passthrough_enrich),
-        ):
-            mock_cf.side_effect = SynologyUploadConflictError("exists", file_name="x")
-            async with TestClient(TestServer(app)) as client:
-                resp = await client.post(
-                    "/api/v1/nodes",
-                    json={"name": "newfolder", "parent_id": "parent-a"},
-                )
-                self.assertEqual(resp.status, 409)
-                record = node_record_from_dict(await resp.json())
+    async def _rehearse_upload(self):
+        return await self.drive_api.upload(
+            parent_path=_PARENT,
+            name="dup.bin",
+            data=matchers.Anything(),
+            mime_type=matchers.AnythingOrNone(),
+        )
+
+
+class TestCreateNodeConflict409(_ConflictTestCase):
+    async def test_returns_node_record_json(self) -> None:
+        self.decoy.when(
+            await self.drive_api.create_folder(_PARENT, "newfolder")
+        ).then_raise(SynologyUploadConflictError("exists", file_name="x"))
+        self.decoy.when(await self._rehearse_get_child("newfolder")).then_return(
+            _EXISTING_DIR
+        )
+
+        async with TestClient(TestServer(self.app)) as client:
+            resp = await client.post(
+                "/api/v1/nodes",
+                json={"name": "newfolder", "parent_id": "parent-a"},
+            )
+            self.assertEqual(resp.status, 409)
+            record = node_record_from_dict(await resp.json())
 
         self.assertEqual(record.id, "dir-existing")
         self.assertEqual(record.name, "newfolder")
@@ -229,85 +242,51 @@ class TestCreateNodeConflict409(IsolatedAsyncioTestCase):
         self.assertEqual(record.parent_id, "parent-a")
 
 
-class TestFinaliseUploadConflict409(IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
-
-    def tearDown(self) -> None:
-        self._store.close_all()
-        self._tmp.cleanup()
-
+class TestFinaliseUploadConflict409(_ConflictTestCase):
     async def test_put_session_finalise_conflict_returns_409_node(self) -> None:
-        mirror = _FakeMirror()
-        app = _make_app(mirror, self._store)
-        with (
-            patch.object(
-                app[SYNOLOGY_DRIVE_API_KEY], "upload", new_callable=AsyncMock
-            ) as mock_up,
-            patch.object(
-                _FIND_CHILD_CLS,
-                "find_child_by_name",
-                new_callable=AsyncMock,
-                side_effect=[None, _EXISTING_FILE],
-            ),
-            patch(_ENRICH, new_callable=AsyncMock, side_effect=_passthrough_enrich),
-        ):
-            mock_up.side_effect = SynologyUploadConflictError(
-                "exists", file_name="dup.bin"
+        self.decoy.when(await self._rehearse_upload()).then_raise(
+            SynologyUploadConflictError("exists", file_name="dup.bin")
+        )
+        # absent when the session opens, present once the upload conflicts
+        self.decoy.when(await self._rehearse_get_child("dup.bin")).then_return(
+            None, _EXISTING_FILE
+        )
+
+        async with TestClient(TestServer(self.app)) as client:
+            resp = await client.post(
+                "/api/v1/nodes/parent-a/upload-session",
+                json={"name": "dup.bin", "size": 10},
             )
-            async with TestClient(TestServer(app)) as client:
-                resp = await client.post(
-                    "/api/v1/nodes/parent-a/upload-session",
-                    json={"name": "dup.bin", "size": 10},
-                )
-                self.assertEqual(resp.status, 201)
-                sid = resp.headers["Location"].split("/")[-1]
-                resp2 = await client.patch(
-                    f"/api/v1/upload-sessions/{sid}",
-                    data=b"x" * 10,
-                    headers={"Upload-Offset": "0"},
-                )
-                self.assertEqual(resp2.status, 409)
-                record = node_record_from_dict(await resp2.json())
+            self.assertEqual(resp.status, 201)
+            sid = resp.headers["Location"].split("/")[-1]
+            resp2 = await client.patch(
+                f"/api/v1/upload-sessions/{sid}",
+                data=b"x" * 10,
+                headers={"Upload-Offset": "0"},
+            )
+            self.assertEqual(resp2.status, 409)
+            record = node_record_from_dict(await resp2.json())
         self.assertEqual(record.id, "file-existing")
         self.assertEqual(record.name, "dup.bin")
 
 
-class TestUploadNodeConflict409(IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
-
-    def tearDown(self) -> None:
-        self._store.close_all()
-        self._tmp.cleanup()
-
+class TestUploadNodeConflict409(_ConflictTestCase):
     async def test_returns_node_record_json(self) -> None:
-        mirror = _FakeMirror()
-        app = _make_app(mirror, self._store)
+        self.decoy.when(await self._rehearse_upload()).then_raise(
+            SynologyUploadConflictError("exists", file_name="x")
+        )
+        self.decoy.when(await self._rehearse_get_child("dup.bin")).then_return(
+            _EXISTING_FILE
+        )
 
-        with (
-            patch.object(
-                app[SYNOLOGY_DRIVE_API_KEY], "upload", new_callable=AsyncMock
-            ) as mock_up,
-            patch.object(
-                _FIND_CHILD_CLS,
-                "find_child_by_name",
-                new_callable=AsyncMock,
-                return_value=_EXISTING_FILE,
-            ),
-            patch(_ENRICH, new_callable=AsyncMock, side_effect=_passthrough_enrich),
-        ):
-            mock_up.side_effect = SynologyUploadConflictError("exists", file_name="x")
-            async with TestClient(TestServer(app)) as client:
-                resp = await client.post(
-                    "/api/v1/nodes/parent-a/upload",
-                    data=b"abc",
-                    params={"name": "dup.bin"},
-                )
-                self.assertEqual(resp.status, 409)
-                record = node_record_from_dict(await resp.json())
+        async with TestClient(TestServer(self.app)) as client:
+            resp = await client.post(
+                "/api/v1/nodes/parent-a/upload",
+                data=b"abc",
+                params={"name": "dup.bin"},
+            )
+            self.assertEqual(resp.status, 409)
+            record = node_record_from_dict(await resp.json())
 
         self.assertEqual(record.id, "file-existing")
         self.assertEqual(record.name, "dup.bin")

@@ -2,14 +2,16 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock
 
+from aiohttp import ClientResponse
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.services.operations import OperationUnavailableError
+from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology.operations import SynologyNodeOperations
-from wcpan.synology import SynologyNetworkError
+from wcpan.drive.server.synology.paths import SynologyPathService
+from wcpan.synology import SynologyClient, SynologyNetworkError, SynologyPermanentLink
+
+from ._lib import DecoyTestCase, make_stream
 
 
 _RECORD = NodeRecord(
@@ -32,54 +34,43 @@ _RECORD = NodeRecord(
 )
 
 
-async def _chunks() -> AsyncGenerator[bytes, None]:
-    yield b"abc"
+@asynccontextmanager
+async def _wrapping_errors(
+    response: ClientResponse,
+) -> AsyncGenerator[ClientResponse]:
+    """Wrap errors like the real client's download does."""
+    try:
+        yield response
+    except Exception as e:
+        raise SynologyNetworkError("download failed", e) from e
 
 
-def _drive_api_wrapping_errors() -> MagicMock:
-    """A drive API whose download wraps errors like the real client does."""
+class TestDownload(DecoyTestCase):
+    async def asyncSetUp(self) -> None:
+        response = self.decoy.mock(cls=ClientResponse)
+        self.decoy.when(response.content).then_return(make_stream(b"abc"))
+        drive_api = self.decoy.mock(cls=SynologyClient)
+        self.decoy.when(
+            drive_api.download(SynologyPermanentLink("f1"), range_=None)
+        ).then_return(_wrapping_errors(response))
+        self.operations = SynologyNodeOperations(
+            drive_api=drive_api,
+            syno_paths=self.decoy.mock(cls=SynologyPathService),
+            node_sync=self.decoy.mock(cls=NodeSyncService),
+        )
 
-    @asynccontextmanager
-    async def download(*_: Any, **__: Any) -> AsyncGenerator[MagicMock, None]:
-        response = MagicMock()
-        response.content.iter_any = _chunks
-        try:
-            yield response
-        except Exception as e:
-            raise SynologyNetworkError("download failed", e) from e
-
-    drive_api = MagicMock()
-    drive_api.download = download
-    return drive_api
-
-
-def _operations(drive_api: MagicMock) -> SynologyNodeOperations:
-    return SynologyNodeOperations(
-        drive_api=drive_api,
-        syno_paths=MagicMock(),
-        node_sync=MagicMock(),
-    )
-
-
-class TestDownload(IsolatedAsyncioTestCase):
     async def test_streams_content(self) -> None:
-        operations = _operations(_drive_api_wrapping_errors())
-
-        async with operations.download(_RECORD, range_=None) as chunks:
+        async with self.operations.download(_RECORD, range_=None) as chunks:
             received = [c async for c in chunks]
 
         self.assertEqual(received, [b"abc"])
 
     async def test_client_disconnect_surfaces_as_connection_error(self) -> None:
-        operations = _operations(_drive_api_wrapping_errors())
-
         with self.assertRaises(ConnectionResetError):
-            async with operations.download(_RECORD, range_=None):
+            async with self.operations.download(_RECORD, range_=None):
                 raise ConnectionResetError()
 
     async def test_network_error_becomes_unavailable(self) -> None:
-        operations = _operations(_drive_api_wrapping_errors())
-
         with self.assertRaises(OperationUnavailableError):
-            async with operations.download(_RECORD, range_=None):
+            async with self.operations.download(_RECORD, range_=None):
                 raise TimeoutError()
