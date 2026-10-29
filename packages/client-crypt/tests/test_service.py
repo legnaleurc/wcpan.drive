@@ -1,7 +1,8 @@
+import pickle
+from collections.abc import AsyncIterator
 from typing import cast
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock
 
+from decoy import matchers
 from wcpan.drive.client.crypt._lib import (
     DecryptReadableFile,
     EncryptHasher,
@@ -10,57 +11,51 @@ from wcpan.drive.client.crypt._lib import (
     encrypt_name,
 )
 from wcpan.drive.client.crypt._service import CryptBackend
-from wcpan.drive.client.types import Backend, Node
-
-from ._lib import (
-    aexpect,
-    create_amock,
-    create_mock,
-    create_node,
-    expect,
-    fake_create_hasher,
+from wcpan.drive.client.types import (
+    Backend,
+    ChangeAction,
+    Node,
+    ReadableFile,
+    WritableFile,
 )
 
+from ._lib import DecoyTestCase, create_node, fake_create_hasher
 
-class GetChangesTestCase(IsolatedAsyncioTestCase):
+
+async def fake_changes(
+    *pages: list[ChangeAction],
+) -> AsyncIterator[tuple[list[ChangeAction], str]]:
+    for page in pages:
+        yield page, "1"
+
+
+class _TestCase(DecoyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.upstream = self.decoy.mock(cls=Backend)
+        self.fs = CryptBackend(self.upstream)
+
+
+class GetChangesTestCase(_TestCase):
     async def testRemoved(self):
-        upstream = AsyncMock()
-        fs = CryptBackend(upstream)
+        self.decoy.when(self.upstream.get_changes("1")).then_return(
+            fake_changes([(True, "1")])
+        )
 
-        async def fake_fetch_changes(dummy: object):
-            yield (
-                [
-                    (True, 1),
-                ],
-                "1",
-            )
-
-        upstream.get_changes = fake_fetch_changes
-
-        async for changes, _dummy in fs.get_changes("1"):
+        async for changes, _dummy in self.fs.get_changes("1"):
             # should not touch remove changes
             self.assertEqual(
                 changes[0],
-                (True, 1),
+                (True, "1"),
             )
 
     async def testPlainNode(self):
-        upstream = AsyncMock()
-        fs = CryptBackend(upstream)
-
         plain_node = create_node("name", None)
+        self.decoy.when(self.upstream.get_changes("1")).then_return(
+            fake_changes([(False, plain_node)])
+        )
 
-        async def fake_fetch_changes(dummy: object):
-            yield (
-                [
-                    (False, plain_node),
-                ],
-                "1",
-            )
-
-        upstream.get_changes = fake_fetch_changes
-
-        async for changes, _dummy in fs.get_changes("1"):
+        async for changes, _dummy in self.fs.get_changes("1"):
             # should not touch normal files
             self.assertEqual(
                 changes[0],
@@ -68,68 +63,46 @@ class GetChangesTestCase(IsolatedAsyncioTestCase):
             )
 
     async def testCryptNode(self):
-        upstream = AsyncMock()
-        fs = CryptBackend(upstream)
-
         crypted_node = create_node(
             encrypt_name("name"),
             {
                 "crypt": "1",
             },
         )
+        self.decoy.when(self.upstream.get_changes("1")).then_return(
+            fake_changes([(False, crypted_node)])
+        )
 
-        async def fake_fetch_changes(dummy: object):
-            yield (
-                [
-                    (False, crypted_node),
-                ],
-                "1",
-            )
-
-        upstream.get_changes = fake_fetch_changes
-
-        async for changes, _dummy in fs.get_changes("1"):
+        async for changes, _dummy in self.fs.get_changes("1"):
             # should decrypt the name
             node = cast(Node, changes[0][1])
             self.assertEqual(node.name, "name")
 
     async def testInvalid(self):
-        upstream = AsyncMock()
-        fs = CryptBackend(upstream)
-
-        async def fake_fetch_changes(dummy: object):
-            yield (
-                [
-                    (False, create_node("name", {"crypt": "-1"})),
-                ],
-                "1",
-            )
-
-        upstream.get_changes = fake_fetch_changes
+        self.decoy.when(self.upstream.get_changes("1")).then_return(
+            fake_changes([(False, create_node("name", {"crypt": "-1"}))])
+        )
 
         # should not accept invalid crypt version
         with self.assertRaises(InvalidCryptVersion):
-            async for _changes, _dummy in fs.get_changes("1"):
+            async for _changes, _dummy in self.fs.get_changes("1"):
                 pass
 
 
-class MoveTestCase(IsolatedAsyncioTestCase):
+class MoveTestCase(_TestCase):
     async def testPlain(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
         # should not touch normal files
         node = create_node("name_1", None)
         new_parent = create_node("name_2", None)
-        await fs.move(node, new_parent=new_parent, new_name="new_name")
-        aexpect(upstream.move).assert_awaited_once_with(
-            node, new_parent=new_parent, new_name="new_name"
-        )
+        moved = create_node("new_name", None)
+        self.decoy.when(
+            await self.upstream.move(node, new_parent=new_parent, new_name="new_name")
+        ).then_return(moved)
+
+        rv = await self.fs.move(node, new_parent=new_parent, new_name="new_name")
+        self.assertIs(rv, moved)
 
     async def testCrypt(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
         # should not accept invalid crypt version
         node = create_node(
             "name_1",
@@ -139,12 +112,9 @@ class MoveTestCase(IsolatedAsyncioTestCase):
         )
         new_parent = create_node("name_2", None)
         with self.assertRaises(InvalidCryptVersion):
-            await fs.move(node, new_parent=new_parent, new_name="new_name")
+            await self.fs.move(node, new_parent=new_parent, new_name="new_name")
 
     async def testInvalid(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
         # should not accept invalid crypt version
         node = create_node(
             "name_1",
@@ -154,19 +124,15 @@ class MoveTestCase(IsolatedAsyncioTestCase):
         )
         new_parent = create_node("name_2", None)
         with self.assertRaises(InvalidCryptVersion):
-            await fs.move(node, new_parent=new_parent, new_name="new_name")
-        aexpect(upstream.move).reset_mock()
+            await self.fs.move(node, new_parent=new_parent, new_name="new_name")
 
 
-class CreateDirectoryTestCase(IsolatedAsyncioTestCase):
+class CreateDirectoryTestCase(_TestCase):
     async def testInvalid(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
         # should not accept invalid crypt version
         node = create_node("name", None)
         with self.assertRaises(InvalidCryptVersion):
-            await fs.create_directory(
+            await self.fs.create_directory(
                 "new_name",
                 node,
                 exist_ok=False,
@@ -176,33 +142,29 @@ class CreateDirectoryTestCase(IsolatedAsyncioTestCase):
             )
 
     async def testCrypt(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
         # should create encrypted file by default
         node = create_node("name", None)
-        await fs.create_directory(
+        created = create_node("created", None)
+        self.decoy.when(
+            await self.upstream.create_directory(
+                name=encrypt_name("new_name"),
+                parent=node,
+                private=matchers.DictMatching({"crypt": "1"}),
+                exist_ok=matchers.Anything(),
+            )
+        ).then_return(created)
+
+        rv = await self.fs.create_directory(
             "new_name",
             node,
             exist_ok=False,
             private=None,
         )
-        new_name = encrypt_name("new_name")
-        aexpect(upstream.create_directory).assert_awaited_once_with(
-            name=new_name,
-            parent=node,
-            private={
-                "crypt": "1",
-            },
-            exist_ok=False,
-        )
+        self.assertIs(rv, created)
 
 
-class DownloadTestCase(IsolatedAsyncioTestCase):
+class DownloadTestCase(_TestCase):
     async def testInvalid(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
         # should not accept invalid crypt version
         node = create_node(
             "name",
@@ -211,50 +173,39 @@ class DownloadTestCase(IsolatedAsyncioTestCase):
             },
         )
         with self.assertRaises(InvalidCryptVersion):
-            async with fs.download_file(node):
+            async with self.fs.download_file(node):
                 pass
 
     async def testPlain(self):
-        upstream = create_mock(Backend)
-        fs = CryptBackend(upstream)
-
-        expect(upstream.download_file).return_value.__aenter__.return_value = 42
-        expect(upstream.download_file).return_value.__aexit__.return_value = None
+        node = create_node("name", None)
+        fin = self.decoy.mock(cls=ReadableFile)
+        self.decoy.when(self.upstream.download_file(node)).then_enter_with(fin)
 
         # should not touch normal file
-        node = create_node("name", None)
-        async with fs.download_file(node) as rv:
-            expect(upstream.download_file).assert_called_once_with(node)
-            self.assertNotIsInstance(rv, DecryptReadableFile)
+        async with self.fs.download_file(node) as rv:
+            self.assertIs(rv, fin)
 
     async def testCrypt(self):
-        upstream = create_mock(Backend)
-        fs = CryptBackend(upstream)
-
-        expect(upstream.download_file).return_value.__aenter__.return_value = 42
-        expect(upstream.download_file).return_value.__aexit__.return_value = None
-
-        # should create decrypt stream
         node = create_node(
             "name",
             {
                 "crypt": "1",
             },
         )
-        async with fs.download_file(node) as rv:
-            expect(upstream.download_file).assert_called_once_with(node)
+        fin = self.decoy.mock(cls=ReadableFile)
+        self.decoy.when(self.upstream.download_file(node)).then_enter_with(fin)
+
+        # should create decrypt stream
+        async with self.fs.download_file(node) as rv:
             self.assertIsInstance(rv, DecryptReadableFile)
 
 
-class UploadTestCase(IsolatedAsyncioTestCase):
+class UploadTestCase(_TestCase):
     async def testInvalid(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
         # should not accept invalid crypt version
         node = create_node("name", None)
         with self.assertRaises(InvalidCryptVersion):
-            async with fs.upload_file(
+            async with self.fs.upload_file(
                 parent=node,
                 name="new_name",
                 size=None,
@@ -267,15 +218,21 @@ class UploadTestCase(IsolatedAsyncioTestCase):
                 pass
 
     async def testCrypt(self):
-        upstream = create_mock(Backend)
-        fs = CryptBackend(upstream)
-
-        expect(upstream.upload_file).return_value.__aenter__.return_value = 42
-        expect(upstream.upload_file).return_value.__aexit__.return_value = None
+        node = create_node("name", None)
+        fout = self.decoy.mock(cls=WritableFile)
+        self.decoy.when(
+            self.upstream.upload_file(
+                encrypt_name("new_name"),
+                node,
+                size=matchers.AnythingOrNone(),
+                mime_type=matchers.AnythingOrNone(),
+                media_info=matchers.AnythingOrNone(),
+                private=matchers.DictMatching({"crypt": "1"}),
+            )
+        ).then_enter_with(fout)
 
         # should create encrypted file by default
-        node = create_node("name", None)
-        async with fs.upload_file(
+        async with self.fs.upload_file(
             "new_name",
             node,
             size=None,
@@ -285,35 +242,18 @@ class UploadTestCase(IsolatedAsyncioTestCase):
                 "crypt": "1",
             },
         ) as rv:
-            pass
-            new_name = encrypt_name("new_name")
-            expect(upstream.upload_file).assert_called_once_with(
-                new_name,
-                node,
-                size=None,
-                mime_type=None,
-                media_info=None,
-                private={
-                    "crypt": "1",
-                },
-            )
             self.assertIsInstance(rv, EncryptWritableFile)
 
 
-class SimpleTestCase(IsolatedAsyncioTestCase):
+class SimpleTestCase(_TestCase):
     async def testGetHahserFactory(self):
-        import pickle
-
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
-        # upstream should be pickleable
-        aexpect(upstream.get_hasher_factory).return_value = fake_create_hasher
-
         # should forward the node and create the encrypted hasher
         node = create_node("file", {"crypt": "1"})
-        fn = await fs.get_hasher_factory(node)
-        aexpect(upstream.get_hasher_factory).assert_awaited_once_with(node)
+        self.decoy.when(await self.upstream.get_hasher_factory(node)).then_return(
+            fake_create_hasher
+        )
+
+        fn = await self.fs.get_hasher_factory(node)
 
         # should be pickleable
         jar = pickle.dumps(fn)
@@ -323,17 +263,11 @@ class SimpleTestCase(IsolatedAsyncioTestCase):
         self.assertIsInstance(hasher, EncryptHasher)
 
     async def testIsAuthenticated(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-        aexpect(upstream.is_authenticated).return_value = False
+        self.decoy.when(await self.upstream.is_authenticated()).then_return(False)
 
-        rv = await fs.is_authenticated()
-        aexpect(upstream.is_authenticated).assert_awaited_once_with()
+        rv = await self.fs.is_authenticated()
         self.assertFalse(rv)
 
     async def testAuthenticate(self):
-        upstream = create_amock(Backend)
-        fs = CryptBackend(upstream)
-
-        await fs.authenticate()
-        aexpect(upstream.authenticate).assert_awaited_once_with()
+        await self.fs.authenticate()
+        self.decoy.verify(await self.upstream.authenticate())

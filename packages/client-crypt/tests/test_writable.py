@@ -1,46 +1,39 @@
-from typing import cast
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock
-
 from wcpan.drive.client.crypt._lib import EncryptWritableFile, encrypt, encrypt_name
 from wcpan.drive.client.types import WritableFile
 
-from ._lib import aexpect, create_amock, create_node
+from ._lib import DecoyTestCase, create_node
 
 
-class EncryptWritableFileTestCase(IsolatedAsyncioTestCase):
+class EncryptWritableFileTestCase(DecoyTestCase):
     async def testTell(self):
-        mock = cast(WritableFile, AsyncMock(spec=WritableFile))
+        mock = self.decoy.mock(cls=WritableFile)
+        self.decoy.when(await mock.tell()).then_return(42)
 
         fout = EncryptWritableFile(mock)
-        await fout.tell()
-
-        aexpect(mock.tell).assert_awaited_once_with()
+        self.assertEqual(await fout.tell(), 42)
 
     async def testSeek(self):
-        mock = cast(WritableFile, AsyncMock(spec=WritableFile))
+        mock = self.decoy.mock(cls=WritableFile)
+        self.decoy.when(await mock.seek(123)).then_return(123)
 
         fout = EncryptWritableFile(mock)
-        await fout.seek(123)
-
-        aexpect(mock.seek).assert_awaited_once_with(123)
+        self.assertEqual(await fout.seek(123), 123)
 
     async def testWrite(self):
         content = b"xyz456"
-        mock = cast(WritableFile, AsyncMock(spec=WritableFile))
+        mock = self.decoy.mock(cls=WritableFile)
+        self.decoy.when(await mock.write(encrypt(content))).then_return(len(content))
 
         fout = EncryptWritableFile(mock)
-        await fout.write(content)
-
-        content = encrypt(content)
-        aexpect(mock.write).assert_awaited_once_with(content)
+        self.assertEqual(await fout.write(content), len(content))
 
     async def testNode(self):
-        mock = create_amock(WritableFile)
-        aexpect(mock.node).return_value = create_node(encrypt_name("name"), None)
+        mock = self.decoy.mock(cls=WritableFile)
+        self.decoy.when(await mock.node()).then_return(
+            create_node(encrypt_name("name"), None)
+        )
 
         fout = EncryptWritableFile(mock)
         node = await fout.node()
 
-        aexpect(mock.node).assert_awaited_once_with()
         self.assertEqual(node.name, "name")

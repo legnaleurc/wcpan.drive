@@ -8,9 +8,9 @@ members = [
     "wcpan-drive-client-cli",
     "wcpan-drive-client-config",
     "wcpan-drive-client-crypt",
+    "wcpan-drive-client-feed",
     "wcpan-drive-client-google",
     "wcpan-drive-client-media",
-    "wcpan-drive-client-feed",
     "wcpan-drive-client-sqlite",
     "wcpan-drive-plugin",
     "wcpan-drive-protocol",
@@ -22,6 +22,7 @@ members = [
 [manifest.dependency-groups]
 dev = [
     { name = "coverage", specifier = ">=7.13.0,<8.0.0" },
+    { name = "decoy", specifier = ">=2.6.0,<3.0.0" },
     { name = "pyright", specifier = ">=1.1,<2.0" },
     { name = "ruff", specifier = ">=0.15.0,<1.0.0" },
 ]
@@ -255,6 +256,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/55/a0/7ca79796e799a3e782045d29bf052b5cde7439a2bbb17f15ff44f7aacc63/dacite-1.9.2.tar.gz", hash = "sha256:6ccc3b299727c7aa17582f0021f6ae14d5de47c7227932c47fec4cdfefd26f09", size = 22420, upload-time = "2025-02-05T09:27:29.757Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/94/35/386550fd60316d1e37eccdda609b074113298f23cef5bddb2049823fe666/dacite-1.9.2-py3-none-any.whl", hash = "sha256:053f7c3f5128ca2e9aceb66892b1a3c8936d02c686e707bee96e19deef4bc4a0", size = 16600, upload-time = "2025-02-05T09:27:24.345Z" },
+]
+
+[[package]]
+name = "decoy"
+version = "2.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ac/1b/17035a255625e9dc82a3ac3e73b228016275996b85fd163b10ea448dc3b2/decoy-2.6.0.tar.gz", hash = "sha256:e65c875c8cfaed6ceff55df39d266e2967e90de3390c99d228ff94c6a2ba51d7", size = 39705, upload-time = "2026-04-30T20:25:03.051Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/2a/813d13054e67c5dfc492c2cf2e51a5571a1dd026714d7b8d4a20064cb19f/decoy-2.6.0-py3-none-any.whl", hash = "sha256:c2d333a2ee3632d5bae907eca4bf7c341c287589cc37ebdfad51038e9bdcf192", size = 52136, upload-time = "2026-04-30T20:25:01.415Z" },
 ]
 
 [[package]]
@@ -809,6 +819,25 @@ requires-dist = [
 ]
 
 [[package]]
+name = "wcpan-drive-client-feed"
+version = "0.1.0"
+source = { editable = "packages/client-feed" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "pycryptodome" },
+    { name = "wcpan-drive-client" },
+    { name = "wcpan-drive-protocol" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.13.0,<4.0.0" },
+    { name = "pycryptodome", specifier = ">=3.0,<4.0" },
+    { name = "wcpan-drive-client", editable = "packages/client" },
+    { name = "wcpan-drive-protocol", editable = "packages/protocol" },
+]
+
+[[package]]
 name = "wcpan-drive-client-google"
 version = "0.1.0"
 source = { editable = "packages/client-google" }
@@ -838,25 +867,6 @@ requires-dist = [
     { name = "pymediainfo", specifier = ">=7.0.1,<8.0.0" },
     { name = "python-magic", specifier = ">=0.4.27,<0.5.0" },
     { name = "wcpan-drive-client", editable = "packages/client" },
-]
-
-[[package]]
-name = "wcpan-drive-client-feed"
-version = "0.1.0"
-source = { editable = "packages/client-feed" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "pycryptodome" },
-    { name = "wcpan-drive-client" },
-    { name = "wcpan-drive-protocol" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.13.0,<4.0.0" },
-    { name = "pycryptodome", specifier = ">=3.0,<4.0" },
-    { name = "wcpan-drive-client", editable = "packages/client" },
-    { name = "wcpan-drive-protocol", editable = "packages/protocol" },
 ]
 
 [[package]]

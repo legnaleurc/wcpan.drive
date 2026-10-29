@@ -1,5 +1,4 @@
-from typing import cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from aiohttp import ClientResponseError
 from aiohttp.test_utils import AioHTTPTestCase
@@ -13,6 +12,7 @@ from aiohttp.web import (
     Response,
     json_response,
 )
+from decoy import Decoy, matchers
 from wcpan.drive.client.google._network import (
     BackoffController,
     QueryDict,
@@ -33,11 +33,16 @@ class NetworkTestCase(AioHTTPTestCase):
 
         disable(CRITICAL)
 
-        self._oauth = cast(OAuth2Manager, AsyncMock(spec=OAuth2Manager))
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
+        self._oauth = self.decoy.mock(cls=OAuth2Manager)
+        self.decoy.when(await self._oauth.safe_get_access_token()).then_return(
+            "accepted"
+        )
         with patch(
             "wcpan.drive.client.google._network.BackoffController"
         ) as FakeBackoffController:
-            self._backoff = cast(BackoffController, AsyncMock(spec=BackoffController))
+            self._backoff = self.decoy.mock(cls=BackoffController)
             FakeBackoffController.return_value = self._backoff
             self._network = await self.enterAsyncContext(create_network(self._oauth))
 
@@ -52,7 +57,6 @@ class NetworkTestCase(AioHTTPTestCase):
         return _setup_server()
 
     async def test200(self):
-        aexpect(self._oauth.safe_get_access_token).return_value = "accepted"
         url = str(self.server.make_url("/api/v1/200"))
         async with self._network.fetch("GET", url) as response:
             rv = await response.json()
@@ -70,19 +74,21 @@ class NetworkTestCase(AioHTTPTestCase):
         async with self._network.fetch("GET", url) as response:
             rv = await response.json()
             self.assertEqual(rv, 42)
-            aexpect(self._backoff.wait).assert_awaited()
-            aexpect(self._backoff.increase).assert_called_once()
-            aexpect(self._backoff.decrease).assert_called_once()
+            self.decoy.verify(await self._backoff.wait())
+            self.decoy.verify(self._backoff.increase(), times=1)
+            self.decoy.verify(self._backoff.decrease(), times=1)
 
     async def testRefreshToken(self):
-        aexpect(self._oauth.safe_get_access_token).side_effect = [
+        self.decoy.when(await self._oauth.safe_get_access_token()).then_return(
             "expired",
             "accepted",
-        ]
+        )
         url = str(self.server.make_url("/api/v1/token"))
         async with self._network.fetch("GET", url) as response:
             rv = await response.json()
-            aexpect(self._oauth.renew_token).assert_awaited_once()
+            self.decoy.verify(
+                await self._oauth.renew_token(matchers.Anything()), times=1
+            )
             self.assertEqual(rv, 42)
 
     async def testDownloadAbuse(self):
@@ -102,9 +108,9 @@ class NetworkTestCase(AioHTTPTestCase):
         async with self._network.fetch("GET", url) as response:
             rv = await response.json()
             self.assertEqual(rv, 42)
-            aexpect(self._backoff.wait).assert_awaited()
-            aexpect(self._backoff.increase).assert_called_once()
-            aexpect(self._backoff.decrease).assert_called_once()
+            self.decoy.verify(await self._backoff.wait())
+            self.decoy.verify(self._backoff.increase(), times=1)
+            self.decoy.verify(self._backoff.decrease(), times=1)
 
     async def testQuery(self):
         url = str(self.server.make_url("/api/v1/query"))
@@ -141,10 +147,6 @@ class NetworkTestCase(AioHTTPTestCase):
         async with self._network.fetch("POST", url, body=produce()) as response:
             rv = await response.json()
             self.assertEqual(rv, "__NAME__")
-
-
-def aexpect(o: object) -> AsyncMock:
-    return cast(AsyncMock, o)
 
 
 _KEY_QUOTA = AppKey("quota", list[int])

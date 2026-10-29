@@ -1,8 +1,10 @@
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import PurePath
-from unittest import IsolatedAsyncioTestCase, TestCase
+from unittest import TestCase
 from unittest.mock import patch
 
+from decoy import matchers
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 from wcpan.drive.client.cli._interaction import (
@@ -15,9 +17,9 @@ from wcpan.drive.client.cli._interaction import (
     resolve_path,
 )
 from wcpan.drive.client.exceptions import NodeNotFoundError
-from wcpan.drive.client.types import Drive, NodeQuery
+from wcpan.drive.client.types import ChangeAction, Drive, NodeQuery
 
-from ._lib import aexpect, bind_find_nodes, create_amock, make_node
+from ._lib import DecoyTestCase, bind_find_nodes, make_node
 
 
 class TestResolvePath(TestCase):
@@ -73,23 +75,23 @@ class TestParseCompletion(TestCase):
         self.assertEqual(token, "/foo bar")
 
 
-class TestShellContextGetPrompt(TestCase):
+class TestShellContextGetPrompt(DecoyTestCase):
     def test_root_node_shows_slash(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="", is_directory=True, parent_id=None)
         ctx = ShellContext(drive, home)
         self.assertEqual(ctx.get_prompt(), "/ > ")
 
     def test_named_node_shows_name(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="mydir", is_directory=True)
         ctx = ShellContext(drive, home)
         self.assertEqual(ctx.get_prompt(), "mydir > ")
 
 
-class TestShellContextGetCommands(TestCase):
+class TestShellContextGetCommands(DecoyTestCase):
     def test_returns_all_commands(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         ctx = ShellContext(drive, home)
         commands = ctx.get_commands()
@@ -97,16 +99,16 @@ class TestShellContextGetCommands(TestCase):
             self.assertIn(cmd, commands)
 
 
-class TestShellContextExecute(IsolatedAsyncioTestCase):
+class TestShellContextExecute(DecoyTestCase):
     async def test_empty_line_is_noop(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         ctx = ShellContext(drive, home)
         await ctx.execute("")
-        aexpect(drive.get_children).assert_not_called()
+        self.decoy.verify(await drive.get_children(matchers.Anything()), times=0)
 
     async def test_unknown_command_prints_message(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
@@ -114,7 +116,7 @@ class TestShellContextExecute(IsolatedAsyncioTestCase):
         mock_cout.assert_called_once_with("unknown command foo")
 
     async def test_too_many_args_prints_type_error(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
@@ -122,9 +124,9 @@ class TestShellContextExecute(IsolatedAsyncioTestCase):
         mock_cout.assert_called_once()
 
 
-class TestShellContextHelp(IsolatedAsyncioTestCase):
+class TestShellContextHelp(DecoyTestCase):
     async def test_prints_all_commands(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
@@ -134,9 +136,9 @@ class TestShellContextHelp(IsolatedAsyncioTestCase):
             self.assertIn(cmd, printed)
 
 
-class TestShellContextChdir(IsolatedAsyncioTestCase):
+class TestShellContextChdir(DecoyTestCase):
     async def test_no_arg_resets_to_home(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         other = make_node(id="other-id", name="other", is_directory=True)
         ctx = ShellContext(drive, home)
@@ -145,329 +147,369 @@ class TestShellContextChdir(IsolatedAsyncioTestCase):
         self.assertIs(ctx._cwd, home)
 
     async def test_valid_directory_changes_cwd(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         target = make_node(id="target-id", name="docs", is_directory=True)
-        aexpect(drive.get_node_by_path).return_value = target
+        self.decoy.when(await drive.get_node_by_path(PurePath("/docs"))).then_return(
+            target
+        )
         ctx = ShellContext(drive, home)
         await ctx.execute("cd /docs")
         self.assertIs(ctx._cwd, target)
 
     async def test_nonexistent_path_prints_message(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
-        aexpect(drive.get_node_by_path).side_effect = NodeNotFoundError("not found")
+        self.decoy.when(await drive.get_node_by_path(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("cd /no/such/path")
         mock_cout.assert_called_once_with("unknown path /no/such/path")
 
     async def test_file_not_folder_prints_message(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         file_node = make_node(id="file-id", name="readme.txt", is_directory=False)
-        aexpect(drive.get_node_by_path).return_value = file_node
+        self.decoy.when(
+            await drive.get_node_by_path(PurePath("/readme.txt"))
+        ).then_return(file_node)
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("cd /readme.txt")
         mock_cout.assert_called_once_with("/readme.txt is not a folder")
 
 
-class TestShellContextList(IsolatedAsyncioTestCase):
+class TestShellContextList(DecoyTestCase):
     async def test_no_arg_lists_cwd_children(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         child = make_node(id="child-id", name="file.txt")
-        aexpect(drive.get_children).return_value = [child]
+        self.decoy.when(await drive.get_children(home)).then_return([child])
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("ls")
-        aexpect(drive.get_children).assert_called_once_with(home)
         mock_cout.assert_called_once_with("file.txt")
 
     async def test_with_path_lists_target_children(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         target = make_node(id="target-id", name="docs", is_directory=True)
         child = make_node(id="child-id", name="doc.txt")
-        aexpect(drive.get_node_by_path).return_value = target
-        aexpect(drive.get_children).return_value = [child]
+        self.decoy.when(await drive.get_node_by_path(PurePath("/docs"))).then_return(
+            target
+        )
+        self.decoy.when(await drive.get_children(target)).then_return([child])
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("ls /docs")
         mock_cout.assert_called_once_with("doc.txt")
 
 
-class TestShellContextPwd(IsolatedAsyncioTestCase):
+class TestShellContextPwd(DecoyTestCase):
     async def test_prints_resolved_path(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("pwd")
-        aexpect(drive.resolve_path).assert_called_once_with(home)
         mock_cout.assert_called_once_with(PurePath("/home"))
 
 
-class TestShellContextMkdir(IsolatedAsyncioTestCase):
+class TestShellContextMkdir(DecoyTestCase):
     async def test_creates_directory(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_path).return_value = home
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(await drive.get_node_by_path(matchers.Anything())).then_return(
+            home
+        )
         ctx = ShellContext(drive, home)
         await ctx.execute("mkdir newdir")
-        aexpect(drive.create_directory).assert_called_once_with("newdir", home)
+        self.decoy.verify(await drive.create_directory("newdir", home), times=1)
 
     async def test_relative_path_creates_under_resolved_parent(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         parent = make_node(id="parent-id", name="subdir", is_directory=True)
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_path).return_value = parent
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(await drive.get_node_by_path(matchers.Anything())).then_return(
+            parent
+        )
         ctx = ShellContext(drive, home)
         await ctx.execute("mkdir subdir/newdir")
-        aexpect(drive.create_directory).assert_called_once_with("newdir", parent)
+        self.decoy.verify(await drive.create_directory("newdir", parent), times=1)
 
     async def test_nonexistent_parent_prints_error(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_path).side_effect = NodeNotFoundError("not found")
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(await drive.get_node_by_path(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("mkdir subdir/newdir")
         mock_cout.assert_called_once()
 
 
-class TestShellContextSync(IsolatedAsyncioTestCase):
+class TestShellContextSync(DecoyTestCase):
     async def test_prints_each_change(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
 
-        async def fake_sync():
-            yield "change1"
-            yield "change2"
+        async def fake_sync() -> AsyncIterator[ChangeAction]:
+            yield (True, "change1")
+            yield (True, "change2")
 
-        aexpect(drive.sync).return_value = fake_sync()
+        self.decoy.when(drive.sync()).then_return(fake_sync())
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("sync")
         self.assertEqual(mock_cout.call_count, 2)
 
 
-class TestShellContextFind(IsolatedAsyncioTestCase):
+class TestShellContextFind(DecoyTestCase):
     async def test_prints_id_and_path_for_each_result(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         node1 = make_node(id="id1", name="file1.txt")
         node2 = make_node(id="id2", name="file2.txt")
-        query_nodes = bind_find_nodes(drive)
-        query_nodes.return_value = [node1, node2]
-        aexpect(drive.resolve_path).side_effect = [
-            PurePath("/a/file1.txt"),
-            PurePath("/a/file2.txt"),
-        ]
+        bind_find_nodes(drive, decoy=self.decoy)
+        self.decoy.when(
+            await drive.query_nodes(NodeQuery(name_pattern="pattern", is_trashed=None))
+        ).then_return([node1, node2])
+        self.decoy.when(await drive.resolve_path(node1)).then_return(
+            PurePath("/a/file1.txt")
+        )
+        self.decoy.when(await drive.resolve_path(node2)).then_return(
+            PurePath("/a/file2.txt")
+        )
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("find pattern")
         printed = [call.args[0] for call in mock_cout.call_args_list]
         self.assertIn("id1 - /a/file1.txt", printed)
         self.assertIn("id2 - /a/file2.txt", printed)
-        query_nodes.assert_awaited_once_with(
-            NodeQuery(name_pattern="pattern", is_trashed=None)
-        )
 
 
-class TestShellContextInfo(IsolatedAsyncioTestCase):
+class TestShellContextInfo(DecoyTestCase):
     async def test_with_id_prints_yaml(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         target = make_node(id="file-id", name="file.txt")
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_id).return_value = target
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(await drive.get_node_by_id("file-id")).then_return(target)
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.print_as_yaml") as mock_yaml:
             await ctx.execute("info file-id")
         mock_yaml.assert_called_once()
 
     async def test_with_path_prints_yaml(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         target = make_node(id="file-id", name="file.txt")
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_id).side_effect = NodeNotFoundError("not found")
-        aexpect(drive.get_node_by_path).return_value = target
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(await drive.get_node_by_id(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
+        self.decoy.when(
+            await drive.get_node_by_path(PurePath("/file.txt"))
+        ).then_return(target)
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.print_as_yaml") as mock_yaml:
             await ctx.execute("info /file.txt")
         mock_yaml.assert_called_once()
 
     async def test_not_found_prints_null(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_id).side_effect = NodeNotFoundError("not found")
-        aexpect(drive.get_node_by_path).side_effect = NodeNotFoundError("not found")
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(await drive.get_node_by_id(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
+        self.decoy.when(await drive.get_node_by_path(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("info /no/such")
         mock_cout.assert_called_once_with("null")
 
 
-class TestShellContextHash(IsolatedAsyncioTestCase):
+class TestShellContextHash(DecoyTestCase):
     async def test_prints_hash_and_arg(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         target = replace(
             make_node(name="file.txt"), hash="abc123", hash_algorithm="md5"
         )
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_id).side_effect = NodeNotFoundError("not found")
-        aexpect(drive.get_node_by_path).return_value = target
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(await drive.get_node_by_id(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
+        self.decoy.when(
+            await drive.get_node_by_path(PurePath("/file.txt"))
+        ).then_return(target)
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("hash /file.txt")
         mock_cout.assert_called_once_with("abc123 - /file.txt")
 
 
-class TestShellContextIdToPath(IsolatedAsyncioTestCase):
+class TestShellContextIdToPath(DecoyTestCase):
     async def test_prints_path_for_id(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         target = make_node(id="file-id", name="file.txt")
-        aexpect(drive.get_node_by_id).return_value = target
-        aexpect(drive.resolve_path).return_value = PurePath("/path/to/file.txt")
+        self.decoy.when(await drive.get_node_by_id("file-id")).then_return(target)
+        self.decoy.when(await drive.resolve_path(target)).then_return(
+            PurePath("/path/to/file.txt")
+        )
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("id_to_path file-id")
         mock_cout.assert_called_once_with(PurePath("/path/to/file.txt"))
 
     async def test_not_found_prints_message(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
-        aexpect(drive.get_node_by_id).side_effect = NodeNotFoundError("not found")
+        self.decoy.when(await drive.get_node_by_id("missing-id")).then_raise(
+            NodeNotFoundError("not found")
+        )
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("id_to_path missing-id")
         mock_cout.assert_called_once_with("missing-id not found")
 
 
-class TestShellContextPathToId(IsolatedAsyncioTestCase):
+class TestShellContextPathToId(DecoyTestCase):
     async def test_prints_id_for_path(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
         target = make_node(id="file-id", name="file.txt")
-        aexpect(drive.get_node_by_path).return_value = target
+        self.decoy.when(
+            await drive.get_node_by_path(PurePath("/file.txt"))
+        ).then_return(target)
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("path_to_id /file.txt")
         mock_cout.assert_called_once_with("file-id")
 
     async def test_not_found_prints_message(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(is_directory=True)
-        aexpect(drive.get_node_by_path).side_effect = NodeNotFoundError("not found")
+        self.decoy.when(await drive.get_node_by_path(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
         ctx = ShellContext(drive, home)
         with patch("wcpan.drive.client.cli._interaction.cout") as mock_cout:
             await ctx.execute("path_to_id /no/such")
         mock_cout.assert_called_once_with("/no/such not found")
 
 
-class TestNormalizePath(IsolatedAsyncioTestCase):
+class TestNormalizePath(DecoyTestCase):
     async def test_absolute_path_returned_as_is(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         result = await normalize_path(drive, home, "/absolute/path")
         self.assertEqual(result, PurePath("/absolute/path"))
-        aexpect(drive.resolve_path).assert_not_called()
+        self.decoy.verify(await drive.resolve_path(matchers.Anything()), times=0)
 
     async def test_relative_path_resolved_against_cwd(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
         result = await normalize_path(drive, home, "relative")
         self.assertEqual(result, PurePath("/home/relative"))
-        aexpect(drive.resolve_path).assert_called_once_with(home)
 
 
-class TestGetNodeByPathOrId(IsolatedAsyncioTestCase):
+class TestGetNodeByPathOrId(DecoyTestCase):
     async def test_finds_by_id(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         target = make_node(id="file-id", name="file.txt")
-        aexpect(drive.get_node_by_id).return_value = target
+        self.decoy.when(await drive.get_node_by_id("file-id")).then_return(target)
         result = await get_node_by_path_or_id(drive, PurePath("/home"), "file-id")
         self.assertIs(result, target)
-        aexpect(drive.get_node_by_path).assert_not_called()
+        self.decoy.verify(await drive.get_node_by_path(matchers.Anything()), times=0)
 
     async def test_falls_through_to_absolute_path(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         target = make_node(id="file-id", name="file.txt")
-        aexpect(drive.get_node_by_id).side_effect = NodeNotFoundError("not found")
-        aexpect(drive.get_node_by_path).return_value = target
+        self.decoy.when(await drive.get_node_by_id(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
+        self.decoy.when(
+            await drive.get_node_by_path(PurePath("/absolute/path"))
+        ).then_return(target)
         result = await get_node_by_path_or_id(
             drive, PurePath("/home"), "/absolute/path"
         )
         self.assertIs(result, target)
-        aexpect(drive.get_node_by_path).assert_called_once_with(
-            PurePath("/absolute/path")
-        )
 
     async def test_falls_through_to_relative_path(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         target = make_node(id="file-id", name="file.txt")
-        aexpect(drive.get_node_by_id).side_effect = NodeNotFoundError("not found")
-        aexpect(drive.get_node_by_path).return_value = target
+        self.decoy.when(await drive.get_node_by_id(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
+        self.decoy.when(
+            await drive.get_node_by_path(PurePath("/home/relative"))
+        ).then_return(target)
         result = await get_node_by_path_or_id(drive, PurePath("/home"), "relative")
         self.assertIs(result, target)
-        aexpect(drive.get_node_by_path).assert_called_once_with(
-            PurePath("/home/relative")
-        )
 
 
-class TestShellContextIterPathCompletions(IsolatedAsyncioTestCase):
+class TestShellContextIterPathCompletions(DecoyTestCase):
     async def test_existing_path_yields_children(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         target = make_node(id="target-id", name="docs", is_directory=True)
         child1 = make_node(id="c1", name="file1.txt")
         child2 = make_node(id="c2", name="file2.txt")
-        aexpect(drive.get_node_by_path).return_value = target
-        aexpect(drive.get_children).return_value = [child1, child2]
+        self.decoy.when(await drive.get_node_by_path(PurePath("/docs"))).then_return(
+            target
+        )
+        self.decoy.when(await drive.get_children(target)).then_return([child1, child2])
         ctx = ShellContext(drive, home)
         names = [name async for name in ctx.iter_path_completions("/docs")]
         self.assertIn("file1.txt", names)
         self.assertIn("file2.txt", names)
 
     async def test_incomplete_path_falls_back_to_parent(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         parent = make_node(id="parent-id", name="docs", is_directory=True)
         child = make_node(id="c1", name="file1.txt")
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_path).side_effect = [
-            NodeNotFoundError("not found"),
-            parent,
-        ]
-        aexpect(drive.get_children).return_value = [child]
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(
+            await drive.get_node_by_path(PurePath("/home/partial"))
+        ).then_raise(NodeNotFoundError("not found"))
+        self.decoy.when(await drive.get_node_by_path(PurePath("/home"))).then_return(
+            parent
+        )
+        self.decoy.when(await drive.get_children(parent)).then_return([child])
         ctx = ShellContext(drive, home)
         names = [name async for name in ctx.iter_path_completions("partial")]
         self.assertIn("file1.txt", names)
 
     async def test_completely_missing_path_yields_nothing(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
-        aexpect(drive.resolve_path).return_value = PurePath("/home")
-        aexpect(drive.get_node_by_path).side_effect = NodeNotFoundError("not found")
+        self.decoy.when(await drive.resolve_path(home)).then_return(PurePath("/home"))
+        self.decoy.when(await drive.get_node_by_path(matchers.Anything())).then_raise(
+            NodeNotFoundError("not found")
+        )
         ctx = ShellContext(drive, home)
         names = [name async for name in ctx.iter_path_completions("missing")]
         self.assertEqual(names, [])
 
 
-class TestDriveCompleter(IsolatedAsyncioTestCase):
+class TestDriveCompleter(DecoyTestCase):
     async def test_partial_command_yields_matching_completions(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         ctx = ShellContext(drive, home)
         completer = DriveCompleter(ctx)
@@ -481,7 +523,7 @@ class TestDriveCompleter(IsolatedAsyncioTestCase):
             self.assertTrue(name.startswith("l"))
 
     async def test_nonmatching_prefix_yields_nothing(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         ctx = ShellContext(drive, home)
         completer = DriveCompleter(ctx)
@@ -492,7 +534,7 @@ class TestDriveCompleter(IsolatedAsyncioTestCase):
         self.assertEqual(completions, [])
 
     async def test_path_argument_yields_path_completions(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         home = make_node(name="home", is_directory=True)
         ctx = ShellContext(drive, home)
         completer = DriveCompleter(ctx)

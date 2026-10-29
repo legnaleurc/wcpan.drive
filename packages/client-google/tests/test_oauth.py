@@ -8,8 +8,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiohttp import ClientResponseError
 from aiohttp.test_utils import AioHTTPTestCase
 from aiohttp.web import Application, HTTPBadRequest, Request, Response, json_response
+from decoy import Decoy
 from wcpan.drive.client.exceptions import AuthenticationError as CoreAuthenticationError
-from wcpan.drive.client.google._oauth import OAuth2Manager, OAuth2Storage
+from wcpan.drive.client.google._oauth import (
+    OAuth2Config,
+    OAuth2Manager,
+    OAuth2Storage,
+    OAuth2Token,
+)
 from wcpan.drive.client.google.exceptions import CredentialFileError, TokenFileError
 
 
@@ -82,19 +88,23 @@ class OAuth2StorageTestCase(TestCase):
 
 
 class OAuth2ManagerTestCase(IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
+
     async def testAuthorizeStatus(self):
-        storage = create_mocked_storage(config={}, token={})
+        storage = create_mocked_storage(config={}, token={}, decoy=self.decoy)
         oauth = OAuth2Manager(storage)
         self.assertIsNone(oauth.access_token)
         self.assertIsNone(oauth.refresh_token)
 
-        storage = create_mocked_storage(config={})
+        storage = create_mocked_storage(config={}, decoy=self.decoy)
         oauth = OAuth2Manager(storage)
         self.assertEqual(oauth.access_token, "__ACCESS__")
         self.assertEqual(oauth.refresh_token, "__REFRESH__")
 
     async def test_refresh_http_error_raises_authentication_error(self):
-        oauth = OAuth2Manager(create_mocked_storage())
+        oauth = OAuth2Manager(create_mocked_storage(decoy=self.decoy))
         error = ClientResponseError(MagicMock(), (), status=400)
         with patch.object(oauth, "_refresh", new=AsyncMock(side_effect=error)):
             with self.assertLogs("wcpan.drive.client.google._oauth", level="ERROR"):
@@ -102,7 +112,7 @@ class OAuth2ManagerTestCase(IsolatedAsyncioTestCase):
                     await oauth.renew_token(MagicMock())
 
     async def testGetOAuthUrl(self):
-        storage = create_mocked_storage()
+        storage = create_mocked_storage(decoy=self.decoy)
         oauth = OAuth2Manager(storage)
         url = oauth.build_authorization_url()
         self.assertEqual(
@@ -112,6 +122,11 @@ class OAuth2ManagerTestCase(IsolatedAsyncioTestCase):
 
 
 class AcceptAnswerTestCase(AioHTTPTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
+
     async def get_application(self) -> Application:
         async def on_token(request: Request) -> Response:
             if request.content_type != "application/x-www-form-urlencoded":
@@ -148,7 +163,8 @@ class AcceptAnswerTestCase(AioHTTPTestCase):
                 "redirect_uri": "__REDIRECT_URI__",
                 "client_id": "__ID__",
                 "client_secret": "__SECRET__",
-            }
+            },
+            decoy=self.decoy,
         )
         oauth = OAuth2Manager(storage)
 
@@ -157,10 +173,20 @@ class AcceptAnswerTestCase(AioHTTPTestCase):
         await oauth.set_authenticated_token(self.client.session, answer)
         self.assertEqual(oauth.access_token, "__NEW_ACCESS__")
         self.assertEqual(oauth.refresh_token, "__NEW_REFRESH__")
-        expect(storage.save_oauth2_token).assert_called()
+        self.decoy.verify(
+            storage.save_oauth2_token(
+                access_token="__NEW_ACCESS__",
+                refresh_token="__NEW_REFRESH__",
+            )
+        )
 
 
 class RefreshTestCase(AioHTTPTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
+
     async def get_application(self) -> Application:
         async def on_token(request: Request) -> Response:
             if request.content_type != "application/x-www-form-urlencoded":
@@ -195,24 +221,29 @@ class RefreshTestCase(AioHTTPTestCase):
                 "redirect_uri": "__REDIRECT_URI__",
                 "client_id": "__ID__",
                 "client_secret": "__SECRET__",
-            }
+            },
+            decoy=self.decoy,
         )
         oauth = OAuth2Manager(storage)
 
         await oauth.renew_token(self.client.session)
         self.assertEqual(oauth.access_token, "__NEW_ACCESS__")
         self.assertEqual(oauth.refresh_token, "__REFRESH__")
-        expect(storage.save_oauth2_token).assert_called()
-
-
-def expect(o: object) -> MagicMock:
-    return cast(MagicMock, o)
+        self.decoy.verify(
+            storage.save_oauth2_token(
+                access_token="__NEW_ACCESS__",
+                refresh_token="__REFRESH__",
+            )
+        )
 
 
 def create_mocked_storage(
-    *, config: dict[str, str] | None = None, token: dict[str, str] | None = None
+    *,
+    config: dict[str, str] | None = None,
+    token: dict[str, str] | None = None,
+    decoy: Decoy,
 ) -> OAuth2Storage:
-    storage = cast(OAuth2Storage, MagicMock(spec=OAuth2Storage))
+    storage = decoy.mock(cls=OAuth2Storage)
     if config is None:
         config = {
             "redirect_uri": "__REDIRECT_URI__",
@@ -226,8 +257,9 @@ def create_mocked_storage(
             "access_token": "__ACCESS__",
             "refresh_token": "__REFRESH__",
         }
-    expect(storage.load_oauth2_config).return_value = config
-    expect(storage.load_oauth2_token).return_value = token
+    # partial dicts on purpose: tests exercise missing keys
+    decoy.when(storage.load_oauth2_config()).then_return(cast(OAuth2Config, config))
+    decoy.when(storage.load_oauth2_token()).then_return(cast(OAuth2Token, token))
     return storage
 
 

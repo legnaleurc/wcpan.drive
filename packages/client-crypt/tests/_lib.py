@@ -1,24 +1,15 @@
 from datetime import UTC, datetime
-from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from typing import Self
+from unittest import IsolatedAsyncioTestCase
 
-from wcpan.drive.client.types import Node, PrivateDict
-
-
-def aexpect(o: object) -> AsyncMock:
-    return cast(AsyncMock, o)
+from decoy import Decoy
+from wcpan.drive.client.types import Hasher, Node, PrivateDict
 
 
-def expect(o: object) -> MagicMock:
-    return cast(MagicMock, o)
-
-
-def create_mock[T](t: type[T]) -> T:
-    return cast(T, MagicMock(spec=t))
-
-
-def create_amock[T](t: type[T]) -> T:
-    return cast(T, AsyncMock(spec=t))
+class DecoyTestCase(IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
 
 
 def create_node(name: str, private: PrivateDict | None) -> Node:
@@ -48,5 +39,19 @@ def get_utc_now():
     return datetime.now(UTC)
 
 
-async def fake_create_hasher():
-    return 42
+class FakeHasher(Hasher):
+    async def update(self, data: bytes) -> None:
+        pass
+
+    async def digest(self) -> bytes:
+        return b""
+
+    async def hexdigest(self) -> str:
+        return ""
+
+    async def copy(self) -> Self:
+        return self
+
+
+async def fake_create_hasher() -> Hasher:
+    return FakeHasher()

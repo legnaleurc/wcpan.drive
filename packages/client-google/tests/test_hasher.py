@@ -1,11 +1,13 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock
 
+from decoy import Decoy
 from wcpan.drive.client.exceptions import UnsupportedHashAlgorithmError
 from wcpan.drive.client.google._hasher import Md5Hasher, create_hasher
 from wcpan.drive.client.google._lib import node_from_api
+from wcpan.drive.client.google._network import Network
+from wcpan.drive.client.google._oauth import OAuth2Manager
 from wcpan.drive.client.google._service import GoogleDriveBackend
 
 
@@ -39,7 +41,11 @@ class NodeFromApiTestCase(IsolatedAsyncioTestCase):
 
 class GetHasherFactoryTestCase(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self._fs = GoogleDriveBackend(MagicMock(), MagicMock())
+        decoy = Decoy()
+        self.addCleanup(decoy.reset)
+        self._fs = GoogleDriveBackend(
+            decoy.mock(cls=Network), decoy.mock(cls=OAuth2Manager)
+        )
         self._node = node_from_api(_api_file(md5Checksum="abc", size="1"))  # type: ignore
 
     async def testMd5(self) -> None:

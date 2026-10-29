@@ -1,28 +1,24 @@
 from datetime import UTC, datetime
-from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest import IsolatedAsyncioTestCase
 
+from decoy import Decoy
 from wcpan.drive.client.types import Drive, Node, NodeQueryBuilder
 
 
-def create_amock[T](t: type[T]) -> T:
-    return cast(T, AsyncMock(spec=t))
+class DecoyTestCase(IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
 
 
-def aexpect(o: object) -> AsyncMock:
-    return cast(AsyncMock, o)
-
-
-def bind_find_nodes(drive: Drive) -> AsyncMock:
+def bind_find_nodes(drive: Drive, *, decoy: Decoy) -> None:
     """Make the mocked drive.find_nodes() return a real builder.
 
-    Returns the mocked query_nodes the builder runs.
+    The builder runs the mocked drive.query_nodes and drive.summarize_nodes.
     """
-    query_nodes = aexpect(drive.query_nodes)
-    cast(MagicMock, drive.find_nodes).side_effect = lambda: NodeQueryBuilder(
-        query_nodes, summarize=drive.summarize_nodes
+    decoy.when(drive.find_nodes()).then_do(
+        lambda: NodeQueryBuilder(drive.query_nodes, summarize=drive.summarize_nodes)
     )
-    return query_nodes
 
 
 def make_node(

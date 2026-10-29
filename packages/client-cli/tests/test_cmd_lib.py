@@ -1,7 +1,7 @@
 from pathlib import PurePath
-from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
+from decoy import matchers
 from wcpan.drive.client.cli._cmd.lib import (
     get_node_by_id_or_path,
     get_path_by_id_or_path,
@@ -10,42 +10,48 @@ from wcpan.drive.client.cli._cmd.lib import (
 from wcpan.drive.client.exceptions import AuthenticationError
 from wcpan.drive.client.types import Drive
 
-from ._lib import aexpect, create_amock
+from ._lib import DecoyTestCase, make_node
 
 
-class TestGetNodeByIdOrPath(IsolatedAsyncioTestCase):
+class TestGetNodeByIdOrPath(DecoyTestCase):
     async def test_slash_prefix_calls_get_node_by_path(self):
-        drive = create_amock(Drive)
-        await get_node_by_id_or_path(drive, "/some/path")
-        aexpect(drive.get_node_by_path).assert_called_once_with(PurePath("/some/path"))
-        aexpect(drive.get_node_by_id).assert_not_called()
+        drive = self.decoy.mock(cls=Drive)
+        node = make_node()
+        self.decoy.when(
+            await drive.get_node_by_path(PurePath("/some/path"))
+        ).then_return(node)
+        result = await get_node_by_id_or_path(drive, "/some/path")
+        self.assertIs(result, node)
+        self.decoy.verify(await drive.get_node_by_id(matchers.Anything()), times=0)
 
     async def test_no_slash_calls_get_node_by_id(self):
-        drive = create_amock(Drive)
-        await get_node_by_id_or_path(drive, "node-id-123")
-        aexpect(drive.get_node_by_id).assert_called_once_with("node-id-123")
-        aexpect(drive.get_node_by_path).assert_not_called()
+        drive = self.decoy.mock(cls=Drive)
+        node = make_node()
+        self.decoy.when(await drive.get_node_by_id("node-id-123")).then_return(node)
+        result = await get_node_by_id_or_path(drive, "node-id-123")
+        self.assertIs(result, node)
+        self.decoy.verify(await drive.get_node_by_path(matchers.Anything()), times=0)
 
 
-class TestGetPathByIdOrPath(IsolatedAsyncioTestCase):
+class TestGetPathByIdOrPath(DecoyTestCase):
     async def test_slash_prefix_returns_purepath_directly(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
         result = await get_path_by_id_or_path(drive, "/some/path")
         self.assertEqual(result, PurePath("/some/path"))
-        aexpect(drive.get_node_by_id).assert_not_called()
-        aexpect(drive.resolve_path).assert_not_called()
+        self.decoy.verify(await drive.get_node_by_id(matchers.Anything()), times=0)
+        self.decoy.verify(await drive.resolve_path(matchers.Anything()), times=0)
 
     async def test_no_slash_calls_get_node_by_id_and_resolve_path(self):
-        drive = create_amock(Drive)
+        drive = self.decoy.mock(cls=Drive)
+        node = make_node(id="node-id-123")
         expected_path = PurePath("/resolved/path")
-        aexpect(drive.resolve_path).return_value = expected_path
+        self.decoy.when(await drive.get_node_by_id("node-id-123")).then_return(node)
+        self.decoy.when(await drive.resolve_path(node)).then_return(expected_path)
         result = await get_path_by_id_or_path(drive, "node-id-123")
-        aexpect(drive.get_node_by_id).assert_called_once_with("node-id-123")
-        aexpect(drive.resolve_path).assert_called_once()
         self.assertEqual(result, expected_path)
 
 
-class TestRequireAuthenticated(IsolatedAsyncioTestCase):
+class TestRequireAuthenticated(DecoyTestCase):
     async def test_success_returns_wrapped_result(self):
         async def fn() -> int:
             return 0
