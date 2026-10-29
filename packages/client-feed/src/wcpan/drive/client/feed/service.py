@@ -1,4 +1,4 @@
-"""Backend implementation that talks to the wcpan.drive.client.remote server."""
+"""Backend implementation that talks to the wcpan.drive.server feed server."""
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -32,7 +32,7 @@ from .readable import ClientReadableFile
 from .writable import create_writable
 
 
-class RemoteBackend(Backend):
+class FeedBackend(Backend):
     def __init__(self, *, session: ClientSession, server_url: str) -> None:
         self._session = session
         self._url = server_url.rstrip("/")

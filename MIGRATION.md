@@ -57,7 +57,7 @@ The client service interfaces are renamed to match the server vocabulary:
 replacing the `Create*Service*` aliases. `create_drive()` and `SourceConfig`
 take `backend=` and `cache=` instead of `file=` and `snapshot=`. Provider entry
 points are `wcpan.drive.client.google.create_backend`,
-`wcpan.drive.client.remote.create_backend`,
+`wcpan.drive.client.feed.create_backend`,
 `wcpan.drive.client.sqlite.create_cache`, and
 `wcpan.drive.client.crypt.create_middleware`. The CLI configuration is now
 version 4: rename each source's `file` key to `backend` and `snapshot` to

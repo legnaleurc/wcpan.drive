@@ -8,7 +8,7 @@ from unittest import IsolatedAsyncioTestCase
 
 from Crypto.Hash import MD4
 from wcpan.drive.client.exceptions import UnsupportedHashAlgorithmError
-from wcpan.drive.client.remote.hasher import (
+from wcpan.drive.client.feed.hasher import (
     WrappedHasher,
     create_md4_hasher,
     get_hasher_factory,

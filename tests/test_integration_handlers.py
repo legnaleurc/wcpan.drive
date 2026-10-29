@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from wcpan.drive.client.remote._lib import node_record_from_dict
-from wcpan.drive.client.remote.writable import _media_info_to_params
+from wcpan.drive.client.feed._lib import node_record_from_dict
+from wcpan.drive.client.feed.writable import _media_info_to_params
 from wcpan.drive.client.types import MediaInfo
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.handlers.changes import get_root

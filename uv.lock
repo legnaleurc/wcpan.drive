@@ -10,7 +10,7 @@ members = [
     "wcpan-drive-client-crypt",
     "wcpan-drive-client-google",
     "wcpan-drive-client-media",
-    "wcpan-drive-client-remote",
+    "wcpan-drive-client-feed",
     "wcpan-drive-client-sqlite",
     "wcpan-drive-plugin",
     "wcpan-drive-protocol",
@@ -841,9 +841,9 @@ requires-dist = [
 ]
 
 [[package]]
-name = "wcpan-drive-client-remote"
+name = "wcpan-drive-client-feed"
 version = "0.1.0"
-source = { editable = "packages/client-remote" }
+source = { editable = "packages/client-feed" }
 dependencies = [
     { name = "aiohttp" },
     { name = "pycryptodome" },

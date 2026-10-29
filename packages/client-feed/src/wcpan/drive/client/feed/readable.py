@@ -1,4 +1,4 @@
-"""ReadableFile that downloads via the wcpan.drive.client.remote server."""
+"""ReadableFile that downloads via the wcpan.drive.server feed server."""
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager

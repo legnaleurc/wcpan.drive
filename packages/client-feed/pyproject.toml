@@ -1,7 +1,7 @@
 [project]
-name = "wcpan-drive-client-remote"
+name = "wcpan-drive-client-feed"
 version = "0.1.0"
-description = "Backend for wcpan.drive that talks to a wcpan.drive.server"
+description = "Client backend for the self-hosted wcpan.drive.server feed server"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13,<4.0"
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.entry-points."wcpan.drive.client.backend"]
-remote = "wcpan.drive.client.remote:create_backend"
+feed = "wcpan.drive.client.feed:create_backend"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,4 +1,4 @@
-"""Tests for wcpan.drive.client.remote.lib.
+"""Tests for wcpan.drive.client.feed.lib.
 
 Each test uses given-when-then sections and unittest assertions.
 """
@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import cast
 from unittest import TestCase
 
-from wcpan.drive.client.remote._lib import (
+from wcpan.drive.client.feed._lib import (
     FOLDER_MIME_TYPE,
     NodeRecordDict,
     guess_mime_type,

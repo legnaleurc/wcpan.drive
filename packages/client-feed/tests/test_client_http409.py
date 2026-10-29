@@ -3,7 +3,7 @@
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock
 
-from wcpan.drive.client.remote.http409 import node_from_409
+from wcpan.drive.client.feed.http409 import node_from_409
 
 
 class TestNodeFrom409(IsolatedAsyncioTestCase):

@@ -11,7 +11,7 @@ __all__ = (
 
 
 class SynologyServerError(DriveError):
-    """Raised when the wcpan.drive.client.remote server returns an error."""
+    """Raised when the wcpan.drive.server feed server returns an error."""
 
     def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)

@@ -1,4 +1,4 @@
-"""Parse HTTP 409 bodies from the wcpan.drive.client.remote server."""
+"""Parse HTTP 409 bodies from the wcpan.drive.server feed server."""
 
 from typing import Any, cast
 

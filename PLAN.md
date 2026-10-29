@@ -25,7 +25,7 @@ published, with its own dependencies and version. The root is not published.
 | --- | --- | --- |
 | `wcpan-drive-client` | `wcpan.drive.client` | Client framework, public contracts, model, exceptions; constructors in `client.api` |
 | `wcpan-drive-client-google` | `wcpan.drive.client.google` | Google provider |
-| `wcpan-drive-client-remote` | `wcpan.drive.client.remote` | HTTP server provider and client-model adaptation |
+| `wcpan-drive-client-feed` | `wcpan.drive.client.feed` | HTTP server provider and client-model adaptation |
 | `wcpan-drive-client-crypt` | `wcpan.drive.client.crypt` | Encryption middleware |
 | `wcpan-drive-client-sqlite` | `wcpan.drive.client.sqlite` | Client metadata cache |
 | `wcpan-drive-client-config` | `wcpan.drive.client.config` | YAML drive configuration loader |
@@ -40,7 +40,7 @@ published, with its own dependencies and version. The root is not published.
 Client and server roots are namespace packages with explicit public modules and
 private implementation. Neither needs a separate core distribution initially;
 extract contracts only if dependency or release needs justify it. The protocol
-package depends on neither runtime. The remote provider depends on the client
+package depends on neither runtime. The feed provider depends on the client
 framework and protocol, never on the server. The server must eventually depend
 on neither the client framework nor concrete backends. The current initialization
 removes client-framework imports from the server but still has Synology-specific
@@ -762,7 +762,7 @@ compatibility wrapper is planned for the retired Synology client package.
 
 Status: duld's `wcpan-drive-client` branch was migrated against the earlier
 client interface: imports move to `wcpan.drive.client`, `.client.cli`, and
-dependencies to `wcpan-drive-client`, `-client-cli`, `-client-remote`, and
+dependencies to `wcpan-drive-client`, `-client-cli`, `-client-feed`, and
 `-client-sqlite` (replacing `wcpan-drive-synology`). Its `uv.lock` cannot be
 updated until these are published.
 

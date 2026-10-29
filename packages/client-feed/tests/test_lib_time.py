@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from unittest import TestCase
 from unittest.mock import patch
 
-from wcpan.drive.client.remote._lib import (
+from wcpan.drive.client.feed._lib import (
     node_record_from_dict,
     utc_from_timestamp,
     utc_now,
@@ -12,7 +12,7 @@ from wcpan.drive.client.remote._lib import (
 
 
 class _FixedDateTime:
-    """Stub bound to wcpan.drive.client.remote.lib.datetime for utc_now tests."""
+    """Stub bound to wcpan.drive.client.feed.lib.datetime for utc_now tests."""
 
     UTC = UTC
 

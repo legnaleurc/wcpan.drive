@@ -1,4 +1,4 @@
-"""WritableFile that uploads via the wcpan.drive.client.remote server."""
+"""WritableFile that uploads via the wcpan.drive.server feed server."""
 
 import asyncio
 import tempfile

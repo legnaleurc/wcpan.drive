@@ -8,11 +8,11 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
-from wcpan.drive.client.remote.exceptions import (
+from wcpan.drive.client.feed.exceptions import (
     SynologyNameTooLongError,
     SynologyUploadError,
 )
-from wcpan.drive.client.remote.writable import (
+from wcpan.drive.client.feed.writable import (
     _MAX_SPOOL,
     _ResumableWritableFile,
     create_writable,
@@ -211,7 +211,7 @@ class TestResumableWritableFileRetry(IsolatedAsyncioTestCase):
             writable = _make_writable(client, "sid-503-resume", total, buf)
             await writable.write(b"a" * total)
             with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
-                with self.assertLogs("wcpan.drive.client.remote.writable", "WARNING"):
+                with self.assertLogs("wcpan.drive.client.feed.writable", "WARNING"):
                     await writable.flush()
 
         sleep.assert_awaited_once_with(7.0)
@@ -261,7 +261,7 @@ class TestResumableWritableFileRetry(IsolatedAsyncioTestCase):
             writable = _make_writable(client, "sid-retry", total, buf)
             await writable.write(b"b" * 100)
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with self.assertLogs("wcpan.drive.client.remote.writable", "WARNING"):
+                with self.assertLogs("wcpan.drive.client.feed.writable", "WARNING"):
                     await writable.flush()
 
         self.assertEqual(client.patch.call_count, 2)
@@ -276,7 +276,7 @@ class TestResumableWritableFileRetry(IsolatedAsyncioTestCase):
             writable = _make_writable(client, "sid-503", 50, buf)
             await writable.write(b"c" * 50)
             with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
-                with self.assertLogs("wcpan.drive.client.remote.writable", "WARNING"):
+                with self.assertLogs("wcpan.drive.client.feed.writable", "WARNING"):
                     with self.assertRaises(SynologyUploadError):
                         await writable.flush()
 
@@ -294,7 +294,7 @@ class TestResumableWritableFileRetry(IsolatedAsyncioTestCase):
                 await writable.flush()
 
     async def test_exceeds_max_retries_raises_upload_error(self):
-        from wcpan.drive.client.remote.writable import _MAX_RETRIES
+        from wcpan.drive.client.feed.writable import _MAX_RETRIES
 
         total = 50
         client = _make_session("sid-maxretry", total_size=total)
@@ -305,7 +305,7 @@ class TestResumableWritableFileRetry(IsolatedAsyncioTestCase):
             writable = _make_writable(client, "sid-maxretry", total, buf)
             await writable.write(b"e" * total)
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with self.assertLogs("wcpan.drive.client.remote.writable", "WARNING"):
+                with self.assertLogs("wcpan.drive.client.feed.writable", "WARNING"):
                     with self.assertRaises(SynologyUploadError):
                         await writable.flush()
 

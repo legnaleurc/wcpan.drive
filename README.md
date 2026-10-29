@@ -17,7 +17,7 @@ namespace migration; the old package names and import paths are not aliases.
 | --- | --- | --- |
 | `packages/client` | `wcpan-drive-client` | `wcpan.drive.client` |
 | `packages/client-google` | `wcpan-drive-client-google` | `wcpan.drive.client.google` |
-| `packages/client-remote` | `wcpan-drive-client-remote` | `wcpan.drive.client.remote` |
+| `packages/client-feed` | `wcpan-drive-client-feed` | `wcpan.drive.client.feed` |
 | `packages/client-crypt` | `wcpan-drive-client-crypt` | `wcpan.drive.client.crypt` |
 | `packages/client-sqlite` | `wcpan-drive-client-sqlite` | `wcpan.drive.client.sqlite` |
 | `packages/client-config` | `wcpan-drive-client-config` | `wcpan.drive.client.config` |
@@ -32,7 +32,7 @@ namespace migration; the old package names and import paths are not aliases.
 The client and server roots are namespace packages. Client framework constructors
 are available from `wcpan.drive.client.api`; types and exceptions have explicit
 modules. Extensions remain separately installable. The server does not depend on
-the client framework; both the server and remote provider use the protocol package.
+the client framework; both the server and feed provider use the protocol package.
 The client CLI command is `wcpan.drive.client.cli`; it has no library API.
 Load drive config files with `wcpan.drive.client.config` and probe local media
 with `wcpan.drive.client.media`. Update configured provider
@@ -56,7 +56,7 @@ settings are flat keys, except mappings such as `local_paths`.
 Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm in
 `hash_algorithm` (both empty for directories and for files without a checksum).
 Each provider defines its identifiers: Google reports `md5`, the Synology backend
-reports `md4`, and the remote client accepts `md4`, `md5`, `sha1`, and `sha256`. Use `Drive.get_hasher_factory(node)` to verify
+reports `md4`, and the feed client accepts `md4`, `md5`, `sha1`, and `sha256`. Use `Drive.get_hasher_factory(node)` to verify
 a file; it raises `UnsupportedHashAlgorithmError` instead of guessing. The client
 service API version is 6. Existing client SQLite caches (schema 6) are
 rejected and must be rebuilt or migrated manually to schema 7.
@@ -97,7 +97,7 @@ can overlap. Root tests retain the original cross-package regression suite.
 ## Installation
 
 ```bash
-pip install wcpan-drive-client-remote
+pip install wcpan-drive-client-feed
 ```
 
 For the server, install the core with the backends your config uses, or run it
@@ -117,7 +117,7 @@ The client connects to a running `wcpan.drive.server` server instance and
 implements the `wcpan.drive.client` `Backend` interface.
 
 ```python
-from wcpan.drive.client.remote import create_backend
+from wcpan.drive.client.feed import create_backend
 
 async with create_backend(server_url="http://localhost:8080") as backend:
     root = await backend.get_root()
