@@ -11,7 +11,7 @@ This repository is a uv workspace for `wcpan.drive` client and server packages.
 - Shared HTTP wire types and helpers live in `packages/protocol`.
 - Member tests live in their `tests/`; root `tests/` contains only cross-package tests (client against server). A member's tests import only that member and its declared dependencies.
 
-Treat `README.md` and `server.example.yaml` as the source of truth for
+Treat `README.md` as the source of truth for
 user-facing usage, configuration examples, and documented backend
 compatibility notes. Treat tests as the source of truth for expected behavior.
 
@@ -64,9 +64,9 @@ If you need detailed implementation behavior, read the relevant module instead o
 
 ## Configuration Notes
 
-The YAML config schema is defined in `packages/server/src/wcpan/drive/server/config.py` (parsed into `ServerConfig` in `server/types.py`); each backend parses its own settings in its package's `config.py`. Backends are async factories loaded from the import path in `type` (see `server/backend.py`). The example config is `server.example.yaml`, checked by `tests/test_example_config.py`.
+The YAML config schema is defined in `packages/server/src/wcpan/drive/server/config.py` (parsed into `ServerConfig` in `server/types.py`); each backend parses its own settings in its package's `config.py`. Backends are async factories loaded from the import path in `type` (see `server/backend.py`). Generate starting configs with `init`; generated configs are checked by `tests/test_init_scaffold.py`.
 
-Do not duplicate config fields or semantics here; update `README.md`, `server.example.yaml`, and tests when behavior
+Do not duplicate config fields or semantics here; update `README.md` and tests when behavior
 changes.
 
 ## Maintaining This File

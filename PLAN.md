@@ -538,7 +538,7 @@ backend minting globally unique IDs rather than an enforced namespace.
   configuration; generic server settings remain in the server configuration.
 - Provide explicit database migration and rollback/backup guidance before extraction.
   Existing node IDs and public feed continuity should survive migration.
-- Update `README.md`, `server.example.yaml`, and configuration tests together when
+- Update `README.md`, config scaffolds, and configuration tests together when
   installation, commands, or configuration behavior changes.
 
 ## Implementation stages

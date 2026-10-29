@@ -127,11 +127,11 @@ async with create_backend(server_url="http://localhost:8080") as backend:
 ### Server
 
 The server keeps a SQLite mirror of one or more storage backends and serves it
-over HTTP. Configure it with a YAML file (see `server.example.yaml`):
+over HTTP. Generate its YAML configuration from the installed backend plugins:
 
 ```bash
 # Generate a starting config for installed backends, then fill in the
-# settings marked required (or copy server.example.yaml)
+# settings marked required
 wcpan.drive.server init --list
 wcpan.drive.server init --plugin synology --plugin filesystem > server.yaml
 wcpan.drive.server --config server.yaml serve
