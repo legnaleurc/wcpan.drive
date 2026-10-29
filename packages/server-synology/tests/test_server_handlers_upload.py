@@ -135,17 +135,21 @@ class _UploadTestCase(DecoyTestCase):
 
 class TestCreateUploadSession(_UploadTestCase):
     async def test_success_returns_201_with_location_and_upload_length(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin", "size": 1024},
         )
+        # when
         resp = await create_upload_session(req)
+        # then
         self.assertEqual(resp.status, 201)
         self.assertIn("/api/v1/uploads/", resp.headers["Location"])
         self.assertEqual(resp.headers["Upload-Length"], "1024")
 
     async def test_name_is_normalized_to_nfc(self):
+        # given
         raw_name = "かなは\u3099.txt"
         normalized_name = unicodedata.normalize("NFC", raw_name)
         app = await self._make_app()
@@ -154,7 +158,9 @@ class TestCreateUploadSession(_UploadTestCase):
             match_info={"parent_id": "p1"},
             json_body={"name": raw_name, "size": 1024},
         )
+        # when
         resp = await create_upload_session(req)
+        # then
         session_id = resp.headers["Location"].split("/")[-1]
         session = self._store.get(session_id)
         self.assertIsNotNone(session)
@@ -168,42 +174,51 @@ class TestCreateUploadSession(_UploadTestCase):
         )
 
     async def test_missing_name_raises_400(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"size": 1024},
         )
+        # when / then
         with self.assertRaises(web.HTTPBadRequest):
             await create_upload_session(req)
 
     async def test_missing_size_raises_400(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin"},
         )
+        # when / then
         with self.assertRaises(web.HTTPBadRequest):
             await create_upload_session(req)
 
     async def test_invalid_size_raises_400(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin", "size": "abc"},
         )
+        # when / then
         with self.assertRaises(web.HTTPBadRequest):
             await create_upload_session(req)
 
     async def test_zero_size_raises_400(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin", "size": 0},
         )
+        # when / then
         with self.assertRaises(web.HTTPBadRequest):
             await create_upload_session(req)
 
     async def test_virtual_root_raises_403(self):
+        # given
         from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 
         req = make_request(
@@ -211,16 +226,20 @@ class TestCreateUploadSession(_UploadTestCase):
             match_info={"parent_id": SERVER_ROOT_ID},
             json_body={"name": "file.bin", "size": 1024},
         )
+        # when / then
         with self.assertRaises(web.HTTPForbidden):
             await create_upload_session(req)
 
     async def test_media_params_stored_in_media_info(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"parent_id": "p1"},
             json_body={"name": "img.jpg", "size": 500, "width": 800, "height": 600},
         )
+        # when
         resp = await create_upload_session(req)
+        # then
         location = resp.headers["Location"]
         session_id = location.split("/")[-1]
         session = self._store.get(session_id)
@@ -232,6 +251,7 @@ class TestCreateUploadSession(_UploadTestCase):
         self.assertEqual(session.media_info.height, 600)
 
     async def test_conflict_returns_409_with_existing_node(self):
+        # given
         app = await self._make_app()
         self.decoy.when(
             await self.drive_api.get_file(
@@ -258,7 +278,9 @@ class TestCreateUploadSession(_UploadTestCase):
             match_info={"parent_id": "p1"},
             json_body={"name": "file.bin", "size": 1024},
         )
+        # when
         resp = await create_upload_session(req)
+        # then
         self.assertEqual(resp.status, 409)
         self.assertIsNone(self._store.get("file.bin"))
 
@@ -268,6 +290,7 @@ class TestCreateUploadSession(_UploadTestCase):
 
 class TestHeadUploadSession(_UploadTestCase):
     async def test_returns_200_with_upload_offset_and_length(self):
+        # given
         session = self._store.create("p", "f.bin", 2048, None, None)
         session.received = 512
 
@@ -275,32 +298,40 @@ class TestHeadUploadSession(_UploadTestCase):
             app=await self._make_app(),
             match_info={"session_id": session.session_id},
         )
+        # when
         resp = await head_upload_session(req)
+        # then
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.headers["Upload-Offset"], "512")
         self.assertEqual(resp.headers["Upload-Length"], "2048")
 
     async def test_nothing_received_returns_200_with_zero_offset(self):
+        # given
         session = self._store.create("p", "f.bin", 2048, None, None)
 
         req = make_request(
             app=await self._make_app(),
             match_info={"session_id": session.session_id},
         )
+        # when
         resp = await head_upload_session(req)
+        # then
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.headers["Upload-Offset"], "0")
         self.assertEqual(resp.headers["Upload-Length"], "2048")
 
     async def test_unknown_session_raises_404(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"session_id": "nonexistent"},
         )
+        # when / then
         with self.assertRaises(web.HTTPNotFound):
             await head_upload_session(req)
 
     async def test_head_refreshes_session_activity(self):
+        # given
         session = self._store.create("p", "f.bin", 2048, None, None)
         session.last_activity = 10.0
         req = make_request(
@@ -308,32 +339,40 @@ class TestHeadUploadSession(_UploadTestCase):
             match_info={"session_id": session.session_id},
         )
 
+        # when
         with patch(
             "wcpan.drive.server.services.upload.time.monotonic",
             return_value=20.0,
         ):
             await head_upload_session(req)
 
+        # then
         self.assertEqual(session.last_activity, 20.0)
 
     async def test_expired_session_is_removed_with_temp_file(self):
+        # given
         session = self._store.create("p", "f.bin", 2048, None, None)
         path = session.temp_path
         session.last_activity = 10.0
 
+        # when
         removed = self._store.remove_expired(now=3610.0, ttl=3600.0)
 
+        # then
         self.assertEqual(removed, 1)
         self.assertIsNone(self._store.get(session.session_id))
         self.assertFalse(path.exists())
 
     async def test_active_session_is_not_expired(self):
+        # given
         session = self._store.create("p", "f.bin", 2048, None, None)
         session.last_activity = 10.0
         session.uploading = True
 
+        # when
         removed = self._store.remove_expired(now=10_000.0, ttl=3600.0)
 
+        # then
         self.assertEqual(removed, 0)
         self.assertIsNotNone(self._store.get(session.session_id))
 
@@ -343,6 +382,7 @@ class TestHeadUploadSession(_UploadTestCase):
 
 class TestDeleteUploadSession(_UploadTestCase):
     async def test_returns_204_and_removes_session(self):
+        # given
         session = self._store.create("p", "f.bin", 100, None, {})
         session_id = session.session_id
 
@@ -350,15 +390,19 @@ class TestDeleteUploadSession(_UploadTestCase):
             app=await self._make_app(),
             match_info={"session_id": session_id},
         )
+        # when
         resp = await delete_upload_session(req)
+        # then
         self.assertEqual(resp.status, 204)
         self.assertIsNone(self._store.get(session_id))
 
     async def test_unknown_session_raises_404(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"session_id": "nonexistent"},
         )
+        # when / then
         with self.assertRaises(web.HTTPNotFound):
             await delete_upload_session(req)
 
@@ -371,6 +415,7 @@ class TestPatchUploadChunk(_UploadTestCase):
         return self._store.create("p1", "f.bin", total, None, None)
 
     async def test_partial_upload_returns_204_with_upload_offset(self):
+        # given
         session = self._make_session(total=200)
         chunk = b"x" * 100  # only half the file
 
@@ -380,11 +425,14 @@ class TestPatchUploadChunk(_UploadTestCase):
             headers={"Upload-Offset": "0"},
             body=chunk,
         )
+        # when
         resp = await patch_upload_chunk(req)
+        # then
         self.assertEqual(resp.status, 204)
         self.assertEqual(resp.headers["Upload-Offset"], "100")
 
     async def test_wrong_offset_returns_409_with_upload_offset(self):
+        # given
         session = self._make_session(total=200)
         session.received = 50  # server has 50 bytes
 
@@ -394,11 +442,14 @@ class TestPatchUploadChunk(_UploadTestCase):
             headers={"Upload-Offset": "0"},
             body=b"x" * 100,
         )
+        # when
         resp = await patch_upload_chunk(req)
+        # then
         self.assertEqual(resp.status, 409)
         self.assertEqual(resp.headers["Upload-Offset"], "50")
 
     async def test_missing_upload_offset_raises_400(self):
+        # given
         session = self._make_session()
         req = make_request(
             app=await self._make_app(),
@@ -406,10 +457,12 @@ class TestPatchUploadChunk(_UploadTestCase):
             headers={},
             body=b"x" * 50,
         )
+        # when / then
         with self.assertRaises(web.HTTPBadRequest):
             await patch_upload_chunk(req)
 
     async def test_non_integer_upload_offset_raises_400(self):
+        # given
         session = self._make_session()
         req = make_request(
             app=await self._make_app(),
@@ -417,10 +470,12 @@ class TestPatchUploadChunk(_UploadTestCase):
             headers={"Upload-Offset": "abc"},
             body=b"x" * 50,
         )
+        # when / then
         with self.assertRaises(web.HTTPBadRequest):
             await patch_upload_chunk(req)
 
     async def test_negative_upload_offset_raises_400(self):
+        # given
         session = self._make_session()
         req = make_request(
             app=await self._make_app(),
@@ -428,10 +483,12 @@ class TestPatchUploadChunk(_UploadTestCase):
             headers={"Upload-Offset": "-1"},
             body=b"x" * 50,
         )
+        # when / then
         with self.assertRaises(web.HTTPBadRequest):
             await patch_upload_chunk(req)
 
     async def test_body_exceeding_total_size_raises_400(self):
+        # given
         session = self._make_session(total=50)
         req = make_request(
             app=await self._make_app(),
@@ -439,20 +496,24 @@ class TestPatchUploadChunk(_UploadTestCase):
             headers={"Upload-Offset": "0"},
             body=b"x" * 100,  # twice the declared size
         )
+        # when / then
         with self.assertRaises(web.HTTPBadRequest):
             await patch_upload_chunk(req)
 
     async def test_unknown_session_raises_404(self):
+        # given
         req = make_request(
             app=await self._make_app(),
             match_info={"session_id": "nonexistent"},
             headers={"Upload-Offset": "0"},
             body=b"x" * 10,
         )
+        # when / then
         with self.assertRaises(web.HTTPNotFound):
             await patch_upload_chunk(req)
 
     async def test_final_chunk_triggers_synology_upload(self):
+        # given
         session = self._make_session(total=50)
         chunk = b"y" * 50
 
@@ -478,8 +539,10 @@ class TestPatchUploadChunk(_UploadTestCase):
                 headers={"Upload-Offset": "0"},
                 body=chunk,
             )
+            # when
             resp = await patch_upload_chunk(req)
 
+        # then
         self.assertEqual(resp.status, 201)
         # Session should be removed after successful upload.
         self.assertIsNone(self._store.get(session.session_id))
@@ -494,6 +557,7 @@ class TestPatchUploadChunk(_UploadTestCase):
         )
 
     async def test_finalise_failure_logs_warning_and_keeps_session(self):
+        # given
         session = self._make_session(total=50)
         app = await self._make_app()
 
@@ -507,9 +571,11 @@ class TestPatchUploadChunk(_UploadTestCase):
                 headers={"Upload-Offset": "0"},
                 body=b"y" * 50,
             )
+            # when / then
             with self.assertRaises(web.HTTPInsufficientStorage):
                 await patch_upload_chunk(req)
 
+        # then
         self.assertIsNotNone(self._store.get(session.session_id))
         warning_log.assert_called_once()
         self.assertEqual(
@@ -518,6 +584,7 @@ class TestPatchUploadChunk(_UploadTestCase):
         )
 
     async def test_name_too_long_returns_typed_422(self):
+        # given
         session = self._make_session(total=50)
         app = await self._make_app()
         self.decoy.when(await self._rehearse_upload()).then_raise(
@@ -530,12 +597,15 @@ class TestPatchUploadChunk(_UploadTestCase):
             body=b"y" * 50,
         )
 
+        # when
         resp = await patch_upload_chunk(req)
 
+        # then
         self.assertEqual(resp.status, 422)
         self.assertEqual(json.loads(resp.body)["error"], "name_too_long")
 
     async def test_finalise_network_failure_logs_warning_and_keeps_session(self):
+        # given
         session = self._make_session(total=50)
         app = await self._make_app()
 
@@ -549,9 +619,11 @@ class TestPatchUploadChunk(_UploadTestCase):
                 headers={"Upload-Offset": "0"},
                 body=b"y" * 50,
             )
+            # when / then
             with self.assertRaises(web.HTTPServiceUnavailable):
                 await patch_upload_chunk(req)
 
+        # then
         self.assertIsNotNone(self._store.get(session.session_id))
         warning_log.assert_called_once()
         self.assertEqual(
@@ -560,6 +632,7 @@ class TestPatchUploadChunk(_UploadTestCase):
         )
 
     async def test_finalise_size_mismatch_logs_warning_and_keeps_session(self):
+        # given
         session = self._make_session(total=50)
         app = await self._make_app()
 
@@ -573,9 +646,11 @@ class TestPatchUploadChunk(_UploadTestCase):
                 headers={"Upload-Offset": "0"},
                 body=b"y" * 50,
             )
+            # when / then
             with self.assertRaises(web.HTTPInsufficientStorage) as ctx:
                 await patch_upload_chunk(req)
 
+        # then
         self.assertEqual(ctx.exception.reason, "Upload session size mismatch")
         self.assertIsNotNone(self._store.get(session.session_id))
         warning_log.assert_called_once()

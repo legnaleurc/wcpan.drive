@@ -46,12 +46,15 @@ class TestSettings(DecoyTestCase):
         return backend.call_args.kwargs["config"]
 
     async def test_defaults(self):
+        # when
         config = await self._config(**_settings())
+        # then
         self.assertEqual(config.webhook_app_id, "wcpan-drive-server-synology")
         self.assertIsNone(config.otp_code)
         self.assertEqual(config.local_paths, {})
 
     async def test_maps_settings(self):
+        # when
         config = await self._config(
             **_settings(
                 url="https://nas.example:5001",
@@ -61,6 +64,7 @@ class TestSettings(DecoyTestCase):
                 local_paths={"/volume1": "/mnt/nas"},
             )
         )
+        # then
         self.assertEqual(config.url, "https://nas.example:5001")
         self.assertEqual(config.public_url, "https://callback.example")
         self.assertEqual(config.webhook_app_id, "app-2")
@@ -68,17 +72,21 @@ class TestSettings(DecoyTestCase):
         self.assertEqual(config.local_paths, {"/volume1": "/mnt/nas"})
 
     def test_missing_settings_are_rejected(self):
+        # given
         for field in ("url", "webhook_callback_url"):
             settings = _settings()
             del settings[field]
+            # when / then
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
                 enter_backend(
                     create_backend, _context(offline=True, decoy=self.decoy), settings
                 )
 
     def test_nested_webhook_is_rejected(self):
+        # given
         settings = _settings(webhook={"callback_url": "https://public.example"})
         del settings["webhook_callback_url"]
+        # when / then
         with self.assertRaisesRegex(ValueError, "unknown settings: webhook"):
             enter_backend(
                 create_backend, _context(offline=True, decoy=self.decoy), settings
@@ -123,11 +131,14 @@ class TestFactory(DecoyTestCase):
             self.addCleanup(patcher.stop)
 
     async def test_offline_instance_does_not_connect(self):
+        # given
         context = _context(offline=True, decoy=self.decoy)
         with patch(f"{_BACKEND}.create_synology_client", _no_connection):
+            # when
             async with create_backend(
                 context, **_settings(local_paths={"/volume1": "/mnt/nas"})
             ) as backend:
+                # then
                 self.assertEqual(
                     backend.local_path("/volume1/p/a.jpg"), Path("/mnt/nas/p/a.jpg")
                 )
@@ -142,6 +153,7 @@ class TestFactory(DecoyTestCase):
         )
 
     async def test_backfill_connects_and_reconciles_this_instance(self):
+        # given
         stats = dict.fromkeys(
             ("checked", "added", "updated", "removed", "list_errors"), 0
         )
@@ -153,11 +165,14 @@ class TestFactory(DecoyTestCase):
             ) as run,
             redirect_stdout(io.StringIO()),
         ):
+            # when
             async with create_backend(context, **_settings()) as backend:
                 await backend.command(["backfill", "/p", "--dry-run"])
+        # then
         run.assert_awaited_once_with("/p", dry_run=True)
 
     async def test_serving_registers_its_webhook_route(self):
+        # given
         app_id = "wcpan-drive-server-synology"
         self.decoy.when(await self.client.list_webhooks(app_id=app_id)).then_return([])
         self.decoy.when(
@@ -167,7 +182,9 @@ class TestFactory(DecoyTestCase):
             )
         ).then_return("hook-1")
         context = _context(offline=False, decoy=self.decoy)
+        # when
         async with create_backend(context, **_settings()) as backend:
+            # then
             self.assertIsNotNone(backend.operations)
             self.assertIsNotNone(context.routes.find("POST", "webhook"))
         self.decoy.verify(

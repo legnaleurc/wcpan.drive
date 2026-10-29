@@ -60,17 +60,21 @@ class TestDownload(DecoyTestCase):
         )
 
     async def test_streams_content(self) -> None:
+        # when
         async with self.operations.download(_RECORD, range_=None) as chunks:
             received = [c async for c in chunks]
 
+        # then
         self.assertEqual(received, [b"abc"])
 
     async def test_client_disconnect_surfaces_as_connection_error(self) -> None:
+        # when / then
         with self.assertRaises(ConnectionResetError):
             async with self.operations.download(_RECORD, range_=None):
                 raise ConnectionResetError()
 
     async def test_network_error_becomes_unavailable(self) -> None:
+        # when / then
         with self.assertRaises(OperationUnavailableError):
             async with self.operations.download(_RECORD, range_=None):
                 raise TimeoutError()

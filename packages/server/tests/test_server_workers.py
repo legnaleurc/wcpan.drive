@@ -76,20 +76,25 @@ class TestWriteQueue(IsolatedAsyncioTestCase):
             await q.put(noop)
             enqueued = True
 
+        # when
         prod = asyncio.create_task(producer())
         await asyncio.sleep(0)
+        # then
         # queue still full — producer should be blocked
         self.assertFalse(enqueued)
 
+        # when
         # drain one item to unblock
         q.get_nowait()
         q.task_done()
         await prod
+        # then
         self.assertTrue(enqueued)
 
 
 class TestMetadataWorker(IsolatedAsyncioTestCase):
     async def test_processes_item(self):
+        # given
         q: asyncio.Queue[MetadataWorkItem] = asyncio.Queue()
         processed: list[str] = []
 
@@ -103,6 +108,7 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
         )
         await q.put(item)
 
+        # when
         worker = asyncio.create_task(metadata_worker(q, process))
         await q.join()
         worker.cancel()
@@ -110,9 +116,11 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
             await worker
         except asyncio.CancelledError:
             pass
+        # then
         self.assertEqual(processed, ["n1"])
 
     async def test_exception_does_not_stop_worker(self):
+        # given
         q: asyncio.Queue[MetadataWorkItem] = asyncio.Queue()
         call_count = 0
 
@@ -137,6 +145,7 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
             )
         )
 
+        # when
         worker = asyncio.create_task(metadata_worker(q, process))
         await q.join()
         worker.cancel()
@@ -144,11 +153,13 @@ class TestMetadataWorker(IsolatedAsyncioTestCase):
             await worker
         except asyncio.CancelledError:
             pass
+        # then
         self.assertEqual(call_count, 2)
 
 
 class TestWriteWorker(IsolatedAsyncioTestCase):
     async def test_processes_task(self):
+        # given
         q: asyncio.Queue = asyncio.Queue()
         executed: list[int] = []
 
@@ -157,6 +168,7 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
 
         await q.put(op)
 
+        # when
         worker = asyncio.create_task(write_worker(q, noop_after_write))
         await q.join()
         worker.cancel()
@@ -164,9 +176,11 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
             await worker
         except asyncio.CancelledError:
             pass
+        # then
         self.assertEqual(executed, [1])
 
     async def test_successful_task_calls_after_write(self):
+        # given
         q: asyncio.Queue = asyncio.Queue()
         after_write = MagicMock()
 
@@ -175,6 +189,7 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
 
         await q.put(op)
 
+        # when
         worker = asyncio.create_task(write_worker(q, after_write))
         await q.join()
         worker.cancel()
@@ -182,9 +197,11 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
             await worker
         except asyncio.CancelledError:
             pass
+        # then
         after_write.assert_called_once_with()
 
     async def test_exception_propagates(self):
+        # given
         q: asyncio.Queue = asyncio.Queue()
 
         async def boom() -> None:
@@ -192,11 +209,14 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
 
         await q.put(boom)
 
+        # when
         worker = asyncio.create_task(write_worker(q, noop_after_write))
+        # then
         with self.assertRaises(RuntimeError):
             await worker
 
     async def test_failed_task_does_not_call_after_write(self):
+        # given
         q: asyncio.Queue = asyncio.Queue()
         after_write = MagicMock()
 
@@ -205,7 +225,9 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
 
         await q.put(boom)
 
+        # when
         worker = asyncio.create_task(write_worker(q, after_write))
+        # then
         with self.assertRaises(RuntimeError):
             await worker
         after_write.assert_not_called()
@@ -213,30 +235,38 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
 
 class TestCheckpointScheduler(IsolatedAsyncioTestCase):
     async def test_calls_checkpoint_after_schedule(self):
+        # given
         mirror = MagicMock()
         mirror.checkpoint = AsyncMock()
 
+        # when
         async with asyncio.TaskGroup() as group:
             schedule = create_checkpoint_scheduler(group, mirror, delay=0.01)
             schedule()
             await asyncio.sleep(0.05)
 
+        # then
         mirror.checkpoint.assert_awaited_once()
 
     async def test_does_not_checkpoint_without_schedule(self):
+        # given
         mirror = MagicMock()
         mirror.checkpoint = AsyncMock()
 
+        # when
         async with asyncio.TaskGroup() as group:
             create_checkpoint_scheduler(group, mirror, delay=0.01)
             await asyncio.sleep(0.03)
 
+        # then
         mirror.checkpoint.assert_not_called()
 
     async def test_debounces_multiple_schedules(self):
+        # given
         mirror = MagicMock()
         mirror.checkpoint = AsyncMock()
 
+        # when
         async with asyncio.TaskGroup() as group:
             schedule = create_checkpoint_scheduler(group, mirror, delay=0.03)
             schedule()
@@ -246,12 +276,15 @@ class TestCheckpointScheduler(IsolatedAsyncioTestCase):
             schedule()
             await asyncio.sleep(0.05)
 
+        # then
         mirror.checkpoint.assert_awaited_once()
 
     async def test_can_schedule_again_after_checkpoint_completes(self):
+        # given
         mirror = MagicMock()
         mirror.checkpoint = AsyncMock()
 
+        # when
         async with asyncio.TaskGroup() as group:
             schedule = create_checkpoint_scheduler(group, mirror, delay=0.01)
             schedule()
@@ -259,16 +292,20 @@ class TestCheckpointScheduler(IsolatedAsyncioTestCase):
             schedule()
             await asyncio.sleep(0.03)
 
+        # then
         self.assertEqual(mirror.checkpoint.await_count, 2)
 
     async def test_checkpoint_failure_propagates(self):
+        # given
         mirror = MagicMock()
         mirror.checkpoint = AsyncMock(side_effect=RuntimeError("checkpoint failed"))
 
+        # when
         with self.assertRaises(ExceptionGroup) as cm:
             async with asyncio.TaskGroup() as group:
                 schedule = create_checkpoint_scheduler(group, mirror, delay=0)
                 schedule()
                 await asyncio.sleep(0)
 
+        # then
         self.assertIsInstance(cm.exception.exceptions[0], RuntimeError)

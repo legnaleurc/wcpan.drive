@@ -28,7 +28,9 @@ class TestDiscovery(TestCase):
         )
 
     def test_lists_sorted_plugins(self):
+        # when
         plugins = list_plugins(["a.cache", "a.backend"])
+        # then
         self.assertEqual(
             [(_.group, _.name) for _ in plugins],
             [
@@ -40,17 +42,24 @@ class TestDiscovery(TestCase):
         )
 
     def test_selects_by_name_module_or_path(self):
+        # given
         for selector in ("crypt", "pkg.crypt", "pkg.crypt.create_middleware"):
             with self.subTest(selector=selector):
+                # when
                 ep = find_plugin(["a.backend", "a.cache"], selector)
+                # then
                 self.assertEqual(factory_path(ep), "pkg.crypt.create_middleware")
 
     def test_rejects_unknown_selector(self):
+        # when / then
         with self.assertRaisesRegex(ValueError, "is its package installed"):
             find_plugin(["a.backend"], "pkg.nothing")
 
     def test_rejects_ambiguous_selector(self):
+        # when / then
         with self.assertRaisesRegex(ValueError, "matches several plugins"):
             find_plugin(["a.backend", "a.cache"], "google")
+        # when
         ep = find_plugin(["a.backend", "a.cache"], "pkg.google")
+        # then
         self.assertEqual(ep.group, "a.backend")

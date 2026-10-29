@@ -104,39 +104,49 @@ class _WritableTestCase(DecoyTestCase):
 
 class TestResumableWritableFileFlush(_WritableTestCase):
     async def test_flush_sends_data_and_returns_node(self):
+        # given
         with _spool() as buf:
             writable = _make_writable(self.session, 100, buf)
 
+            # when
             await writable.write(b"x" * 100)
             await writable.flush()
 
+            # then
             node = await writable.node()
         self.assertEqual(node.id, "node-1")
         self.decoy.verify(_patch(self.session, 0), times=1)
 
     async def test_flush_is_idempotent(self):
+        # given
         with _spool() as buf:
             writable = _make_writable(self.session, 50, buf)
+            # when
             await writable.write(b"y" * 50)
             await writable.flush()
             # second flush should not re-upload
             await writable.flush()
+        # then
         self.decoy.verify(_patch(self.session), times=1)
 
     async def test_flush_sends_single_patch(self):
+        # given
         total = 1024
 
         with _spool() as buf:
             writable = _make_writable(self.session, total, buf)
+            # when
             await writable.write(b"z" * total)
             await writable.flush()
 
+        # then
         self.decoy.verify(_patch(self.session), times=1)
         self.decoy.verify(_patch(self.session, 0, length=total), times=1)
 
 
 class TestResumableWritableFileRetry(_WritableTestCase):
     async def test_422_name_too_long_is_typed_and_not_retried(self):
+        # given
         too_long = await self.create_response(
             422,
             body={
@@ -149,14 +159,17 @@ class TestResumableWritableFileRetry(_WritableTestCase):
 
         with _spool() as buf:
             writable = _make_writable(self.session, 50, buf)
+            # when
             await writable.write(b"x" * 50)
             with self.assertRaises(SynologyNameTooLongError) as ctx:
                 await writable.flush()
 
+        # then
         self.assertEqual(ctx.exception.file_name, "long.bin")
         self.decoy.verify(_patch(self.session), times=1)
 
     async def test_503_honors_retry_after_and_resumes(self):
+        # given
         total = 100
         # HEAD → 0 before the first PATCH, 40 after the 503
         received = [await self._received(0), await self._received(40)]
@@ -167,11 +180,13 @@ class TestResumableWritableFileRetry(_WritableTestCase):
 
         with _spool() as buf:
             writable = _make_writable(self.session, total, buf)
+            # when
             await writable.write(b"a" * total)
             with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
                 with self.assertLogs("wcpan.drive.client.feed.writable", "WARNING"):
                     await writable.flush()
 
+        # then
         sleep.assert_awaited_once_with(7.0)
         self.decoy.verify(
             _patch(self.session, 40, length=60, data=matchers.IsNot(buf)),
@@ -179,6 +194,7 @@ class TestResumableWritableFileRetry(_WritableTestCase):
         )
 
     async def test_offset_mismatch_seeks_and_retries(self):
+        # given
         # Server says it has 50 bytes when client thought it had 0.
         conflict = await self.create_response(409, headers={"Upload-Offset": "50"})
         self.when_enter(_patch(self.session, 0), conflict)
@@ -186,13 +202,16 @@ class TestResumableWritableFileRetry(_WritableTestCase):
 
         with _spool() as buf:
             writable = _make_writable(self.session, 100, buf)
+            # when
             await writable.write(b"a" * 100)
             await writable.flush()
 
+        # then
         self.decoy.verify(_patch(self.session), times=2)
         self.decoy.verify(_patch(self.session, 50), times=1)
 
     async def test_connection_error_retries_from_server_received(self):
+        # given
         # HEAD → server received 40 bytes before the drop
         received = [await self._received(0), await self._received(40)]
         self.when_enter(_head(self.session), *received)
@@ -203,49 +222,60 @@ class TestResumableWritableFileRetry(_WritableTestCase):
 
         with _spool() as buf:
             writable = _make_writable(self.session, 100, buf)
+            # when
             await writable.write(b"b" * 100)
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 with self.assertLogs("wcpan.drive.client.feed.writable", "WARNING"):
                     await writable.flush()
 
+        # then
         self.decoy.verify(_patch(self.session, 40), times=1)
 
     async def test_503_retries_with_backoff(self):
+        # given
         unavailable = await self.create_response(503)
         self.when_enter(_patch(self.session, 0), unavailable)
 
         with _spool() as buf:
             writable = _make_writable(self.session, 50, buf)
+            # when
             await writable.write(b"c" * 50)
             with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
                 with self.assertLogs("wcpan.drive.client.feed.writable", "WARNING"):
                     with self.assertRaises(SynologyUploadError):
                         await writable.flush()
 
+        # then
         self.decoy.verify(_patch(self.session), times=6)
         self.assertEqual(sleep.await_count, 5)
 
     async def test_404_raises_upload_error(self):
+        # given
         not_found = await self.create_response(404)
         self.when_enter(_patch(self.session, 0), not_found)
 
         with _spool() as buf:
             writable = _make_writable(self.session, 50, buf)
+            # when
             await writable.write(b"d" * 50)
+            # then
             with self.assertRaises(SynologyUploadError):
                 await writable.flush()
 
     async def test_exceeds_max_retries_raises_upload_error(self):
+        # given
         self.decoy.when(_patch(self.session, 0)).then_raise(aiohttp.ClientError("drop"))
 
         with _spool() as buf:
             writable = _make_writable(self.session, 50, buf)
+            # when
             await writable.write(b"e" * 50)
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 with self.assertLogs("wcpan.drive.client.feed.writable", "WARNING"):
                     with self.assertRaises(SynologyUploadError):
                         await writable.flush()
 
+        # then
         self.decoy.verify(_patch(self.session, 0), times=_MAX_RETRIES)
 
 
@@ -264,8 +294,10 @@ class TestCreateWritable(_WritableTestCase):
         )
 
     async def test_size_positive_uses_resumable_path(self):
+        # given
         await self._stub_initiate(50)
 
+        # when
         async with create_writable(
             session=self.session,
             server_url="http://srv",
@@ -276,10 +308,12 @@ class TestCreateWritable(_WritableTestCase):
         ) as w:
             await w.write(b"a" * 50)
 
+        # then
         self.assertEqual((await w.node()).id, "node-1")
         self.decoy.verify(_patch(self.session, 0, length=50), times=1)
 
     async def test_size_zero_uses_empty_path(self):
+        # given
         # Must POST to /api/v1/nodes/{parent_id} (no /uploads suffix)
         uploaded = await self.create_response(200, body=_node_dict())
         self.when_enter(
@@ -291,6 +325,7 @@ class TestCreateWritable(_WritableTestCase):
             uploaded,
         )
 
+        # when
         async with create_writable(
             session=self.session,
             server_url="http://srv",
@@ -301,11 +336,14 @@ class TestCreateWritable(_WritableTestCase):
         ) as w:
             pass  # no writes for empty file
 
+        # then
         self.assertEqual((await w.node()).id, "node-1")
 
     async def test_exception_cancels_session(self):
+        # given
         await self._stub_initiate(100)
 
+        # when / then
         with self.assertRaises(ValueError):
             async with create_writable(
                 session=self.session,
@@ -317,5 +355,6 @@ class TestCreateWritable(_WritableTestCase):
             ):
                 raise ValueError("caller error")
 
+        # then
         # DELETE must have been called to clean up session
         self.decoy.verify(self.session.delete(_SESSION_URL), times=1)

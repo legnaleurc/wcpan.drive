@@ -221,6 +221,7 @@ class _ConflictTestCase(DecoyTestCase):
 
 class TestCreateNodeConflict409(_ConflictTestCase):
     async def test_returns_node_record_json(self) -> None:
+        # given
         self.decoy.when(
             await self.drive_api.create_folder(_PARENT, "newfolder")
         ).then_raise(SynologyUploadConflictError("exists", file_name="x"))
@@ -229,10 +230,12 @@ class TestCreateNodeConflict409(_ConflictTestCase):
         )
 
         async with TestClient(TestServer(self.app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes",
                 json={"name": "newfolder", "parent_id": "parent-a"},
             )
+            # then
             self.assertEqual(resp.status, 409)
             record = node_record_from_dict(await resp.json())
 
@@ -244,6 +247,7 @@ class TestCreateNodeConflict409(_ConflictTestCase):
 
 class TestFinaliseUploadConflict409(_ConflictTestCase):
     async def test_put_session_finalise_conflict_returns_409_node(self) -> None:
+        # given
         self.decoy.when(await self._rehearse_upload()).then_raise(
             SynologyUploadConflictError("exists", file_name="dup.bin")
         )
@@ -253,17 +257,21 @@ class TestFinaliseUploadConflict409(_ConflictTestCase):
         )
 
         async with TestClient(TestServer(self.app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/parent-a/upload-session",
                 json={"name": "dup.bin", "size": 10},
             )
+            # then
             self.assertEqual(resp.status, 201)
             sid = resp.headers["Location"].split("/")[-1]
+            # when
             resp2 = await client.patch(
                 f"/api/v1/upload-sessions/{sid}",
                 data=b"x" * 10,
                 headers={"Upload-Offset": "0"},
             )
+            # then
             self.assertEqual(resp2.status, 409)
             record = node_record_from_dict(await resp2.json())
         self.assertEqual(record.id, "file-existing")
@@ -272,6 +280,7 @@ class TestFinaliseUploadConflict409(_ConflictTestCase):
 
 class TestUploadNodeConflict409(_ConflictTestCase):
     async def test_returns_node_record_json(self) -> None:
+        # given
         self.decoy.when(await self._rehearse_upload()).then_raise(
             SynologyUploadConflictError("exists", file_name="x")
         )
@@ -280,11 +289,13 @@ class TestUploadNodeConflict409(_ConflictTestCase):
         )
 
         async with TestClient(TestServer(self.app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/parent-a/upload",
                 data=b"abc",
                 params={"name": "dup.bin"},
             )
+            # then
             self.assertEqual(resp.status, 409)
             record = node_record_from_dict(await resp.json())
 

@@ -171,40 +171,47 @@ class TestVirtualPathToDirectoryNodeId(IsolatedAsyncioTestCase):
         os.unlink(self.db_path)
 
     async def test_root_slash(self) -> None:
+        # when / then
         self.assertEqual(
             await self.svc.resolve_to_directory_node_id("/"),
             SERVER_ROOT_ID,
         )
 
     async def test_root_empty(self) -> None:
+        # when / then
         self.assertEqual(
             await self.svc.resolve_to_directory_node_id("  "),
             SERVER_ROOT_ID,
         )
 
     async def test_mount_only(self) -> None:
+        # when / then
         self.assertEqual(
             await self.svc.resolve_to_directory_node_id("/docs"),
             mount_id("docs"),
         )
 
     async def test_nested(self) -> None:
+        # when / then
         self.assertEqual(
             await self.svc.resolve_to_directory_node_id("/docs/Projects"),
             "dir-1",
         )
 
     async def test_rejects_dotdot(self) -> None:
+        # when / then
         with self.assertRaises(ValueError):
             await self.svc.resolve_to_directory_node_id("/docs/../x")
 
     async def test_missing_segment_raises(self) -> None:
+        # when / then
         with self.assertRaises(ValueError):
             await self.svc.resolve_to_directory_node_id("/docs/Nope")
 
 
 class TestReconcileSubtree(DecoyTestCase):
     async def test_updates_mismatch_and_preserves_width(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -233,6 +240,7 @@ class TestReconcileSubtree(DecoyTestCase):
                         return [_syno_item("f-1", "x.txt", size=999)]
                     return []
 
+                # when
                 stats = await _reconcile_with_worker(
                     mirror,
                     mounts,
@@ -242,6 +250,7 @@ class TestReconcileSubtree(DecoyTestCase):
                     list_children_side_effect=_list_children,
                 )
 
+                # then
                 self.assertEqual(stats["checked"], 1)
                 self.assertEqual(stats["updated"], 1)
                 self.assertEqual(stats["added"], 0)
@@ -253,6 +262,7 @@ class TestReconcileSubtree(DecoyTestCase):
             os.unlink(db_path)
 
     async def test_dry_run_no_write(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -281,6 +291,7 @@ class TestReconcileSubtree(DecoyTestCase):
                         return [_syno_item("f-1", "x.txt", size=500)]
                     return []
 
+                # when
                 stats = await _reconcile_with_worker(
                     mirror,
                     mounts,
@@ -290,6 +301,7 @@ class TestReconcileSubtree(DecoyTestCase):
                     list_children_side_effect=_list_children,
                 )
 
+                # then
                 self.assertEqual(stats["updated"], 1)
                 updated = await mirror.get_node_by_id("f-1")
                 assert updated is not None
@@ -298,6 +310,7 @@ class TestReconcileSubtree(DecoyTestCase):
             os.unlink(db_path)
 
     async def test_adds_missing_node(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -325,6 +338,7 @@ class TestReconcileSubtree(DecoyTestCase):
                         return [_syno_item("f-new", "new.txt", size=100)]
                     return []
 
+                # when
                 stats = await _reconcile_with_worker(
                     mirror,
                     mounts,
@@ -334,6 +348,7 @@ class TestReconcileSubtree(DecoyTestCase):
                     list_children_side_effect=_list_children,
                 )
 
+                # then
                 self.assertEqual(stats["checked"], 1)
                 self.assertEqual(stats["added"], 1)
                 self.assertEqual(stats["updated"], 0)
@@ -346,6 +361,7 @@ class TestReconcileSubtree(DecoyTestCase):
             os.unlink(db_path)
 
     async def test_server_root_queues_mounts(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -374,6 +390,7 @@ class TestReconcileSubtree(DecoyTestCase):
                         return [_syno_item("f-1", "readme.txt")]
                     return []
 
+                # when
                 stats = await _reconcile_with_worker(
                     mirror,
                     mounts,
@@ -383,6 +400,7 @@ class TestReconcileSubtree(DecoyTestCase):
                     list_children_side_effect=_list_children,
                 )
 
+                # then
                 self.assertIn(mount_id("docs"), listed)
                 self.assertEqual(stats["checked"], 1)
                 self.assertEqual(stats["added"], 1)
@@ -390,6 +408,7 @@ class TestReconcileSubtree(DecoyTestCase):
             os.unlink(db_path)
 
     async def test_adds_missing_node_dry_run(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -417,6 +436,7 @@ class TestReconcileSubtree(DecoyTestCase):
                         return [_syno_item("f-new", "new.txt")]
                     return []
 
+                # when
                 stats = await _reconcile_with_worker(
                     mirror,
                     mounts,
@@ -426,12 +446,14 @@ class TestReconcileSubtree(DecoyTestCase):
                     list_children_side_effect=_list_children,
                 )
 
+                # then
                 self.assertEqual(stats["added"], 1)
                 self.assertIsNone(await mirror.get_node_by_id("f-new"))
         finally:
             os.unlink(db_path)
 
     async def test_removes_node_absent_from_api(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -461,6 +483,7 @@ class TestReconcileSubtree(DecoyTestCase):
                         return [_syno_item("f-1", "keep.txt")]
                     return []
 
+                # when
                 stats = await _reconcile_with_worker(
                     mirror,
                     mounts,
@@ -470,6 +493,7 @@ class TestReconcileSubtree(DecoyTestCase):
                     list_children_side_effect=_list_children,
                 )
 
+                # then
                 self.assertEqual(stats["checked"], 1)
                 self.assertEqual(stats["removed"], 1)
                 self.assertIsNotNone(await mirror.get_node_by_id("f-1"))
@@ -478,6 +502,7 @@ class TestReconcileSubtree(DecoyTestCase):
             os.unlink(db_path)
 
     async def test_removes_node_absent_from_api_dry_run(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -507,6 +532,7 @@ class TestReconcileSubtree(DecoyTestCase):
                         return [_syno_item("f-1", "keep.txt")]
                     return []
 
+                # when
                 stats = await _reconcile_with_worker(
                     mirror,
                     mounts,
@@ -516,6 +542,7 @@ class TestReconcileSubtree(DecoyTestCase):
                     list_children_side_effect=_list_children,
                 )
 
+                # then
                 self.assertEqual(stats["removed"], 1)
                 self.assertIsNotNone(await mirror.get_node_by_id("f-2"))
         finally:

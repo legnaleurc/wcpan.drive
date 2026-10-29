@@ -57,95 +57,125 @@ class NetworkTestCase(AioHTTPTestCase):
         return _setup_server()
 
     async def test200(self):
+        # given
         url = str(self.server.make_url("/api/v1/200"))
+        # when
         async with self._network.fetch("GET", url) as response:
             rv = await response.json()
+            # then
             self.assertEqual(response.status, 200)
             self.assertEqual(rv, 42)
 
     async def test408(self):
+        # given
         url = str(self.server.make_url("/api/v1/408"))
+        # when / then
         with self.assertRaises(ClientResponseError):
             async with self._network.fetch("GET", url):
                 pass
 
     async def test503(self):
+        # given
         url = str(self.server.make_url("/api/v1/503"))
+        # when
         async with self._network.fetch("GET", url) as response:
             rv = await response.json()
+            # then
             self.assertEqual(rv, 42)
             self.decoy.verify(await self._backoff.wait())
             self.decoy.verify(self._backoff.increase(), times=1)
             self.decoy.verify(self._backoff.decrease(), times=1)
 
     async def testRefreshToken(self):
+        # given
         self.decoy.when(await self._oauth.safe_get_access_token()).then_return(
             "expired",
             "accepted",
         )
         url = str(self.server.make_url("/api/v1/token"))
+        # when
         async with self._network.fetch("GET", url) as response:
             rv = await response.json()
+            # then
             self.decoy.verify(
                 await self._oauth.renew_token(matchers.Anything()), times=1
             )
             self.assertEqual(rv, 42)
 
     async def testDownloadAbuse(self):
+        # given
         url = str(self.server.make_url("/api/v1/cannotDownloadAbusiveFile"))
+        # when / then
         with self.assertRaises(DownloadAbusiveFileError):
             async with self._network.fetch("GET", url):
                 pass
 
     async def testInvalidAbuse(self):
+        # given
         url = str(self.server.make_url("/api/v1/invalidAbuseAcknowledgment"))
+        # when / then
         with self.assertRaises(InvalidAbuseFlagError):
             async with self._network.fetch("GET", url):
                 pass
 
     async def testUsageLimits(self):
+        # given
         url = str(self.server.make_url("/api/v1/usageLimits"))
+        # when
         async with self._network.fetch("GET", url) as response:
             rv = await response.json()
+            # then
             self.assertEqual(rv, 42)
             self.decoy.verify(await self._backoff.wait())
             self.decoy.verify(self._backoff.increase(), times=1)
             self.decoy.verify(self._backoff.decrease(), times=1)
 
     async def testQuery(self):
+        # given
         url = str(self.server.make_url("/api/v1/query"))
         query: QueryDict = {
             "name": "__NAME__",
         }
+        # when
         async with self._network.fetch("GET", url, query=query) as response:
             rv = await response.json()
+            # then
             self.assertEqual(rv, "__NAME__")
 
     async def testHeaders(self):
+        # given
         url = str(self.server.make_url("/api/v1/headers"))
         headers: dict[str, str] = {
             "X-Name": "__NAME__",
         }
+        # when
         async with self._network.fetch("GET", url, headers=headers) as response:
             rv = await response.json()
+            # then
             self.assertEqual(rv, "__NAME__")
 
     async def testBody(self):
+        # given
         url = str(self.server.make_url("/api/v1/stream"))
         body = "__NAME__".encode("utf-8")
+        # when
         async with self._network.fetch("POST", url, body=body) as response:
             rv = await response.json()
+            # then
             self.assertEqual(rv, "__NAME__")
 
     async def testStream(self):
+        # given
         url = str(self.server.make_url("/api/v1/stream"))
         body = "__NAME__".encode("utf-8")
 
         async def produce():
             yield body
 
+        # when
         async with self._network.fetch("POST", url, body=produce()) as response:
             rv = await response.json()
+            # then
             self.assertEqual(rv, "__NAME__")
 
 

@@ -50,7 +50,9 @@ class CreateConfigScaffoldTestCase(TestCase):
         )
 
     def test_backend_comes_first_and_middleware_keeps_order(self) -> None:
+        # when
         text = create_config_scaffold(["mid2", "cache", "mid", "drive"])
+        # then
         self.assertEqual(
             text,
             """\
@@ -74,10 +76,14 @@ sources:
         )
 
     def test_scaffold_parses_once_filled(self) -> None:
+        # when
         raw = yaml.safe_load(create_config_scaffold(["drive", "mid", "cache"]))
+        # then
         self.assertEqual(raw["sources"][0]["backend"][0]["kwargs"], {"token": None})
         self.assertNotIn("kwargs", raw["sources"][0]["backend"][1])
+        # when
         (source,) = _parse_main(raw)
+        # then
         self.assertEqual(
             [_.name for _ in source.backend],
             [
@@ -87,6 +93,7 @@ sources:
         )
 
     def test_backend_and_cache_are_required_once(self) -> None:
+        # given
         for plugins, pattern in (
             (["cache"], "one backend plugin, got: none"),
             (["mid", "cache"], "one backend plugin, got: none"),
@@ -95,5 +102,6 @@ sources:
             (["drive", "cache", "missing"], "is its package installed"),
         ):
             with self.subTest(plugins=plugins):
+                # when / then
                 with self.assertRaisesRegex(ValueError, pattern):
                     create_config_scaffold(plugins)

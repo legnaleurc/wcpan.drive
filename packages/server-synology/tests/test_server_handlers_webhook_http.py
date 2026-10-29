@@ -11,6 +11,7 @@ from ._lib import make_request
 
 class TestWebhookHttpHandler(IsolatedAsyncioTestCase):
     async def test_logs_and_enqueues_items(self) -> None:
+        # given
         queue: asyncio.Queue = asyncio.Queue()
         payload = [
             {"event_type": "file_created", "file_id": "f1"},
@@ -18,7 +19,9 @@ class TestWebhookHttpHandler(IsolatedAsyncioTestCase):
         ]
         request = make_request(json_body=payload)
 
+        # when
         resp = await webhook_handler(queue)(request)
+        # then
         assert isinstance(resp, web.Response)
 
         self.assertEqual(resp.status, 200)

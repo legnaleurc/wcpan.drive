@@ -25,9 +25,12 @@ def _make_app(*, ready: bool | None = None) -> web.Application:
 
 class TestLivez(IsolatedAsyncioTestCase):
     async def test_returns_ok(self) -> None:
+        # given
         app = _make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/livez")
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
         self.assertEqual(body, {"ok": True})
@@ -35,25 +38,34 @@ class TestLivez(IsolatedAsyncioTestCase):
 
 class TestReadyz(IsolatedAsyncioTestCase):
     async def test_returns_ok_when_ready(self) -> None:
+        # given
         app = _make_app(ready=True)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/readyz")
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
         self.assertEqual(body, {"ok": True, "ready": True})
 
     async def test_returns_503_when_not_ready(self) -> None:
+        # given
         app = _make_app(ready=False)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/readyz")
+            # then
             self.assertEqual(resp.status, 503)
             body = await resp.json()
         self.assertEqual(body, {"ok": False, "ready": False})
 
     async def test_returns_503_when_ready_flag_missing(self) -> None:
+        # given
         app = _make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/readyz")
+            # then
             self.assertEqual(resp.status, 503)
             body = await resp.json()
         self.assertEqual(body, {"ok": False, "ready": False})
@@ -61,9 +73,12 @@ class TestReadyz(IsolatedAsyncioTestCase):
 
 class TestNullSink(IsolatedAsyncioTestCase):
     async def test_returns_stats_for_small_body(self) -> None:
+        # given
         app = _make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.put("/null", data=b"hello")
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
 
@@ -76,9 +91,12 @@ class TestNullSink(IsolatedAsyncioTestCase):
         self.assertGreaterEqual(body["mebibytes_per_second"], 0.0)
 
     async def test_accepts_empty_body(self) -> None:
+        # given
         app = _make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.put("/null", data=b"")
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
 
@@ -87,15 +105,19 @@ class TestNullSink(IsolatedAsyncioTestCase):
         self.assertGreaterEqual(body["elapsed_seconds"], 0.0)
 
     async def test_works_when_ready_flag_is_false(self) -> None:
+        # given
         app = _make_app(ready=False)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.put("/null", data=b"abc")
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
 
         self.assertEqual(body["bytes_received"], 3)
 
     async def test_consumes_streaming_request_body(self) -> None:
+        # given
         app = _make_app()
 
         async def stream():
@@ -106,7 +128,9 @@ class TestNullSink(IsolatedAsyncioTestCase):
             yield b"f"
 
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.put("/null", data=stream())
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
 

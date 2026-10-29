@@ -78,6 +78,7 @@ class TestScannerWriteBack(DecoyTestCase):
 
     async def test_first_run_writes_per_mount_state(self) -> None:
         """On first run (all zeros), scan results are persisted via set_mount_state."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -90,8 +91,10 @@ class TestScannerWriteBack(DecoyTestCase):
                 await mirror.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
 
+                # when
                 await self._run_initial_sync(mirror, mounts, {"a": 500, "b": 300})
 
+                # then
                 result = await SynologyStore(mirror=mirror).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 500, "b": 300})
         finally:
@@ -99,6 +102,7 @@ class TestScannerWriteBack(DecoyTestCase):
 
     async def test_resume_advances_max_id(self) -> None:
         """On resume, scan results that advance the max_id are persisted."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -114,8 +118,10 @@ class TestScannerWriteBack(DecoyTestCase):
                 await SynologyStore(mirror=mirror).set_mount_state("a", "/vol/a", 100)
                 await SynologyStore(mirror=mirror).set_mount_state("b", "/vol/b", 80)
 
+                # when
                 await self._run_initial_sync(mirror, mounts, {"a": 200, "b": 150})
 
+                # then
                 result = await SynologyStore(mirror=mirror).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 200, "b": 150})
         finally:
@@ -123,6 +129,7 @@ class TestScannerWriteBack(DecoyTestCase):
 
     async def test_no_advance_skips_write(self) -> None:
         """When scan returns the same max_id, set_mount_state is not called."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -137,9 +144,11 @@ class TestScannerWriteBack(DecoyTestCase):
                 await SynologyStore(mirror=mirror).set_mount_state("a", "/vol/a", 100)
                 await SynologyStore(mirror=mirror).set_mount_state("b", "/vol/b", 80)
 
+                # when
                 # Scan returns identical values — no advance
                 await self._run_initial_sync(mirror, mounts, {"a": 100, "b": 80})
 
+                # then
                 result = await SynologyStore(mirror=mirror).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 100, "b": 80})
         finally:
@@ -152,6 +161,7 @@ class TestScannerWriteBack(DecoyTestCase):
         lower than per_mount_highest but higher than pre_scan_max_id.  Saving
         the checkpoint lets the first incremental scan cover that window.
         """
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -164,6 +174,7 @@ class TestScannerWriteBack(DecoyTestCase):
                 await mirror.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a")}
 
+                # when
                 # per_mount_highest=500 (saw a late folder), pre_scan=300 (snapshot
                 # taken before BFS started); the DB must record 300 so that the
                 # incremental scan re-covers sync_ids 301-500 and catches any
@@ -175,6 +186,7 @@ class TestScannerWriteBack(DecoyTestCase):
                     pre_scan_result={"a": 300},
                 )
 
+                # then
                 result = await SynologyStore(mirror=mirror).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 300})
         finally:

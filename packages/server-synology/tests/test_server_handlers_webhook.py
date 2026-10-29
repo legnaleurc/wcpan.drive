@@ -113,24 +113,29 @@ class _WebhookTestCase(DecoyTestCase):
 
 class TestFetchAndEnrich(_WebhookTestCase):
     async def test_success(self):
+        # given
         await self._stub_parent(_make_node("p1"))
         self.decoy.when(
             await self.drive_api.get_file(SynologyPermanentLink(permanent_link="f1"))
         ).then_return(_FAKE_SYNO_INFO)
         service = self._create_service()
 
+        # when
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
             SynologyPermanentLink(permanent_link="f1"),
             SynologyFileId(file_id="p1"),
             "file_created",
         )
+        # then
         self.decoy.verify(
             await self.node_sync.upsert(matchers.Anything(), read=_READ), times=1
         )
 
     async def test_no_parent_id_skips(self):
+        # given
         service = self._create_service()
+        # when / then
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
             SynologyPermanentLink(permanent_link="f1"),
@@ -139,7 +144,9 @@ class TestFetchAndEnrich(_WebhookTestCase):
         )
 
     async def test_parent_not_in_db_not_mount_skips(self):
+        # given
         service = self._create_service()
+        # when / then
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
             SynologyPermanentLink(permanent_link="f1"),
@@ -148,32 +155,39 @@ class TestFetchAndEnrich(_WebhookTestCase):
         )
 
     async def test_file_moved_to_unknown_parent_deletes_existing_node(self):
+        # given
         await self._stub_source(_make_node())
         service = self._create_service()
 
+        # when
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
             SynologyPermanentLink(permanent_link="f1"),
             SynologyFileId(file_id="unknown-parent"),
             "file_moved",
         )
+        # then
         self.decoy.verify(await self.node_sync.delete(NodeId("f1"), read=_READ))
 
     async def test_file_moved_to_unknown_parent_no_op_when_node_absent(self):
+        # given
         service = self._create_service()
 
+        # when
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
             SynologyPermanentLink(permanent_link="f1"),
             SynologyFileId(file_id="unknown-parent"),
             "file_moved",
         )
+        # then
         self.decoy.verify(
             await self.node_sync.delete(matchers.Anything(), read=matchers.Anything()),
             times=0,
         )
 
     async def test_parent_resolved_via_mount(self):
+        # given
         registry = MountRegistry(
             mounts={},
             root_ids={
@@ -185,12 +199,14 @@ class TestFetchAndEnrich(_WebhookTestCase):
         ).then_return(_FAKE_SYNO_INFO)
         service = self._create_service(registry)
 
+        # when
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
             SynologyPermanentLink(permanent_link="f1"),
             SynologyFileId(file_id="real-parent"),
             "file_created",
         )
+        # then
         # parent_id should have been resolved to _docs
         observation = matchers.Captor()
         self.decoy.verify(await self.node_sync.upsert(observation, read=_READ))
@@ -199,15 +215,18 @@ class TestFetchAndEnrich(_WebhookTestCase):
         self.assertEqual(upserted.locator, "f1")
 
     async def test_metadata_not_found_skips(self):
+        # given
         await self._stub_parent(_make_node("p1"))
         service = self._create_service()
 
+        # when
         await service._fetch_and_enrich(
             SynologyFileId(file_id="f1"),
             SynologyPermanentLink(permanent_link="f1"),
             SynologyFileId(file_id="p1"),
             "file_created",
         )
+        # then
         self.decoy.verify(
             await self.node_sync.upsert(matchers.Anything(), read=matchers.Anything()),
             times=0,
@@ -221,7 +240,9 @@ class TestFetchAndEnrich(_WebhookTestCase):
 
 class TestClassifyWebhookItem(_WebhookTestCase):
     async def test_empty_file_id_schedules_delayed_upsert(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_created",
@@ -231,12 +252,15 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertEqual(plan.schedule_key, "f1")
         self.assertEqual(plan.file_ref.file_id, "")
         self.assertTrue(plan.schedule_delayed_upsert)
 
     async def test_file_removed_returns_delete_id(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_removed",
@@ -246,11 +270,14 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertEqual(plan.delete_id, "f1")
         self.assertFalse(plan.schedule_delayed_upsert)
 
     async def test_file_modified_file_schedules_delayed(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_modified",
@@ -260,11 +287,14 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertTrue(plan.schedule_delayed_upsert)
         self.assertFalse(plan.fetch_immediately)
 
     async def test_file_modified_dir_is_noop(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_modified",
@@ -274,12 +304,15 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertIsNone(plan.delete_id)
         self.assertFalse(plan.fetch_immediately)
         self.assertFalse(plan.schedule_delayed_upsert)
 
     async def test_file_created_dir_fetches_and_waits(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_created",
@@ -289,12 +322,15 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertTrue(plan.fetch_immediately)
         self.assertTrue(plan.wait_for_writes)
         self.assertFalse(plan.scan_moved_dir_subtree)
 
     async def test_file_moved_dir_fetches_waits_and_scans(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_moved",
@@ -304,12 +340,15 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertTrue(plan.fetch_immediately)
         self.assertTrue(plan.wait_for_writes)
         self.assertTrue(plan.scan_moved_dir_subtree)
 
     async def test_file_renamed_fetches_immediately(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_renamed",
@@ -319,12 +358,15 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertTrue(plan.fetch_immediately)
         self.assertFalse(plan.wait_for_writes)
         self.assertFalse(plan.scan_moved_dir_subtree)
 
     async def test_file_created_file_schedules_delayed(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "file_created",
@@ -334,11 +376,14 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertIsNone(plan.delete_id)
         self.assertTrue(plan.schedule_delayed_upsert)
 
     async def test_unknown_event_type_is_noop(self):
+        # given
         service = self._create_service()
+        # when
         plan = service._classify_webhook_item(
             {
                 "event_type": "something_else",
@@ -348,6 +393,7 @@ class TestClassifyWebhookItem(_WebhookTestCase):
                 "parent_id": "p1",
             },
         )
+        # then
         self.assertIsNone(plan.delete_id)
         self.assertFalse(plan.fetch_immediately)
         self.assertFalse(plan.schedule_delayed_upsert)
@@ -375,6 +421,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         )
 
     async def test_fetches_then_waits_for_created_dir(self):
+        # given
         service = self._create_service()
         plan = service._classify_webhook_item(
             {
@@ -386,6 +433,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             },
         )
 
+        # when
         with patch.object(
             service,
             "_fetch_and_enrich",
@@ -393,6 +441,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         ) as mock_fetch:
             await service._execute_webhook_plan(plan, pending=self.pending)
 
+        # then
         mock_fetch.assert_awaited_once_with(
             plan.file_ref,
             plan.permanent_link_ref,
@@ -403,6 +452,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         self._verify_not_scheduled()
 
     async def test_deletes_when_plan_requests_removal(self):
+        # given
         service = self._create_service()
         plan = service._classify_webhook_item(
             {
@@ -414,14 +464,17 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             },
         )
 
+        # when
         await service._execute_webhook_plan(plan, pending=self.pending)
 
+        # then
         self.decoy.verify(
             await self.node_sync.delete(NodeId("f1"), read=_READ), times=1
         )
         self._verify_not_scheduled()
 
     async def test_schedules_delayed_upsert(self):
+        # given
         service = self._create_service()
         plan = service._classify_webhook_item(
             {
@@ -433,6 +486,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             },
         )
 
+        # when
         with patch.object(
             service,
             "_fetch_and_enrich",
@@ -440,10 +494,13 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         ) as mock_fetch:
             await service._execute_webhook_plan(plan, pending=self.pending)
 
+            # then
             factory = matchers.Captor()
             self.decoy.verify(self.pending.schedule("f1", factory), times=1)
 
+            # when
             await factory.value()
+            # then
             mock_fetch.assert_awaited_once_with(
                 plan.file_ref,
                 plan.permanent_link_ref,
@@ -452,11 +509,13 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             )
 
     async def test_mirrored_directory_move_fetches_waits_without_scanning(self):
+        # given
         await self._stub_source(_make_node("f1", NodeId("_video")))
         await self._stub_parent(_make_node("p1", NodeId("_video")))
         service = self._create_service(_VIDEO_MOUNT)
         plan = service._classify_webhook_item(_moved_dir())
 
+        # when
         with (
             patch.object(
                 service,
@@ -471,6 +530,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         ):
             await service._execute_webhook_plan(plan, pending=self.pending)
 
+        # then
         mock_fetch.assert_awaited_once_with(
             plan.file_ref,
             plan.permanent_link_ref,
@@ -481,6 +541,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         mock_scan.assert_not_awaited()
 
     async def test_mirrored_directory_move_to_mount_root_skips_scanning(self):
+        # given
         await self._stub_source(_make_node("f1", NodeId("_video")))
         registry = MountRegistry(
             mounts={"video": "/team-folders/video/L"},
@@ -491,6 +552,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         service = self._create_service(registry)
         plan = service._classify_webhook_item(_moved_dir("mount-root"))
 
+        # when
         with (
             patch.object(
                 service,
@@ -505,6 +567,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         ):
             await service._execute_webhook_plan(plan, pending=self.pending)
 
+        # then
         mock_fetch.assert_awaited_once()
         self.decoy.verify(await self.node_sync.flush(), times=1)
         mock_scan.assert_not_awaited()
@@ -531,20 +594,27 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         mock_scan.assert_awaited_once_with(NodeId("f1"))
 
     async def test_moved_directory_source_not_under_current_mount_scans(self):
+        # given
         await self._stub_source(_make_node("f1", NodeId("_old")))
         await self._stub_parent(_make_node("p1", NodeId("_video")))
+        # when / then
         await self._assert_scans(self._create_service(_VIDEO_MOUNT))
 
     async def test_moved_directory_destination_not_under_current_mount_scans(self):
+        # given
         await self._stub_source(_make_node("f1", NodeId("_video")))
         await self._stub_parent(_make_node("p1", NodeId("_old")))
+        # when / then
         await self._assert_scans(self._create_service(_VIDEO_MOUNT))
 
     async def test_moved_directory_missing_source_scans(self):
+        # when / then
         await self._assert_scans(self._create_service())
 
     async def test_moved_directory_missing_destination_scans(self):
+        # given
         await self._stub_source(_make_node("f1", NodeId("_video")))
+        # when / then
         await self._assert_scans(self._create_service(_VIDEO_MOUNT))
 
 
@@ -566,45 +636,57 @@ class TestResolveMovedDirRootId(_WebhookTestCase):
         )
 
     async def test_uses_permanent_link_record(self):
+        # given
         self.decoy.when(await self.mirror.get_node_by_id(NodeId("perm-1"))).then_return(
             _make_node(NodeId("perm-1"))
         )
 
+        # when
         rv = await self._resolve()
 
+        # then
         self.assertEqual(rv, "perm-1")
         self.decoy.verify(await self.drive_api.get_file(matchers.Anything()), times=0)
         await self._verify_no_locator_lookup()
 
     async def test_falls_back_to_metadata_permanent_link(self):
+        # given
         self.decoy.when(
             await self.drive_api.get_file(
                 SynologyPermanentLink(permanent_link="perm-1")
             )
         ).then_return({**_FAKE_SYNO_INFO, "permanent_link": "perm-2"})
 
+        # when
         rv = await self._resolve()
 
+        # then
         self.assertEqual(rv, "perm-2")
         await self._verify_no_locator_lookup()
 
     async def test_falls_back_to_storage_lookup_by_file_id(self):
+        # given
         self.decoy.when(
             await self.store.get_node_by_locator(SynologyLocator("f1"))
         ).then_return(_make_node(NodeId("mirror-1")))
 
+        # when
         rv = await self._resolve()
 
+        # then
         self.assertEqual(rv, "mirror-1")
 
     async def test_returns_none_when_unresolved(self):
+        # when
         rv = await self._resolve()
 
+        # then
         self.assertIsNone(rv)
 
 
 class TestWebhookServiceMovedDir(_WebhookTestCase):
     async def test_skips_subtree_scan_when_root_unresolved(self):
+        # given
         await self._stub_parent(_make_node("p1"))
         service = self._create_service()
         queue = asyncio.Queue()
@@ -624,7 +706,9 @@ class TestWebhookServiceMovedDir(_WebhookTestCase):
                     await queue.join()
                     raise asyncio.CancelledError()
 
+            # when
             with self.assertRaises(asyncio.CancelledError):
                 await _run_once()
 
+        # then
         mock_scan.assert_not_awaited()

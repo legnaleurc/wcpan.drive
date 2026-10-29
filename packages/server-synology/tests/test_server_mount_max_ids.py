@@ -46,32 +46,44 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
         con.close()
 
     async def test_fresh_db_returns_zero_for_all_mounts(self) -> None:
+        # given
         mounts = {
             "LV": SynologyPath("/team-folders/video/L"),
             "LG": SynologyPath("/team-folders/gallery/L"),
         }
+        # when
         result = await self.store.get_mount_max_ids(mounts)
+        # then
         self.assertEqual(result, {"LV": 0, "LG": 0})
 
     async def test_unknown_mount_gets_zero(self) -> None:
+        # given
         self._write_mount("LV", 35000, "/team-folders/video/L")
         mounts = {
             "LV": SynologyPath("/team-folders/video/L"),
             "LG": SynologyPath("/team-folders/gallery/L"),
         }
+        # when
         result = await self.store.get_mount_max_ids(mounts)
+        # then
         self.assertEqual(result, {"LV": 35000, "LG": 0})
 
     async def test_path_change_resets_to_zero(self) -> None:
+        # given
         self._write_mount("LV", 35000, "/old/path")
         mounts = {"LV": SynologyPath("/new/path")}
+        # when
         result = await self.store.get_mount_max_ids(mounts)
+        # then
         self.assertEqual(result["LV"], 0)
 
     async def test_matching_path_preserves_value(self) -> None:
+        # given
         self._write_mount("LV", 35000, "/team-folders/video/L")
         mounts = {"LV": SynologyPath("/team-folders/video/L")}
+        # when
         result = await self.store.get_mount_max_ids(mounts)
+        # then
         self.assertEqual(result["LV"], 35000)
 
 
@@ -103,24 +115,32 @@ class TestSetMountState(IsolatedAsyncioTestCase):
         return int(row[0]), str(row[1])
 
     async def test_writes_mount_row(self) -> None:
+        # when
         await self.store.set_mount_state("LV", "/team-folders/video/L", 35000)
+        # then
         self.assertEqual(
             self._read_mount("LV"),
             (35000, "/team-folders/video/L"),
         )
 
     async def test_overwrites_existing_values(self) -> None:
+        # given
         await self.store.set_mount_state("LV", "/old/path", 1000)
+        # when
         await self.store.set_mount_state("LV", "/team-folders/video/L", 35000)
+        # then
         self.assertEqual(
             self._read_mount("LV"),
             (35000, "/team-folders/video/L"),
         )
 
     async def test_roundtrip_via_get_mount_max_ids(self) -> None:
+        # given
         mounts = {"LV": SynologyPath("/team-folders/video/L")}
+        # when
         await self.store.set_mount_state("LV", "/team-folders/video/L", 35000)
         result = await self.store.get_mount_max_ids(mounts)
+        # then
         self.assertEqual(result, {"LV": 35000})
 
 
@@ -136,10 +156,12 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         os.unlink(self.db_path)
 
     async def test_new_db_sets_user_version(self) -> None:
+        # when
         await MirrorStore(
             self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         ).ensure_schema()
 
+        # then
         con = sqlite3.connect(self.db_path)
         version = con.execute("PRAGMA user_version").fetchone()[0]
         con.close()
@@ -147,6 +169,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         self.assertEqual(version, 7)
 
     async def test_version_3_db_is_migrated(self) -> None:
+        # given
         con = sqlite3.connect(self.db_path)
         con.executescript(
             """
@@ -173,10 +196,12 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.commit()
         con.close()
 
+        # when
         await MirrorStore(
             self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         ).ensure_schema()
 
+        # then
         con = sqlite3.connect(self.db_path)
         version = con.execute("PRAGMA user_version").fetchone()[0]
         rows = {
@@ -193,6 +218,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         self.assertEqual(locators, {"f1": "m1", "f2": "m2", "d1": "m3"})
 
     async def test_version_6_pending_entries_belong_to_legacy_backend(self) -> None:
+        # given
         con = sqlite3.connect(self.db_path)
         con.executescript(
             """
@@ -222,13 +248,16 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.commit()
         con.close()
 
+        # when
         mirror = MirrorStore(self.db_path, off_main=self.off_main)
         await mirror.ensure_schema()
 
+        # then
         self.assertEqual(await mirror.get_pending_enrichment("synology"), ["pending-1"])
         self.assertEqual(await mirror.get_pending_enrichment("other"), [])
 
     async def test_version_4_db_moves_locators_out_of_nodes(self) -> None:
+        # given
         con = sqlite3.connect(self.db_path)
         con.executescript(
             """
@@ -266,11 +295,13 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         con.commit()
         con.close()
 
+        # when
         mirror = MirrorStore(
             self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         )
         await mirror.ensure_schema()
 
+        # then
         con = sqlite3.connect(self.db_path)
         version = con.execute("PRAGMA user_version").fetchone()[0]
         columns = {row[1] for row in con.execute("PRAGMA table_info(nodes)")}
@@ -295,18 +326,22 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         self.assertEqual(cursor, 4)
 
     async def test_existing_db_with_matching_version_is_accepted(self) -> None:
+        # given
         mirror = MirrorStore(
             self.db_path, off_main=self.off_main, schemas={"synology": SYNOLOGY_SCHEMA}
         )
         await mirror.ensure_schema()
+        # when / then
         await mirror.ensure_schema()
 
     async def test_existing_unversioned_db_is_rejected(self) -> None:
+        # given
         con = sqlite3.connect(self.db_path)
         con.execute("CREATE TABLE legacy (id INTEGER PRIMARY KEY)")
         con.commit()
         con.close()
 
+        # when / then
         with self.assertRaises(SchemaVersionError):
             await MirrorStore(
                 self.db_path,
@@ -315,11 +350,13 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
             ).ensure_schema()
 
     async def test_existing_db_with_wrong_version_is_rejected(self) -> None:
+        # given
         con = sqlite3.connect(self.db_path)
         con.execute("PRAGMA user_version = 99")
         con.commit()
         con.close()
 
+        # when / then
         with self.assertRaises(SchemaVersionError):
             await MirrorStore(
                 self.db_path,

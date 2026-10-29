@@ -31,6 +31,7 @@ class FakeReadableFile(ReadableFile):
 
 class DecryptReadableFileTestCase(DecoyTestCase):
     async def testIterable(self):
+        # given
         content_list = [
             b"xyz",
             b"123",
@@ -38,31 +39,40 @@ class DecryptReadableFileTestCase(DecoyTestCase):
         stream = FakeReadableFile([encrypt(content) for content in content_list])
 
         fin = DecryptReadableFile(stream)
+        # when
         chunk_list = [chunk async for chunk in fin]
 
+        # then
         self.assertEqual(chunk_list, content_list)
 
     async def testRead(self):
+        # given
         content = b"789abc"
         mock = self.decoy.mock(cls=ReadableFile)
         self.decoy.when(await mock.read(123)).then_return(encrypt(content))
 
         fin = DecryptReadableFile(mock)
+        # when
         chunk = await fin.read(123)
 
+        # then
         self.assertEqual(content, chunk)
 
     async def testSeek(self):
+        # given
         mock = self.decoy.mock(cls=ReadableFile)
         self.decoy.when(await mock.seek(123)).then_return(123)
 
         fin = DecryptReadableFile(mock)
+        # when / then
         self.assertEqual(await fin.seek(123), 123)
 
     async def testNode(self):
+        # given
         mock = self.decoy.mock(cls=ReadableFile)
         node = self.decoy.mock(cls=Node)
         self.decoy.when(await mock.node()).then_return(node)
 
         fin = DecryptReadableFile(mock)
+        # when / then
         self.assertIs(await fin.node(), node)

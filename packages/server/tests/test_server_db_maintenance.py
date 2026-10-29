@@ -58,6 +58,7 @@ def _make_mirror(db_path: str, pool: ThreadPoolExecutor) -> MirrorStore:
 
 class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
     def test_rejects_existing_unversioned_db(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -66,12 +67,14 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
             con.commit()
             con.close()
 
+            # when / then
             with self.assertRaises(SchemaVersionError):
                 cleanup_dangling_nodes(db_path, schemas={})
         finally:
             os.unlink(db_path)
 
     async def test_no_dangling_nodes_returns_zero(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -79,13 +82,16 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 mirror = _make_mirror(db_path, pool)
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes([_make_node("node-001")])
+                # when
                 count = cleanup_dangling_nodes(db_path, schemas={})
+                # then
                 self.assertEqual(count, 0)
                 self.assertIsNotNone(await mirror.get_node_by_id("node-001"))
         finally:
             os.unlink(db_path)
 
     async def test_removes_node_with_broken_parent(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -94,13 +100,16 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 await mirror.ensure_schema()
                 orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
                 await mirror.bulk_upsert_nodes([orphan])
+                # when
                 count = cleanup_dangling_nodes(db_path, schemas={})
+                # then
                 self.assertEqual(count, 1)
                 self.assertIsNone(await mirror.get_node_by_id("orphan-001"))
         finally:
             os.unlink(db_path)
 
     async def test_emits_removal_changes_for_dangling_nodes(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -109,7 +118,9 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 await mirror.ensure_schema()
                 orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
                 await mirror.bulk_upsert_nodes([orphan])
+                # when
                 cleanup_dangling_nodes(db_path, schemas={})
+                # then
                 changes, _, _ = await mirror.get_changes_since(0, 1000)
                 self.assertEqual(len(changes), 1)
                 self.assertTrue(changes[0][1])
@@ -118,6 +129,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
             os.unlink(db_path)
 
     async def test_keeps_reachable_nodes(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -127,7 +139,9 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 reachable = _make_node("node-001")
                 orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
                 await mirror.bulk_upsert_nodes([reachable, orphan])
+                # when
                 count = cleanup_dangling_nodes(db_path, schemas={})
+                # then
                 self.assertEqual(count, 1)
                 self.assertIsNotNone(await mirror.get_node_by_id("node-001"))
                 self.assertIsNone(await mirror.get_node_by_id("orphan-001"))
@@ -135,6 +149,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
             os.unlink(db_path)
 
     async def test_does_not_remove_server_root(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -148,7 +163,9 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                     is_directory=True,
                 )
                 await mirror.bulk_upsert_nodes([root])
+                # when
                 cleanup_dangling_nodes(db_path, schemas={})
+                # then
                 self.assertIsNotNone(await mirror.get_node_by_id(SERVER_ROOT_ID))
         finally:
             os.unlink(db_path)
@@ -156,6 +173,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
 
 class TestResetChangeHistory(IsolatedAsyncioTestCase):
     async def test_clears_existing_changes(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -167,7 +185,9 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 await mirror.upsert_node_and_emit_change(node)
                 await mirror.upsert_node_and_emit_change(node)
                 await mirror.upsert_node_and_emit_change(node)
+                # when
                 reset_change_history(db_path, schemas={})
+                # then
                 changes, _, _ = await mirror.get_changes_since(0, 1000)
                 ids = [c[0] for c in changes]
                 self.assertEqual(ids.count("node-001"), 1)
@@ -175,6 +195,7 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
             os.unlink(db_path)
 
     async def test_returns_count_of_inserted_records(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -184,12 +205,15 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 await mirror.bulk_upsert_nodes(
                     [_make_node("node-001"), _make_node("node-002")]
                 )
+                # when
                 count = reset_change_history(db_path, schemas={})
+                # then
                 self.assertEqual(count, 2)
         finally:
             os.unlink(db_path)
 
     async def test_server_root_not_included_in_changes(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -203,7 +227,9 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                     is_directory=True,
                 )
                 await mirror.bulk_upsert_nodes([root, _make_node("node-001")])
+                # when
                 reset_change_history(db_path, schemas={})
+                # then
                 changes, _, _ = await mirror.get_changes_since(0, 1000)
                 ids = [c[0] for c in changes]
                 self.assertNotIn(SERVER_ROOT_ID, ids)
@@ -211,6 +237,7 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
             os.unlink(db_path)
 
     async def test_all_new_changes_are_updates(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -218,7 +245,9 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 mirror = _make_mirror(db_path, pool)
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes([_make_node("node-001")])
+                # when
                 reset_change_history(db_path, schemas={})
+                # then
                 changes, _, _ = await mirror.get_changes_since(0, 1000)
                 self.assertTrue(all(not c[1] for c in changes))
         finally:

@@ -49,6 +49,7 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
     async def test_cursor_advances_by_raw_rows_even_with_same_node_repeats(
         self,
     ) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -60,13 +61,17 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
                 await mirror.upsert_node_and_emit_change(n1)
                 await mirror.delete_subtree_and_emit_changes("n1")
 
+                # when
                 page1, cursor1, has_more1 = await mirror.get_changes_since(0, 2)
+                # then
                 self.assertEqual(len(page1), 1)
                 self.assertTrue(has_more1)
                 self.assertEqual(page1[0][0], "n1")
                 self.assertFalse(page1[0][1])
 
+                # when
                 page2, cursor2, has_more2 = await mirror.get_changes_since(cursor1, 2)
+                # then
                 self.assertEqual(len(page2), 1)
                 self.assertFalse(has_more2)
                 self.assertEqual(page2[0][0], "n1")
@@ -76,6 +81,7 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
             os.unlink(db_path)
 
     async def test_delete_then_recreate_same_node_is_replayable(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -87,13 +93,16 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
                 await mirror.delete_subtree_and_emit_changes("n1")
                 await mirror.upsert_node_and_emit_change(n1)
 
+                # when
                 changes, _, _ = await mirror.get_changes_since(0, 10)
+                # then
                 self.assertEqual([c[0] for c in changes], ["n1"])
                 self.assertEqual([c[1] for c in changes], [False])
         finally:
             os.unlink(db_path)
 
     async def test_same_page_upsert_then_delete_keeps_delete(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -104,7 +113,9 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
                 await mirror.upsert_node_and_emit_change(n1)
                 await mirror.delete_subtree_and_emit_changes("n1")
 
+                # when
                 changes, _, _ = await mirror.get_changes_since(0, 10)
+                # then
                 self.assertEqual(len(changes), 1)
                 self.assertEqual(changes[0][0], "n1")
                 self.assertTrue(changes[0][1])
@@ -112,6 +123,7 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
             os.unlink(db_path)
 
     async def test_same_page_delete_then_upsert_keeps_upsert(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -123,7 +135,9 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
                 await mirror.delete_subtree_and_emit_changes("n1")
                 await mirror.upsert_node_and_emit_change(n1)
 
+                # when
                 changes, _, _ = await mirror.get_changes_since(0, 10)
+                # then
                 self.assertEqual(len(changes), 1)
                 self.assertEqual(changes[0][0], "n1")
                 self.assertFalse(changes[0][1])
@@ -131,6 +145,7 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
             os.unlink(db_path)
 
     async def test_subtree_delete_emits_parent_and_child_removals(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -142,7 +157,9 @@ class TestMirrorChangesPaging(IsolatedAsyncioTestCase):
                 await mirror.bulk_upsert_nodes([parent, child])
                 await mirror.delete_subtree_and_emit_changes("parent")
 
+                # when
                 changes, _, _ = await mirror.get_changes_since(0, 10)
+                # then
                 removed_ids = {
                     node_id for node_id, is_removed, _ in changes if is_removed
                 }

@@ -33,12 +33,16 @@ def _sample_record() -> NodeRecord:
 
 class TestMediaInfoFromQuery(TestCase):
     def test_no_media_keys_returns_none(self):
+        # when / then
         self.assertIsNone(media_info_from_query({}))
         self.assertIsNone(media_info_from_query({"name": "f.bin"}))
 
     def test_dims_parsed(self):
+        # given
         q = {"width": "1920", "height": "1080", "ms_duration": "3000"}
+        # when
         result = media_info_from_query(q)
+        # then
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result.width, 1920)
@@ -46,21 +50,27 @@ class TestMediaInfoFromQuery(TestCase):
         self.assertEqual(result.ms_duration, 3000)
 
     def test_media_image_flag(self):
+        # when
         result = media_info_from_query({"media_image": "1"})
+        # then
         self.assertIsNotNone(result)
         assert result is not None
         self.assertTrue(result.is_image)
         self.assertFalse(result.is_video)
 
     def test_media_video_flag(self):
+        # when
         result = media_info_from_query({"media_video": "true"})
+        # then
         self.assertIsNotNone(result)
         assert result is not None
         self.assertFalse(result.is_image)
         self.assertTrue(result.is_video)
 
     def test_missing_dims_default_to_zero(self):
+        # when
         result = media_info_from_query({"media_image": "1"})
+        # then
         assert result is not None
         self.assertEqual(result.width, 0)
         self.assertEqual(result.height, 0)

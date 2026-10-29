@@ -27,14 +27,18 @@ def _api_file(**kwargs: object) -> dict[str, object]:
 
 class NodeFromApiTestCase(IsolatedAsyncioTestCase):
     def testFileWithChecksum(self) -> None:
+        # when
         node = node_from_api(_api_file(md5Checksum="abc", size="1"))  # type: ignore
+        # then
         self.assertEqual(node.hash, "abc")
         self.assertEqual(node.hash_algorithm, "md5")
 
     def testFileWithoutChecksum(self) -> None:
+        # when
         node = node_from_api(  # type: ignore
             _api_file(mimeType="application/vnd.google-apps.document")
         )
+        # then
         self.assertEqual(node.hash, "")
         self.assertEqual(node.hash_algorithm, "")
 
@@ -49,16 +53,22 @@ class GetHasherFactoryTestCase(IsolatedAsyncioTestCase):
         self._node = node_from_api(_api_file(md5Checksum="abc", size="1"))  # type: ignore
 
     async def testMd5(self) -> None:
+        # when
         factory = await self._fs.get_hasher_factory(self._node)
+        # then
         self.assertIs(factory, create_hasher)
         self.assertIsInstance(await factory(), Md5Hasher)
 
     async def testWithoutChecksum(self) -> None:
+        # given
         node = replace(self._node, hash="", hash_algorithm="")
+        # when / then
         with self.assertRaises(UnsupportedHashAlgorithmError):
             await self._fs.get_hasher_factory(node)
 
     async def testOtherAlgorithm(self) -> None:
+        # given
         node = replace(self._node, hash_algorithm="md4")
+        # when / then
         with self.assertRaises(UnsupportedHashAlgorithmError):
             await self._fs.get_hasher_factory(node)

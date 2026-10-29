@@ -23,17 +23,21 @@ class _MainTestCase(DecoyTestCase):
 class TestMain(_MainTestCase):
     @patch("sys.stderr", new_callable=StringIO)
     async def testMkdirNoArgs(self, stderr: StringIO):
+        # when / then
         with self.assertRaises(SystemExit):
             await amain(["mkdir"])
 
     @patch("sys.stderr", new_callable=StringIO)
     async def testMkdirWithPath(self, stderr: StringIO):
+        # given
         parent_node = make_node(is_directory=True)
         self.decoy.when(
             await self._drive.get_node_by_path(PurePath("/var"))
         ).then_return(parent_node)
 
+        # when
         rv = await amain(["-cc.yaml", "mkdir", "/var/log"])
+        # then
         self.assertEqual(rv, 0)
 
         self.decoy.verify(
@@ -45,6 +49,7 @@ class TestMain(_MainTestCase):
 class TestList(_MainTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testListByPath(self, stdout: StringIO):
+        # given
         node = make_node(is_directory=True)
         child = make_node(id="child-id", name="child.txt")
         self.decoy.when(
@@ -52,25 +57,31 @@ class TestList(_MainTestCase):
         ).then_return(node)
         self.decoy.when(await self._drive.get_children(node)).then_return([child])
 
+        # when
         rv = await amain(["-cc.yaml", "list", "/some/dir"])
+        # then
         self.assertEqual(rv, 0)
 
         self.assertIn("child.txt", stdout.getvalue())
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testListById(self, stdout: StringIO):
+        # given
         node = make_node(id="abc123", is_directory=True)
         child = make_node(id="child-id", name="file.txt")
         self.decoy.when(await self._drive.get_node_by_id("abc123")).then_return(node)
         self.decoy.when(await self._drive.get_children(node)).then_return([child])
 
+        # when
         rv = await amain(["-cc.yaml", "list", "abc123"])
+        # then
         self.assertEqual(rv, 0)
 
         self.assertIn("file.txt", stdout.getvalue())
 
     @patch("sys.stderr", new_callable=StringIO)
     async def testListNoArgs(self, stderr: StringIO):
+        # when / then
         with self.assertRaises(SystemExit):
             await amain(["-cc.yaml", "list"])
 
@@ -78,19 +89,23 @@ class TestList(_MainTestCase):
 class TestFind(_MainTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testFindIdOnly(self, stdout: StringIO):
+        # given
         node = make_node(id="abc123", is_trashed=False)
         bind_find_nodes(self._drive, decoy=self.decoy)
         self.decoy.when(
             await self._drive.query_nodes(NodeQuery(name_pattern=".*\\.txt"))
         ).then_return([node])
 
+        # when
         rv = await amain(["-cc.yaml", "find", "--id-only", ".*\\.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         self.assertIn("abc123", stdout.getvalue())
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testFindExcludesTrash(self, stdout: StringIO):
+        # given
         bind_find_nodes(self._drive, decoy=self.decoy)
         self.decoy.when(
             await self._drive.query_nodes(
@@ -98,11 +113,14 @@ class TestFind(_MainTestCase):
             )
         ).then_return([])
 
+        # when
         rv = await amain(["-cc.yaml", "find", "--id-only", "pattern"])
+        # then
         self.assertEqual(rv, 0)
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testFindIncludeTrash(self, stdout: StringIO):
+        # given
         active = make_node(id="active-id", is_trashed=False)
         trashed = make_node(id="trashed-id", is_trashed=True)
         bind_find_nodes(self._drive, decoy=self.decoy)
@@ -112,9 +130,11 @@ class TestFind(_MainTestCase):
             )
         ).then_return([active, trashed])
 
+        # when
         rv = await amain(
             ["-cc.yaml", "find", "--id-only", "--include-trash", "pattern"]
         )
+        # then
         self.assertEqual(rv, 0)
 
         output = stdout.getvalue()
@@ -123,6 +143,7 @@ class TestFind(_MainTestCase):
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testFindWithPath(self, stdout: StringIO):
+        # given
         node = make_node(id="abc123", is_trashed=False)
         bind_find_nodes(self._drive, decoy=self.decoy)
         self.decoy.when(await self._drive.query_nodes(matchers.Anything())).then_return(
@@ -132,7 +153,9 @@ class TestFind(_MainTestCase):
             PurePath("/some/file.txt")
         )
 
+        # when
         rv = await amain(["-cc.yaml", "find", "pattern"])
+        # then
         self.assertEqual(rv, 0)
 
         output = stdout.getvalue()
@@ -143,12 +166,15 @@ class TestFind(_MainTestCase):
 class TestInfo(_MainTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testInfoByPath(self, stdout: StringIO):
+        # given
         node = make_node(id="abc123", name="photo.jpg", size=2048)
         self.decoy.when(
             await self._drive.get_node_by_path(PurePath("/photo.jpg"))
         ).then_return(node)
 
+        # when
         rv = await amain(["-cc.yaml", "info", "/photo.jpg"])
+        # then
         self.assertEqual(rv, 0)
 
         output = stdout.getvalue()
@@ -157,10 +183,13 @@ class TestInfo(_MainTestCase):
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testInfoById(self, stdout: StringIO):
+        # given
         node = make_node(id="xyz789", name="doc.pdf")
         self.decoy.when(await self._drive.get_node_by_id("xyz789")).then_return(node)
 
+        # when
         rv = await amain(["-cc.yaml", "info", "xyz789"])
+        # then
         self.assertEqual(rv, 0)
 
         self.assertIn("xyz789", stdout.getvalue())
@@ -169,19 +198,23 @@ class TestInfo(_MainTestCase):
 class TestTree(_MainTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testTreeRootNode(self, stdout: StringIO):
+        # given
         root = make_node(id="root-id", parent_id=None, name="", is_directory=True)
         self.decoy.when(await self._drive.get_node_by_path(PurePath("/"))).then_return(
             root
         )
         self.decoy.when(await self._drive.get_children(root)).then_return([])
 
+        # when
         rv = await amain(["-cc.yaml", "tree", "/"])
+        # then
         self.assertEqual(rv, 0)
 
         self.assertIn("/", stdout.getvalue())
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testTreeWithChildren(self, stdout: StringIO):
+        # given
         dir_node = make_node(
             id="dir-id", name="mydir", is_directory=True, parent_id="root"
         )
@@ -194,7 +227,9 @@ class TestTree(_MainTestCase):
         )
         self.decoy.when(await self._drive.get_children(dir_node)).then_return([child])
 
+        # when
         rv = await amain(["-cc.yaml", "tree", "/mydir"])
+        # then
         self.assertEqual(rv, 0)
 
         output = stdout.getvalue()
@@ -205,24 +240,30 @@ class TestTree(_MainTestCase):
 class TestUsage(_MainTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testUsageFile(self, stdout: StringIO):
+        # given
         file_node = make_node(size=1024, is_directory=False)
         self.decoy.when(
             await self._drive.get_node_by_path(PurePath("/test.txt"))
         ).then_return(file_node)
 
+        # when
         rv = await amain(["-cc.yaml", "usage", "/test.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         self.assertIn("1,024", stdout.getvalue())
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testUsageFileNoComma(self, stdout: StringIO):
+        # given
         file_node = make_node(size=1024, is_directory=False)
         self.decoy.when(
             await self._drive.get_node_by_path(PurePath("/test.txt"))
         ).then_return(file_node)
 
+        # when
         rv = await amain(["-cc.yaml", "usage", "--no-comma", "/test.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         output = stdout.getvalue()
@@ -231,6 +272,7 @@ class TestUsage(_MainTestCase):
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testUsageDirectory(self, stdout: StringIO):
+        # given
         dir_node = make_node(is_directory=True)
         self.decoy.when(
             await self._drive.get_node_by_path(PurePath("/mydir"))
@@ -242,7 +284,9 @@ class TestUsage(_MainTestCase):
             )
         ).then_return(NodeSummary(count=2, total_size=800))
 
+        # when
         rv = await amain(["-cc.yaml", "usage", "/mydir"])
+        # then
         self.assertEqual(rv, 0)
 
         self.assertIn("800", stdout.getvalue())
@@ -251,16 +295,20 @@ class TestUsage(_MainTestCase):
     @patch("sys.stderr", new_callable=StringIO)
     @patch("sys.stdout", new_callable=StringIO)
     async def testUsageNotFound(self, stdout: StringIO, stderr: StringIO):
+        # given
         self.decoy.when(
             await self._drive.get_node_by_path(matchers.Anything())
         ).then_raise(Exception("not found"))
 
+        # when
         rv = await amain(["-cc.yaml", "usage", "/missing"])
+        # then
         self.assertEqual(rv, 1)
         self.assertIn("/missing", stderr.getvalue())
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testUsageMultipleSources(self, stdout: StringIO):
+        # given
         file1 = make_node(id="f1", size=100, is_directory=False)
         file2 = make_node(id="f2", size=200, is_directory=False)
         self.decoy.when(
@@ -270,7 +318,9 @@ class TestUsage(_MainTestCase):
             await self._drive.get_node_by_path(PurePath("/b.txt"))
         ).then_return(file2)
 
+        # when
         rv = await amain(["-cc.yaml", "usage", "/a.txt", "/b.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         output = stdout.getvalue()
@@ -280,6 +330,7 @@ class TestUsage(_MainTestCase):
 
 class TestRename(_MainTestCase):
     async def testRenameByPath(self):
+        # given
         result_node = make_node(name="new.txt")
         mock_move = self.enterContext(
             patch(
@@ -289,7 +340,9 @@ class TestRename(_MainTestCase):
         )
         mock_move.return_value = result_node
 
+        # when
         rv = await amain(["-cc.yaml", "rename", "/old.txt", "new.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         mock_move.assert_called_once_with(
@@ -298,6 +351,7 @@ class TestRename(_MainTestCase):
 
     @patch("sys.stderr", new_callable=StringIO)
     async def testRenameFailure(self, stderr: StringIO):
+        # given
         mock_move = self.enterContext(
             patch(
                 "wcpan.drive.client.cli._cmd.move.move_node",
@@ -309,11 +363,14 @@ class TestRename(_MainTestCase):
             await self._drive.get_node_by_path(matchers.Anything())
         ).then_return(make_node())
 
+        # when
         rv = await amain(["-cc.yaml", "rename", "/old.txt", "/dest/new.txt"])
+        # then
         self.assertEqual(rv, 1)
         self.assertIn("move failed", stderr.getvalue())
 
     async def testRenameById(self):
+        # given
         src_node = make_node(id="abc123")
         result_node = make_node(name="new.txt")
         self.decoy.when(await self._drive.get_node_by_id("abc123")).then_return(
@@ -330,7 +387,9 @@ class TestRename(_MainTestCase):
         )
         mock_move.return_value = result_node
 
+        # when
         rv = await amain(["-cc.yaml", "rename", "abc123", "new.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         mock_move.assert_called_once_with(
@@ -340,50 +399,64 @@ class TestRename(_MainTestCase):
 
 class TestRemove(_MainTestCase):
     async def testTrashNode(self):
+        # given
         node = make_node()
         self.decoy.when(
             await self._drive.get_node_by_path(PurePath("/test.txt"))
         ).then_return(node)
 
+        # when
         rv = await amain(["-cc.yaml", "remove", "/test.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         self.decoy.verify(await self._drive.delete(node), times=1)
 
     async def testRestoreNode(self):
+        # given
         node = make_node()
         self.decoy.when(
             await self._drive.get_node_by_path(PurePath("/test.txt"))
         ).then_return(node)
 
+        # when
         rv = await amain(["-cc.yaml", "remove", "--restore", "/test.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         self.decoy.verify(await self._drive.restore(node), times=1)
 
     async def testPurgeNode(self):
+        # given
         node = make_node()
         self.decoy.when(
             await self._drive.get_node_by_path(PurePath("/test.txt"))
         ).then_return(node)
 
+        # when
         rv = await amain(["-cc.yaml", "remove", "--purge", "/test.txt"])
+        # then
         self.assertEqual(rv, 0)
 
         self.decoy.verify(await self._drive.delete(node, permanent=True), times=1)
 
     @patch("sys.stderr", new_callable=StringIO)
     async def testPurgeAndRestoreConflict(self, stderr: StringIO):
+        # when
         rv = await amain(["-cc.yaml", "remove", "--purge", "--restore", "/test.txt"])
+        # then
         self.assertEqual(rv, 1)
 
     @patch("sys.stderr", new_callable=StringIO)
     async def testRemoveNotFound(self, stderr: StringIO):
+        # given
         self.decoy.when(
             await self._drive.get_node_by_path(matchers.Anything())
         ).then_raise(Exception("not found"))
 
+        # when
         rv = await amain(["-cc.yaml", "remove", "/missing.txt"])
+        # then
         self.assertEqual(rv, 1)
         self.assertIn("/missing.txt", stderr.getvalue())
 
@@ -391,10 +464,13 @@ class TestRemove(_MainTestCase):
 class TestTrash(_MainTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testTrashList(self, stdout: StringIO):
+        # given
         node = make_node(id="t1", name="deleted.txt", is_trashed=True)
         self.decoy.when(await self._drive.get_trashed_nodes(False)).then_return([node])
 
+        # when
         rv = await amain(["-cc.yaml", "trash", "list"])
+        # then
         self.assertEqual(rv, 0)
 
         output = stdout.getvalue()
@@ -403,23 +479,29 @@ class TestTrash(_MainTestCase):
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testTrashUsageFiles(self, stdout: StringIO):
+        # given
         file1 = make_node(id="f1", size=1000, is_directory=False, is_trashed=True)
         file2 = make_node(id="f2", size=500, is_directory=False, is_trashed=True)
         self.decoy.when(await self._drive.get_trashed_nodes()).then_return(
             [file1, file2]
         )
 
+        # when
         rv = await amain(["-cc.yaml", "trash", "usage"])
+        # then
         self.assertEqual(rv, 0)
 
         self.assertIn("1,500", stdout.getvalue())
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testTrashUsageNoComma(self, stdout: StringIO):
+        # given
         file_node = make_node(size=2000, is_directory=False, is_trashed=True)
         self.decoy.when(await self._drive.get_trashed_nodes()).then_return([file_node])
 
+        # when
         rv = await amain(["-cc.yaml", "trash", "usage", "--no-comma"])
+        # then
         self.assertEqual(rv, 0)
 
         output = stdout.getvalue()
@@ -428,11 +510,14 @@ class TestTrash(_MainTestCase):
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testTrashPurgeNoAsk(self, stdout: StringIO):
+        # given
         self.decoy.when(await self._drive.get_trashed_nodes()).then_return(
             [make_node()]
         )
 
+        # when
         rv = await amain(["-cc.yaml", "trash", "purge", "-y"])
+        # then
         self.assertEqual(rv, 0)
 
         self.decoy.verify(await self._drive.purge_trash(), times=1)
@@ -440,6 +525,7 @@ class TestTrash(_MainTestCase):
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testTrashPurgeNoAskFailure(self, stdout: StringIO):
+        # given
         self.decoy.when(await self._drive.get_trashed_nodes()).then_return(
             [make_node()]
         )
@@ -447,15 +533,20 @@ class TestTrash(_MainTestCase):
             Exception("server error")
         )
 
+        # when
         rv = await amain(["-cc.yaml", "trash", "purge", "-y"])
+        # then
         self.assertEqual(rv, 1)
 
     @patch("sys.stdout", new_callable=StringIO)
     @patch("builtins.input", return_value="y")
     async def testTrashPurgeWithConfirm(self, mock_input: MagicMock, stdout: StringIO):
+        # given
         self.decoy.when(await self._drive.get_trashed_nodes()).then_return([])
 
+        # when
         rv = await amain(["-cc.yaml", "trash", "purge"])
+        # then
         self.assertEqual(rv, 0)
 
         mock_input.assert_called_once()
@@ -464,9 +555,12 @@ class TestTrash(_MainTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     @patch("builtins.input", return_value="n")
     async def testTrashPurgeAborted(self, mock_input: MagicMock, stdout: StringIO):
+        # given
         self.decoy.when(await self._drive.get_trashed_nodes()).then_return([])
 
+        # when
         rv = await amain(["-cc.yaml", "trash", "purge"])
+        # then
         self.assertEqual(rv, 0)
 
         self.decoy.verify(await self._drive.purge_trash(), times=0)
@@ -481,6 +575,7 @@ class TestInit(IsolatedAsyncioTestCase):
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testInitNeedsNoConfig(self, stdout: StringIO):
+        # given
         scaffold = self.enterContext(
             patch(
                 "wcpan.drive.client.cli._cmd.init.create_config_scaffold",
@@ -488,7 +583,9 @@ class TestInit(IsolatedAsyncioTestCase):
             )
         )
 
+        # when
         rv = await amain(["init", "-p", "google", "--plugin", "sqlite"])
+        # then
         self.assertEqual(rv, 0)
 
         scaffold.assert_called_once_with(["google", "sqlite"])
@@ -497,6 +594,7 @@ class TestInit(IsolatedAsyncioTestCase):
 
     @patch("sys.stderr", new_callable=StringIO)
     async def testInitReportsBadPlugins(self, stderr: StringIO):
+        # given
         self.enterContext(
             patch(
                 "wcpan.drive.client.cli._cmd.init.create_config_scaffold",
@@ -504,13 +602,17 @@ class TestInit(IsolatedAsyncioTestCase):
             )
         )
 
+        # when
         rv = await amain(["init", "-p", "x"])
+        # then
         self.assertEqual(rv, 1)
         self.assertIn("no plugin matches 'x'", stderr.getvalue())
 
     @patch("sys.stderr", new_callable=StringIO)
     async def testOtherCommandsNeedConfig(self, stderr: StringIO):
+        # when / then
         with self.assertRaises(SystemExit):
             await amain(["list", "/"])
+        # then
         self.assertIn("--config", stderr.getvalue())
         self._factory.assert_not_called()

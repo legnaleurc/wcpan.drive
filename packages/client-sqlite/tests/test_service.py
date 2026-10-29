@@ -26,14 +26,19 @@ class GetCurrentCursorTestCase(IsolatedAsyncioTestCase):
         self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
 
     async def testWithoutInitialize(self):
+        # when
         rv = await self._ss.get_current_cursor()
+        # then
         self.assertEqual(rv, "")
 
     async def testAfterInitialize(self):
+        # given
         with read_write(self._dsn) as query:
             inner_set_metadata(query, KEY_CURSOR, "42")
 
+        # when
         rv = await self._ss.get_current_cursor()
+        # then
         self.assertEqual(rv, "42")
 
 
@@ -44,23 +49,30 @@ class RootTestCase(IsolatedAsyncioTestCase):
         self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
 
     async def testGetWithoutInitialize(self):
+        # when / then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.get_root()
 
     async def testSetRoot(self):
+        # given
         node = _make_root("123")
+        # when
         await self._ss.set_root(node)
 
+        # then
         with read_only(self._dsn) as query:
             rv = inner_get_node_by_id(query, "123")
 
         self.assertIsNotNone(rv)
 
     async def testGetRoot(self):
+        # given
         node = _make_root("123")
         await self._ss.set_root(node)
+        # when
         rv = await self._ss.get_root()
 
+        # then
         self.assertIsNotNone(rv)
         assert rv
         self.assertEqual(rv, node)
@@ -73,25 +85,32 @@ class GetNodeTestCase(IsolatedAsyncioTestCase):
         self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
 
     async def testIdNotFound(self):
+        # when / then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.get_node_by_id("123")
 
     async def testPathNotFound(self):
+        # when / then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.get_node_by_path(PurePath("/123"))
 
     async def testInvalidPath(self):
+        # when / then
         with self.assertRaises(ValueError):
             await self._ss.get_node_by_path(PurePath("123"))
 
     async def testRootPath(self):
+        # given
         node = _make_root("root")
         await self._ss.set_root(node)
 
+        # when
         rv = await self._ss.get_node_by_path(PurePath("/"))
+        # then
         self.assertEqual(rv, node)
 
     async def testGetByPath(self):
+        # given
         node = _make_root("1")
         await self._ss.set_root(node)
         with read_write(self._dsn) as query:
@@ -100,14 +119,19 @@ class GetNodeTestCase(IsolatedAsyncioTestCase):
             node = _make_file("3", "2", "b")
             inner_insert_node(query, node)
 
+        # when
         rv = await self._ss.get_node_by_path(PurePath("/a/b"))
+        # then
         self.assertEqual(rv, node)
 
     async def testGetById(self):
+        # given
         node = _make_root("root")
         await self._ss.set_root(node)
 
+        # when
         rv = await self._ss.get_node_by_id("root")
+        # then
         self.assertEqual(rv, node)
 
 
@@ -118,6 +142,7 @@ class ResolvePathTestCase(IsolatedAsyncioTestCase):
         self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
 
     async def testGoodId(self):
+        # given
         node = _make_root("1")
         await self._ss.set_root(node)
         with read_write(self._dsn) as query:
@@ -126,17 +151,23 @@ class ResolvePathTestCase(IsolatedAsyncioTestCase):
             node = _make_file("3", "2", "b")
             inner_insert_node(query, node)
 
+        # when
         rv = await self._ss.resolve_path_by_id("3")
+        # then
         self.assertEqual(rv, PurePath("/a/b"))
 
     async def testRootId(self):
+        # given
         node = _make_root("1")
         await self._ss.set_root(node)
 
+        # when
         rv = await self._ss.resolve_path_by_id("1")
+        # then
         self.assertEqual(rv, PurePath("/"))
 
     async def testBadId(self):
+        # given
         node = _make_root("1")
         await self._ss.set_root(node)
         with read_write(self._dsn) as query:
@@ -145,6 +176,7 @@ class ResolvePathTestCase(IsolatedAsyncioTestCase):
             node = _make_file("3", "2", "b")
             inner_insert_node(query, node)
 
+        # when / then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.resolve_path_by_id("4")
 
@@ -156,6 +188,7 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
         self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
 
     async def testGetChild(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
         with read_write(self._dsn) as query:
@@ -164,10 +197,13 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
             b = _make_file("3", "2", "b")
             inner_insert_node(query, b)
 
+        # when
         rv = await self._ss.get_child_by_name("b", "2")
+        # then
         self.assertEqual(rv, b)
 
     async def testGetChildFromWrongParent(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
         with read_write(self._dsn) as query:
@@ -176,10 +212,12 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
             b = _make_file("3", "2", "b")
             inner_insert_node(query, b)
 
+        # when / then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.get_child_by_name("b", "1")
 
     async def testGetChildWithNoNode(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
         with read_write(self._dsn) as query:
@@ -188,10 +226,12 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
             b = _make_file("3", "2", "b")
             inner_insert_node(query, b)
 
+        # when / then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.get_child_by_name("b", "4")
 
     async def testGetChildren(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
         with read_write(self._dsn) as query:
@@ -202,23 +242,31 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
             c = _make_file("4", "2", "c")
             inner_insert_node(query, c)
 
+        # when
         rv = await self._ss.get_children_by_id("2")
+        # then
         rv = sorted(rv, key=lambda x: x.name)
         self.assertEqual(rv, [b, c])
 
     async def testGetNoChildren(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
 
+        # when
         rv = await self._ss.get_children_by_id("1")
+        # then
         self.assertEqual(rv, [])
 
     async def testGetChildrenWithWrongId(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
 
+        # when
         # TODO maybe should raise exception
         rv = await self._ss.get_children_by_id("2")
+        # then
         self.assertEqual(rv, [])
 
 
@@ -229,6 +277,7 @@ class SearchNodesTestCase(IsolatedAsyncioTestCase):
         self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
 
     async def testGetTrashedNode(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
         with read_write(self._dsn) as query:
@@ -239,11 +288,14 @@ class SearchNodesTestCase(IsolatedAsyncioTestCase):
             b = replace(b, is_trashed=True)
             inner_insert_node(query, b)
 
+        # when
         rv = await self._ss.get_trashed_nodes()
+        # then
         rv = sorted(rv, key=lambda x: x.name)
         self.assertEqual(rv, [a, b])
 
     async def testSearchByRegex(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
         with read_write(self._dsn) as query:
@@ -254,7 +306,9 @@ class SearchNodesTestCase(IsolatedAsyncioTestCase):
             c = _make_file("4", "1", "c")
             inner_insert_node(query, c)
 
+        # when
         rv = await self._ss.query_nodes(NodeQuery(name_pattern=r"a|b"))
+        # then
         rv = sorted(rv, key=lambda x: x.name)
         self.assertEqual(rv, [b, a])
 
@@ -300,68 +354,86 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
         return {_.id for _ in nodes}
 
     async def testExcludesTrashedByDefault(self):
+        # when / then
         self.assertEqual(await self._ids(), {"1", "2", "3", "4", "5"})
 
     async def testIncludeTrashed(self):
+        # when / then
         self.assertEqual(
             await self._ids(is_trashed=None), {"1", "2", "3", "4", "5", "6", "7", "8"}
         )
 
     async def testTrashedOnly(self):
+        # when / then
         self.assertEqual(await self._ids(is_trashed=True), {"6", "7", "8"})
 
     async def testDescendantsExcludeAncestor(self):
+        # when / then
         self.assertEqual(await self._ids(ancestor_id="2"), {"3", "4", "5"})
 
     async def testDescendantsOfFile(self):
+        # when / then
         self.assertEqual(await self._ids(ancestor_id="3"), set())
 
     async def testUnknownAncestorRaises(self):
+        # when / then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.query_nodes(NodeQuery(ancestor_id="404"))
 
     async def testFilesOnly(self):
+        # when / then
         self.assertEqual(
             await self._ids(ancestor_id="2", is_directory=False), {"3", "5"}
         )
 
     async def testDirectoriesOnly(self):
+        # when / then
         self.assertEqual(await self._ids(is_directory=True), {"1", "2", "4"})
 
     async def testSizeOnlyMatchesFiles(self):
+        # when / then
         self.assertEqual(await self._ids(size_max=0), {"5"})
         self.assertEqual(await self._ids(size_min=42, size_max=42), {"3"})
 
     async def testMimeTypePrefix(self):
+        # when / then
         self.assertEqual(await self._ids(mime_type_prefix="video/"), {"5"})
         self.assertEqual(await self._ids(mime_type_prefix="VIDEO/"), set())
 
     async def testMimeTypePrefixIsLiteral(self):
+        # when / then
         self.assertEqual(await self._ids(mime_type_prefix="%"), set())
         self.assertEqual(await self._ids(mime_type_prefix="video_"), set())
 
     async def testModifiedRange(self):
+        # given
         start = datetime(2025, 6, 1, tzinfo=UTC)
         end = datetime(2025, 6, 2, tzinfo=UTC)
+        # when / then
         self.assertEqual(
             await self._ids(modified_after=start, modified_before=end), {"5"}
         )
         self.assertEqual(await self._ids(modified_before=start), set())
 
     async def testNameAndDescendant(self):
+        # when / then
         self.assertEqual(await self._ids(ancestor_id="4", name_pattern="^D$"), {"5"})
 
     async def testLimit(self):
+        # when / then
         self.assertEqual(len(await self._ids(limit=2)), 2)
 
     async def testParentCycleTerminates(self):
+        # given
         with read_write(self._dsn) as query:
             inner_insert_node(query, _make_dir("9", "10", "x"))
             inner_insert_node(query, _make_dir("10", "9", "y"))
 
+        # when / then
         self.assertEqual(await self._ids(ancestor_id="9"), {"10"})
 
     async def testSummaries(self):
+        # given
         cases = [
             (NodeQuery(), NodeSummary(count=5, total_size=42)),
             (NodeQuery(is_trashed=None), NodeSummary(count=8, total_size=126)),
@@ -382,11 +454,13 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
                 NodeSummary(count=1, total_size=0),
             ),
         ]
+        # when / then
         for query, expected in cases:
             with self.subTest(query=query):
                 self.assertEqual(await self._ss.summarize_nodes(query), expected)
 
     async def testSummaryCreatedWindowIncludesStartExcludesEndAndIncludesOrphans(self):
+        # given
         begin = datetime(2026, 1, 1, tzinfo=UTC)
         end = datetime(2026, 1, 2, tzinfo=UTC)
         with read_write(self._dsn) as query:
@@ -403,6 +477,7 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
                 query,
                 replace(_make_file("11", "missing", "orphan"), created_time=begin),
             )
+        # when
         result = await self._ss.summarize_nodes(
             NodeQuery(
                 is_directory=False,
@@ -411,13 +486,16 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
                 created_before=end,
             )
         )
+        # then
         self.assertEqual(result, NodeSummary(count=2, total_size=84))
 
     async def testSummaryDoesNotCountMultipleParentsTwice(self):
+        # given
         with read_write(self._dsn) as query:
             query.execute(
                 "INSERT INTO parents (id, parent_id) VALUES (?, ?)", ("3", "4")
             )
+        # when / then
         self.assertEqual(
             await self._ss.summarize_nodes(
                 NodeQuery(ancestor_id="2", is_directory=False)
@@ -426,22 +504,26 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
         )
 
     async def testSummaryDoesNotConstructNodes(self):
+        # given
         from wcpan.drive.client.sqlite._outer import summarize_nodes
 
         with patch(
             "wcpan.drive.client.sqlite._outer.node_from_query",
             side_effect=AssertionError,
         ):
+            # when / then
             self.assertEqual(
                 summarize_nodes(self._dsn, NodeQuery()),
                 NodeSummary(count=5, total_size=42),
             )
 
     async def testSummaryUnknownAncestor(self):
+        # when / then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.summarize_nodes(NodeQuery(ancestor_id="missing"))
 
     async def testSummaryRejectsLimit(self):
+        # when / then
         with self.assertRaises(ValueError):
             await self._ss.summarize_nodes(NodeQuery(limit=1))
 
@@ -453,6 +535,7 @@ class ApplyChangesTestCase(IsolatedAsyncioTestCase):
         self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
 
     async def testPatches(self):
+        # given
         root = _make_root("1")
         await self._ss.set_root(root)
         change_list: list[ChangeAction] = [
@@ -461,8 +544,10 @@ class ApplyChangesTestCase(IsolatedAsyncioTestCase):
             (False, _make_file("4", "2", "c")),
             (True, "3"),
         ]
+        # when
         await self._ss.apply_changes(change_list, "point")
 
+        # then
         with self.assertRaises(NodeNotFoundError):
             await self._ss.get_node_by_path(PurePath("/a/b"))
 
@@ -476,6 +561,7 @@ class HashAlgorithmTestCase(IsolatedAsyncioTestCase):
         self._dsn = tmp.name
 
     async def testAlgorithmPersists(self):
+        # given
         async with create_cache(dsn=self._dsn) as ss:
             await ss.set_root(_make_root("1"))
             await ss.apply_changes(
@@ -485,27 +571,34 @@ class HashAlgorithmTestCase(IsolatedAsyncioTestCase):
                 ],
                 "1",
             )
+        # when
         async with create_cache(dsn=self._dsn) as ss:
             a = await ss.get_node_by_id("2")
             b = await ss.get_node_by_id("3")
 
+        # then
         self.assertEqual(a.hash_algorithm, "md5")
         self.assertEqual(b.hash_algorithm, "md4")
 
     async def testFileWithoutChecksumStaysFile(self):
+        # given
         pending = replace(_make_file("2", "1", "a"), hash="", hash_algorithm="")
+        # when
         async with create_cache(dsn=self._dsn) as ss:
             await ss.set_root(_make_root("1"))
             await ss.apply_changes([(False, pending)], "1")
             rv = await ss.get_node_by_id("2")
 
+        # then
         self.assertFalse(rv.is_directory)
         self.assertEqual(rv.hash, "")
         self.assertEqual(rv.hash_algorithm, "")
 
     async def testVersion6RequiresRebuild(self):
+        # given
         self._create_version_6()
 
+        # when / then
         with self.assertRaises(SqliteCacheError):
             async with create_cache(dsn=self._dsn):
                 pass

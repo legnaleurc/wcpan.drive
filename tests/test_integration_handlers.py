@@ -189,6 +189,7 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
 
     async def test_upload_session_carries_media_info(self) -> None:
         """MediaInfo dimensions and flags survive the upload-session protocol."""
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror, self._session_store)
 
@@ -208,20 +209,24 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
             return_value=_FAKE_SYNO_INFO,
         ):
             async with TestClient(TestServer(app)) as client:
+                # when
                 # Step 1 — create session
                 resp = await client.post(
                     "/api/v1/nodes/parent-a/uploads",
                     json={"name": "photo.jpg", "size": 10, **params},
                 )
+                # then
                 self.assertEqual(resp.status, 201)
                 session_id = resp.headers["Location"].split("/")[-1]
 
+                # when
                 # Step 2 — send the single chunk; server finalises and returns 201
                 resp2 = await client.patch(
                     f"/api/v1/uploads/{session_id}",
                     data=b"x" * 10,
                     headers={"Upload-Offset": "0"},
                 )
+                # then
                 self.assertEqual(resp2.status, 201)
                 record = node_record_from_dict(await resp2.json())
 
@@ -232,6 +237,7 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
 
     async def test_direct_upload_carries_media_info(self) -> None:
         """MediaInfo is applied when using the direct (non-session) upload endpoint."""
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror, self._session_store)
 
@@ -251,11 +257,13 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
             return_value=_FAKE_SYNO_INFO,
         ):
             async with TestClient(TestServer(app)) as client:
+                # when
                 resp = await client.post(
                     "/api/v1/nodes/parent-a",
                     data=b"x" * 10,
                     params={"name": "photo.jpg", **params},
                 )
+                # then
                 self.assertEqual(resp.status, 201)
                 record = node_record_from_dict(await resp.json())
 
@@ -265,6 +273,7 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
 
     async def test_video_media_info_roundtrip(self) -> None:
         """is_video and ms_duration survive the upload-session protocol."""
+        # given
         mirror = _FakeMirror()
         syno_info = {**_FAKE_SYNO_INFO, "content_type": "video", "name": "clip.mp4"}
         app = _make_app(mirror, self._session_store)
@@ -285,18 +294,22 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
             return_value=syno_info,
         ):
             async with TestClient(TestServer(app)) as client:
+                # when
                 resp = await client.post(
                     "/api/v1/nodes/parent-a/uploads",
                     json={"name": "clip.mp4", "size": 10, **params},
                 )
+                # then
                 self.assertEqual(resp.status, 201)
                 session_id = resp.headers["Location"].split("/")[-1]
 
+                # when
                 resp2 = await client.patch(
                     f"/api/v1/uploads/{session_id}",
                     data=b"v" * 10,
                     headers={"Upload-Offset": "0"},
                 )
+                # then
                 self.assertEqual(resp2.status, 201)
                 record = node_record_from_dict(await resp2.json())
 
@@ -320,6 +333,7 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
 
     async def test_get_root_timestamps_preserved(self) -> None:
         """Timestamps are preserved through server JSON serialization."""
+        # given
         mirror = _FakeMirror()
         root = NodeRecord(
             id=SERVER_ROOT_ID,
@@ -343,7 +357,9 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
         app = _make_app(mirror, self._session_store)
 
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/root")
+            # then
             self.assertEqual(resp.status, 200)
             record = node_record_from_dict(await resp.json())
 
@@ -362,12 +378,15 @@ class TestNullUploadSink(IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def test_put_null_returns_upload_stats(self) -> None:
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror, self._session_store)
         payload = b"x" * 8192
 
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.put("/null", data=payload)
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
 
@@ -390,6 +409,7 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
 
     async def test_upload_returns_node_record(self) -> None:
         """PATCH with full file data returns 201 with a parseable NodeRecord."""
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror, self._session_store)
 
@@ -400,18 +420,22 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
             return_value=_FAKE_SYNO_INFO,
         ):
             async with TestClient(TestServer(app)) as client:
+                # when
                 resp = await client.post(
                     "/api/v1/nodes/parent-a/uploads",
                     json={"name": "photo.jpg", "size": 10},
                 )
+                # then
                 self.assertEqual(resp.status, 201)
                 session_id = resp.headers["Location"].split("/")[-1]
 
+                # when
                 resp2 = await client.patch(
                     f"/api/v1/uploads/{session_id}",
                     data=b"y" * 10,
                     headers={"Upload-Offset": "0"},
                 )
+                # then
                 self.assertEqual(resp2.status, 201)
                 record = node_record_from_dict(await resp2.json())
 
@@ -420,33 +444,41 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
 
     async def test_partial_patch_returns_204(self) -> None:
         """PATCH with partial data returns 204 with updated Upload-Offset."""
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror, self._session_store)
 
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/parent-a/uploads",
                 json={"name": "big.bin", "size": 20},
             )
+            # then
             self.assertEqual(resp.status, 201)
             session_id = resp.headers["Location"].split("/")[-1]
 
+            # when
             resp2 = await client.patch(
                 f"/api/v1/uploads/{session_id}",
                 data=b"a" * 10,
                 headers={"Upload-Offset": "0"},
             )
+            # then
             self.assertEqual(resp2.status, 204)
             self.assertEqual(resp2.headers["Upload-Offset"], "10")
 
     async def test_session_not_found_returns_404(self) -> None:
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror, self._session_store)
 
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.patch(
                 "/api/v1/uploads/no-such-session",
                 data=b"x",
                 headers={"Upload-Offset": "0"},
             )
+            # then
             self.assertEqual(resp.status, 404)

@@ -114,6 +114,7 @@ class TestConvertSynologyFileInfo(TestCase):
         self.assertIsNone(record.parent_id)
 
     def test_file_with_image_metadata_does_not_fill_dimensions(self):
+        # given
         info = {
             "file_id": "f2",
             "permanent_link": "f2",
@@ -128,12 +129,15 @@ class TestConvertSynologyFileInfo(TestCase):
             "sync_id": 1,
             "image_metadata": {"width": 1920, "height": 1080},
         }
+        # when
         record = _convert(info, parent_id="par")
+        # then
         self.assertEqual(record.width, 0)
         self.assertEqual(record.height, 0)
         self.assertEqual(record.ms_duration, 0)
 
     def test_file_with_nested_image_metadata_does_not_fill_dimensions(self):
+        # given
         info = {
             "file_id": "f3",
             "permanent_link": "f3",
@@ -148,11 +152,14 @@ class TestConvertSynologyFileInfo(TestCase):
             "sync_id": 1,
             "image_metadata": {"resolution": {"width": 640, "height": 480}},
         }
+        # when
         record = _convert(info, parent_id="par")
+        # then
         self.assertEqual(record.width, 0)
         self.assertEqual(record.height, 0)
 
     def test_video_with_image_metadata_does_not_fill_duration(self):
+        # given
         info = {
             "file_id": "v2",
             "permanent_link": "v2",
@@ -171,7 +178,9 @@ class TestConvertSynologyFileInfo(TestCase):
                 "duration": 5000,
             },
         }
+        # when
         record = _convert(info, parent_id="root")
+        # then
         self.assertEqual(record.width, 0)
         self.assertEqual(record.height, 0)
         self.assertEqual(record.ms_duration, 0)
@@ -179,6 +188,7 @@ class TestConvertSynologyFileInfo(TestCase):
 
 class TestEnrichPreservesApiDimensions(DecoyTestCase):
     async def test_enrich_without_force_refresh_does_not_probe_when_api_filled(self):
+        # given
         record = _convert(
             {
                 "file_id": "f4",
@@ -207,11 +217,14 @@ class TestEnrichPreservesApiDimensions(DecoyTestCase):
                 "probe must not run when API supplied dimensions"
             ),
         ):
+            # when
             out = await enricher.enrich(record, force_refresh=False)
+        # then
         self.assertEqual(out.width, 800)
         self.assertEqual(out.height, 600)
 
     async def test_enrich_force_refresh_invokes_probe_when_api_filled(self) -> None:
+        # given
         record = _convert(
             {
                 "file_id": "f5",
@@ -253,7 +266,9 @@ class TestEnrichPreservesApiDimensions(DecoyTestCase):
                         return_value=(100, 200, 0),
                     ) as probe,
                 ):
+                    # when
                     out = await enricher.enrich(record, force_refresh=True)
+            # then
             probe.assert_called_once()
             self.assertEqual(out.width, 100)
             self.assertEqual(out.height, 200)
@@ -261,6 +276,7 @@ class TestEnrichPreservesApiDimensions(DecoyTestCase):
             probe_path.unlink(missing_ok=True)
 
     async def test_enrich_raises_when_required_probe_fails(self) -> None:
+        # given
         record = _convert(
             {
                 "file_id": "f6",
@@ -301,6 +317,7 @@ class TestEnrichPreservesApiDimensions(DecoyTestCase):
                         side_effect=ValueError("bad media"),
                     ),
                 ):
+                    # when / then
                     with self.assertRaises(MediaEnrichmentError):
                         await enricher.enrich(record, force_refresh=True)
         finally:
@@ -309,6 +326,7 @@ class TestEnrichPreservesApiDimensions(DecoyTestCase):
 
 class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
     async def test_process_metadata_reconcile_insert_enqueues_write(self) -> None:
+        # given
         wq = create_write_queue()
         mq = create_metadata_queue()
         with ThreadPoolExecutor(1) as pool:
@@ -341,6 +359,7 @@ class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
             self.decoy.when(await mirror.apply_observations(applied)).then_return(
                 {record.id}
             )
+            # when
             async with cs.observe() as read:
                 await cs.reconcile_insert(observation, read=read)
             item = await mq.get()
@@ -356,6 +375,7 @@ class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
                 await job()
             finally:
                 wq.task_done()
+            # then
             self.assertEqual(
                 applied.values,
                 [[NodeObservation(record=record, locator=SynologyLocator("n1"))]],

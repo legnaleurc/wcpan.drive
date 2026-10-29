@@ -22,7 +22,9 @@ def _imports(path: Path) -> list[str]:
 
 class TestGenericServerImports(TestCase):
     def test_no_backend_or_client_imports(self) -> None:
+        # given
         modules = sorted(_SERVER_SRC.rglob("*.py"))
+        # then
         self.assertTrue(modules)
         for path in modules:
             for name in _imports(path):

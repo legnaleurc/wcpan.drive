@@ -166,19 +166,24 @@ class TestCreateMountRegistry(_PathTestCase):
         self.decoy.verify(await self.drive_api.get_file(matchers.Anything()), times=0)
 
     async def test_empty_mounts(self):
+        # when
         registry = await create_mount_registry({}, drive_api=self.drive_api)
+        # then
         self.assertEqual(registry.mounts, {})
         self.assertIsNone(
             registry.lookup_mount_virtual_id(SynologyFileId(file_id="unknown"))
         )
 
     async def test_resolves_root_ids_for_non_nested_mounts(self):
+        # given
         mounts = {
             "photos": SynologyPath("/volume1/photos"),
             "videos": SynologyPath("/volume1/videos"),
         }
         await self._stub_roots(mounts)
+        # when
         registry = await create_mount_registry(mounts, drive_api=self.drive_api)
+        # then
         self.assertEqual(registry.mounts, mounts)
         self.assertEqual(
             registry.lookup_mount_virtual_id(SynologyFileId(file_id="id-1")),
@@ -190,29 +195,37 @@ class TestCreateMountRegistry(_PathTestCase):
         )
 
     async def test_nested_mounts_raise_before_metadata_lookup(self):
+        # given
         mounts = {
             "photos": SynologyPath("/volume1/photos"),
             "photos_2024": SynologyPath("/volume1/photos/2024"),
         }
+        # when / then
         with self.assertRaises(ValueError):
             await create_mount_registry(mounts, drive_api=self.drive_api)
+        # then
         await self._verify_no_lookup()
 
     async def test_nested_mounts_raise_in_reversed_order(self):
+        # given
         mounts = {
             "photos_2024": SynologyPath("/volume1/photos/2024"),
             "photos": SynologyPath("/volume1/photos"),
         }
+        # when / then
         with self.assertRaises(ValueError):
             await create_mount_registry(mounts, drive_api=self.drive_api)
 
     async def test_prefix_but_not_subdirectory_is_ok(self):
+        # given
         mounts = {
             "photos": SynologyPath("/volume1/photos"),
             "photos_archive": SynologyPath("/volume1/photos_archive"),
         }
         await self._stub_roots(mounts)
+        # when
         registry = await create_mount_registry(mounts, drive_api=self.drive_api)
+        # then
         self.assertEqual(
             registry.lookup_mount_virtual_id(SynologyFileId(file_id="id-1")),
             "_photos",
@@ -223,10 +236,12 @@ class TestCreateMountRegistry(_PathTestCase):
         )
 
     async def test_trailing_slash_is_normalized_for_nested_check(self):
+        # given
         mounts = {
             "a": SynologyPath("/volume1/photos/"),
             "b": SynologyPath("/volume1/photos/2024"),
         }
+        # when / then
         with self.assertRaises(ValueError):
             await create_mount_registry(mounts, drive_api=self.drive_api)
 
@@ -275,6 +290,7 @@ class TestFindChildByName(_PathTestCase):
             await svc.find_child_by_name(self.drive_api, NodeId("99"), "child.txt")
 
     async def test_api_error_propagates(self):
+        # given
         mount_path = SynologyPath("/volume1/photos")
         svc = self._service({"photos": mount_path})
         error = SynologyApiError("permission denied", error_code=105)
@@ -282,9 +298,11 @@ class TestFindChildByName(_PathTestCase):
             error
         )
 
+        # when / then
         with self.assertRaises(SynologyApiError) as caught:
             await svc.find_child_by_name(
                 self.drive_api, NodeId("_photos"), "private.txt"
             )
 
+        # then
         self.assertIs(caught.exception, error)

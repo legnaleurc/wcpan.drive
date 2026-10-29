@@ -269,19 +269,25 @@ class _NodesTestCase(DecoyTestCase):
 
 class TestGetNode(_NodesTestCase):
     async def test_returns_node(self):
+        # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/nodes/n1")
+            # then
             self.assertEqual(resp.status, 200)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.id, "n1")
         self.assertEqual(record.name, "test.txt")
 
     async def test_not_found(self):
+        # given
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/nodes/missing")
+            # then
             self.assertEqual(resp.status, 404)
 
 
@@ -292,21 +298,25 @@ class TestGetNode(_NodesTestCase):
 
 class TestCreateNode(_NodesTestCase):
     async def test_success(self):
+        # given
         app = self._make_app()
         self.decoy.when(await self.drive_api.create_folder(_P1, "docs")).then_return(
             _FAKE_SYNO_INFO
         )
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes",
                 json={"name": "docs", "parent_id": "p1"},
             )
+            # then
             self.assertEqual(resp.status, 201)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.id, "new-dir")
         self.assertTrue(record.is_directory)
 
     async def test_name_is_normalized_to_nfc(self):
+        # given
         raw_name = "てすとば"
         normalized_name = unicodedata.normalize("NFC", raw_name)
         app = self._make_app()
@@ -314,30 +324,38 @@ class TestCreateNode(_NodesTestCase):
             await self.drive_api.create_folder(_P1, normalized_name)
         ).then_return({**_FAKE_SYNO_INFO, "name": normalized_name})
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes",
                 json={"name": raw_name, "parent_id": "p1"},
             )
+            # then
             self.assertEqual(resp.status, 201)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.name, normalized_name)
 
     async def test_missing_name(self):
+        # given
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes",
                 json={"parent_id": "p1"},
             )
+            # then
             self.assertEqual(resp.status, 400)
 
     async def test_missing_parent_id(self):
+        # given
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes",
                 json={"name": "docs"},
             )
+            # then
             self.assertEqual(resp.status, 400)
 
 
@@ -348,21 +366,25 @@ class TestCreateNode(_NodesTestCase):
 
 class TestUpdateNode(_NodesTestCase):
     async def test_rename(self):
+        # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
         self.decoy.when(await self.drive_api.rename(_N1, "renamed.txt")).then_return(
             _rename_result("renamed.txt")
         )
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.patch(
                 "/api/v1/nodes/n1",
                 json={"name": "renamed.txt"},
             )
+            # then
             self.assertEqual(resp.status, 200)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.name, "renamed.txt")
 
     async def test_rename_name_is_normalized_to_nfc(self):
+        # given
         raw_name = "かなぴ.txt"
         normalized_name = unicodedata.normalize("NFC", raw_name)
         self.mirror._nodes["n1"] = _make_node()
@@ -371,22 +393,27 @@ class TestUpdateNode(_NodesTestCase):
             _rename_result(normalized_name)
         )
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.patch(
                 "/api/v1/nodes/n1",
                 json={"name": raw_name},
             )
+            # then
             self.assertEqual(resp.status, 200)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.name, normalized_name)
 
     async def test_move(self):
+        # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.patch(
                 "/api/v1/nodes/n1",
                 json={"parent_id": "new-parent"},
             )
+            # then
             self.assertEqual(resp.status, 200)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.parent_id, "new-parent")
@@ -397,6 +424,7 @@ class TestUpdateNode(_NodesTestCase):
         )
 
     async def test_move_rebinds_locator_via_permanent_link(self):
+        # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
         node_sync = app[CHANGE_SERVICE_KEY]
@@ -418,10 +446,12 @@ class TestUpdateNode(_NodesTestCase):
         )
         with patch.object(node_sync, "delete", new_callable=AsyncMock) as delete_mock:
             async with TestClient(TestServer(app)) as client:
+                # when
                 resp = await client.patch(
                     "/api/v1/nodes/n1",
                     json={"parent_id": "new-parent"},
                 )
+                # then
                 self.assertEqual(resp.status, 200)
                 body = await resp.json()
                 record = node_record_from_dict(body)
@@ -430,54 +460,68 @@ class TestUpdateNode(_NodesTestCase):
         self.assertEqual(record.parent_id, "new-parent")
         # The locator stays private.
         self.assertNotIn("mutable_id", body)
+        # when
         wq = app[WRITE_QUEUE_KEY]
         while not wq.empty():
             await wq.get_nowait()()
+        # then
         self.assertEqual(await self.mirror.get_locators(["n1"]), {"n1": "n2"})
 
     async def test_rename_conflict(self):
+        # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
         self.decoy.when(await self.drive_api.rename(_N1, "conflict.txt")).then_raise(
             SynologyUploadConflictError("exists", file_name="x")
         )
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.patch(
                 "/api/v1/nodes/n1",
                 json={"name": "conflict.txt"},
             )
+            # then
             self.assertEqual(resp.status, 409)
 
     async def test_virtual_node_forbidden(self):
+        # given
         self.mirror._nodes["_root"] = _make_node(node_id="_root")
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.patch(
                 "/api/v1/nodes/_root",
                 json={"name": "new"},
             )
+            # then
             self.assertEqual(resp.status, 403)
 
     async def test_not_found(self):
+        # given
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.patch(
                 "/api/v1/nodes/missing",
                 json={"name": "new"},
             )
+            # then
             self.assertEqual(resp.status, 404)
 
     async def test_move_error(self):
+        # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
         self.decoy.when(
             await self.drive_api.move(_N1, SynologyFileId(file_id="bad"))
         ).then_raise(Exception("move failed"))
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.patch(
                 "/api/v1/nodes/n1",
                 json={"parent_id": "bad"},
             )
+        # then
         self.assertEqual(resp.status, 503)
 
 
@@ -488,24 +532,33 @@ class TestUpdateNode(_NodesTestCase):
 
 class TestDeleteNode(_NodesTestCase):
     async def test_success(self):
+        # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.delete("/api/v1/nodes/n1")
+            # then
             self.assertEqual(resp.status, 204)
         self.decoy.verify(await self.drive_api.delete(_N1), times=1)
 
     async def test_not_found(self):
+        # given
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.delete("/api/v1/nodes/missing")
+            # then
             self.assertEqual(resp.status, 404)
 
     async def test_virtual_node_forbidden(self):
+        # given
         self.mirror._nodes["_mount"] = _make_node(node_id="_mount")
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.delete("/api/v1/nodes/_mount")
+            # then
             self.assertEqual(resp.status, 403)
 
 
@@ -516,22 +569,26 @@ class TestDeleteNode(_NodesTestCase):
 
 class TestUploadNode(_NodesTestCase):
     async def test_success(self):
+        # given
         app = self._make_app()
         self.decoy.when(await self._rehearse_upload("data.bin")).then_return(
             _upload_info("data.bin")
         )
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/p1/upload",
                 data=b"hello",
                 params={"name": "data.bin"},
             )
+            # then
             self.assertEqual(resp.status, 201)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.id, "uploaded-1")
         self.assertEqual(record.name, "data.bin")
 
     async def test_upload_name_is_normalized_to_nfc(self):
+        # given
         raw_name = "かなば.txt"
         normalized_name = unicodedata.normalize("NFC", raw_name)
         app = self._make_app()
@@ -539,48 +596,60 @@ class TestUploadNode(_NodesTestCase):
             _upload_info(normalized_name)
         )
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/p1/upload",
                 data=b"hello",
                 params={"name": raw_name},
             )
+            # then
             self.assertEqual(resp.status, 201)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.name, normalized_name)
 
     async def test_missing_name(self):
+        # given
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/p1/upload",
                 data=b"hello",
             )
+            # then
             self.assertEqual(resp.status, 400)
 
     async def test_upload_to_virtual_root_forbidden(self):
+        # given
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/_/upload",
                 data=b"hello",
                 params={"name": "x.bin"},
             )
+            # then
             self.assertEqual(resp.status, 403)
 
     async def test_upload_error(self):
+        # given
         app = self._make_app()
         self.decoy.when(await self._rehearse_upload()).then_raise(
             SynologyUploadError("fail", file_name="x")
         )
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/p1/upload",
                 data=b"hello",
                 params={"name": "x.bin"},
             )
+            # then
             self.assertEqual(resp.status, 507)
 
     async def test_conflict_returns_409_without_hitting_synology_upload(self):
+        # given
         app = self._make_app()
         self.decoy.when(
             await self.drive_api.get_file(
@@ -603,11 +672,13 @@ class TestUploadNode(_NodesTestCase):
             }
         )
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.post(
                 "/api/v1/nodes/p1/upload",
                 data=b"hello",
                 params={"name": "data.bin"},
             )
+            # then
             self.assertEqual(resp.status, 409)
         self.decoy.verify(await self._rehearse_upload(), times=0)
 
@@ -619,7 +690,10 @@ class TestUploadNode(_NodesTestCase):
 
 class TestDownloadNode(_NodesTestCase):
     async def test_not_found(self):
+        # given
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/nodes/missing/download")
+            # then
             self.assertEqual(resp.status, 404)

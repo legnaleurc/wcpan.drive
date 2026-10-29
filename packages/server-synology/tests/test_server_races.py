@@ -204,23 +204,28 @@ class _RaceTestCase(DecoyTestCase):
 
 class TestStaleEnrichment(_RaceTestCase):
     async def test_pending_enrichment_does_not_resurrect_deleted_node(self) -> None:
+        # given
         f = _node("f", _MOUNT)
         await self.mirror.bulk_upsert_nodes([f])
         gate = self.gate(lambda r: r.id == "f")
 
+        # when
         await self.run_gated(
             gate,
             self.observed(lambda r: self.node_sync.reconcile_insert(_obs(f), read=r)),
             lambda: self.observed(lambda r: self.node_sync.delete(f.id, read=r)),
         )
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(f.id))
 
     async def test_pending_enrichment_does_not_overwrite_newer_upsert(self) -> None:
+        # given
         old = _node("f", _MOUNT, name="old")
         new = replace(old, name="new")
         gate = self.gate(lambda r: r.name == "old")
 
+        # when
         await self.run_gated(
             gate,
             self.observed(
@@ -229,6 +234,7 @@ class TestStaleEnrichment(_RaceTestCase):
             lambda: self.observed(lambda r: self.node_sync.upsert(_obs(new), read=r)),
         )
 
+        # then
         stored = await self.mirror.get_node_by_id(old.id)
         assert stored is not None
         self.assertEqual(stored.name, "new")
@@ -236,11 +242,13 @@ class TestStaleEnrichment(_RaceTestCase):
     async def test_pending_enrichment_does_not_recreate_child_of_deleted_parent(
         self,
     ) -> None:
+        # given
         d = _node("d", _MOUNT, is_directory=True)
         f = _node("f", "d")
         await self.mirror.bulk_upsert_nodes([d])
         gate = self.gate(lambda r: r.id == "f")
 
+        # when
         await self.run_gated(
             gate,
             self.observed(
@@ -249,35 +257,42 @@ class TestStaleEnrichment(_RaceTestCase):
             lambda: self.observed(lambda r: self.node_sync.delete(d.id, read=r)),
         )
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(f.id))
 
     async def test_inline_upsert_does_not_resurrect_concurrently_deleted_node(
         self,
     ) -> None:
+        # given
         f = _node("f", _MOUNT)
         await self.mirror.bulk_upsert_nodes([f])
         gate = self.gate(lambda r: r.id == "f")
 
+        # when
         await self.run_gated(
             gate,
             self.observed(lambda r: self.node_sync.upsert(_obs(f), read=r)),
             lambda: self.observed(lambda r: self.node_sync.delete(f.id, read=r)),
         )
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(f.id))
 
     async def test_unrelated_pending_enrichment_still_applies(self) -> None:
+        # given
         f = _node("f", _MOUNT)
         g = _node("g", _MOUNT)
         await self.mirror.bulk_upsert_nodes([g])
         gate = self.gate(lambda r: r.id == "f")
 
+        # when
         await self.run_gated(
             gate,
             self.observed(lambda r: self.node_sync.reconcile_insert(_obs(f), read=r)),
             lambda: self.observed(lambda r: self.node_sync.delete(g.id, read=r)),
         )
 
+        # then
         self.assertIsNotNone(await self.mirror.get_node_by_id(f.id))
         self.assertIsNone(await self.mirror.get_node_by_id(g.id))
 
@@ -298,6 +313,7 @@ class TestBackfillOrdering(_RaceTestCase):
         return backfill, syno_paths
 
     async def test_listing_of_former_parent_does_not_delete_moved_node(self) -> None:
+        # given
         a = _node("a", _MOUNT, is_directory=True)
         b = _node("b", _MOUNT, is_directory=True)
         x = _node("x", "a")
@@ -318,6 +334,7 @@ class TestBackfillOrdering(_RaceTestCase):
                 )
             return children
 
+        # when
         with (
             patch.object(syno_paths, "list_children", side_effect=list_children),
             patch.object(self.mirror, "get_children", side_effect=get_children),
@@ -325,11 +342,13 @@ class TestBackfillOrdering(_RaceTestCase):
             await backfill._reconcile_subtree(a.id)
         await self.drain()
 
+        # then
         stored = await self.mirror.get_node_by_id(x.id)
         assert stored is not None
         self.assertEqual(stored.parent_id, b.id)
 
     async def test_stale_listing_does_not_revert_newer_webhook_update(self) -> None:
+        # given
         a = _node("a", _MOUNT, is_directory=True)
         x = _node("x", "a")
         await self.mirror.bulk_upsert_nodes([a, x])
@@ -344,10 +363,12 @@ class TestBackfillOrdering(_RaceTestCase):
             await self.node_sync.flush()
             return [_syno_item("x")]
 
+        # when
         with patch.object(syno_paths, "list_children", side_effect=list_children):
             await backfill._reconcile_subtree(a.id)
         await self.drain()
 
+        # then
         stored = await self.mirror.get_node_by_id(x.id)
         assert stored is not None
         self.assertEqual(stored.name, "renamed")
@@ -385,66 +406,85 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         return removed
 
     async def test_node_moved_during_pass_is_kept_under_new_parent(self) -> None:
+        # given
         self.decoy.when(await self._rehearse_get_x()).then_return(
             _syno_item("x", parent_id="b")
         )
 
+        # when / then
         self.assertEqual(await self.commit(), [])
 
+        # then
         stored = await self.mirror.get_node_by_id(self.x.id)
         assert stored is not None
         self.assertEqual(stored.parent_id, self.b.id)
 
     async def test_missing_node_is_removed(self) -> None:
+        # when / then
         self.assertEqual(await self.commit(), [self.x.id])
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(self.x.id))
 
     async def test_api_error_falls_back_to_removal(self) -> None:
+        # given
         self.decoy.when(await self._rehearse_get_x()).then_raise(
             SynologyApiError("not found", error_code=408)
         )
 
+        # when
         await self.commit()
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(self.x.id))
 
     async def test_node_moved_outside_mounts_is_removed(self) -> None:
+        # given
         self.decoy.when(await self._rehearse_get_x()).then_return(
             _syno_item("x", parent_id="elsewhere")
         )
 
+        # when
         await self.commit()
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(self.x.id))
 
     async def test_network_failure_preserves_node(self) -> None:
+        # given
         self.decoy.when(await self._rehearse_get_x()).then_raise(
             SynologyNetworkError("down")
         )
 
+        # when / then
         self.assertEqual(await self.commit(), [])
 
+        # then
         self.assertIsNotNone(await self.mirror.get_node_by_id(self.x.id))
 
     async def test_preserved_subtree_is_not_looked_up(self) -> None:
+        # given
         async with reconcile_session(
             {_MOUNT},
             mirror=self.mirror,
             node_sync=self.node_sync,
             locate=partial(self.syno_paths.locate, self.drive_api),
         ) as session:
+            # when
             session.saw([self.a.id, self.b.id])
             session.preserve(self.a.id)
+            # then
             self.assertEqual(await session.commit_removals(), [])
         await self.drain()
 
+        # then
         self.decoy.verify(await self.drive_api.get_file(matchers.Anything()), times=0)
         self.assertIsNotNone(await self.mirror.get_node_by_id(self.x.id))
 
 
 class TestBackfillRemovalConfirmation(_RaceTestCase):
     async def test_node_moved_between_listings_is_kept(self) -> None:
+        # given
         a = _node("a", _MOUNT, is_directory=True)
         b = _node("b", _MOUNT, is_directory=True)
         x = _node("x", "a")
@@ -471,10 +511,12 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
                 return [_syno_item("a", is_dir=True), _syno_item("b", is_dir=True)]
             return []
 
+        # when
         with patch.object(syno_paths, "list_children", side_effect=list_children):
             stats = await backfill._reconcile_subtree(_MOUNT)
         await self.drain()
 
+        # then
         self.assertEqual(stats["removed"], 0)
         stored = await self.mirror.get_node_by_id(x.id)
         assert stored is not None
@@ -502,55 +544,68 @@ class TestPendingEnrichment(_RaceTestCase):
         self.addCleanup(patcher.stop)
 
     async def test_failed_update_keeps_old_version_and_is_pending(self) -> None:
+        # given
         self.fail_enrichment()
 
+        # when
         await self.observed(lambda r: self.node_sync.upsert(_obs(self.new), read=r))
         await self.drain()
 
+        # then
         self.assertEqual(await self.mirror.get_node_by_id(self.old.id), self.old)
         self.assertEqual(await self.mirror.get_cursor(), self.cursor)
         self.assertEqual(await self.mirror.get_pending_enrichment(), [self.old.id])
 
     async def test_retry_publishes_and_clears_pending(self) -> None:
+        # given
         await self.mirror.mark_enrichment_pending(self.old.id)
         self.fail_enrichment(failing=False)
 
         async def locate(_node_id: NodeId) -> NodeObservation:
             return _obs(self.new)
 
+        # when
         await self.node_sync.retry_pending_enrichment(locate=locate)
         await self.drain()
 
+        # then
         stored = await self.mirror.get_node_by_id(self.old.id)
         assert stored is not None
         self.assertEqual((stored.name, stored.width), ("renamed", 20))
         self.assertEqual(await self.mirror.get_pending_enrichment(), [])
 
     async def test_retry_of_missing_node_removes_it(self) -> None:
+        # given
         await self.mirror.mark_enrichment_pending(self.old.id)
         await self.mirror.mark_enrichment_pending(NodeId("never-published"))
 
         async def locate(_node_id: NodeId) -> None:
             return None
 
+        # when
         await self.node_sync.retry_pending_enrichment(locate=locate)
         await self.drain()
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(self.old.id))
         self.assertEqual(await self.mirror.get_pending_enrichment(), [])
 
     async def test_undecided_retry_keeps_pending(self) -> None:
+        # given
         await self.mirror.mark_enrichment_pending(self.old.id)
 
         async def locate(_node_id: NodeId) -> None:
             raise LocateUndecidedError("down")
 
+        # when
         await self.node_sync.retry_pending_enrichment(locate=locate)
         await self.drain()
 
+        # then
         self.assertEqual(await self.mirror.get_pending_enrichment(), [self.old.id])
 
     async def test_stale_failure_is_not_marked_after_newer_apply(self) -> None:
+        # given
         gate = self.gate(lambda r: r.name == "renamed")
         newer = replace(self.old, name="newer")
 
@@ -560,6 +615,7 @@ class TestPendingEnrichment(_RaceTestCase):
                 raise MediaEnrichmentError(record, Path("/bad"))
             return record
 
+        # when
         with patch.object(self.node_sync._enricher, "enrich", fail_after_gate):
             await self.run_gated(
                 gate,
@@ -570,4 +626,5 @@ class TestPendingEnrichment(_RaceTestCase):
             )
         await self.drain()
 
+        # then
         self.assertEqual(await self.mirror.get_pending_enrichment(), [])

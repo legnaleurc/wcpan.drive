@@ -25,6 +25,7 @@ def _fill(section: dict[str, Any], **values: Any) -> None:
 
 class TestServerScaffold(IsolatedAsyncioTestCase):
     async def test_every_backend_enters_offline(self) -> None:
+        # given
         raw = yaml.safe_load(server_scaffold(["synology", "filesystem"]))
         with tempfile.TemporaryDirectory() as tmp:
             _fill(raw["server"], database_url=str(Path(tmp) / "mirror.db"))
@@ -38,6 +39,7 @@ class TestServerScaffold(IsolatedAsyncioTestCase):
             raw["mounts"]["synology"]["source"] = "/volume1/photos"
             raw["mounts"]["filesystem"]["source"] = tmp
             config = parse_config(raw)
+            # when
             async with (
                 managed_off_main() as off_main,
                 managed_core(
@@ -45,16 +47,20 @@ class TestServerScaffold(IsolatedAsyncioTestCase):
                 ) as core,
                 entered_backends(config, core, offline=True) as backends,
             ):
+                # then
                 self.assertEqual(set(backends), {"synology", "filesystem"})
             await asyncio.sleep(0)
 
 
 class TestClientScaffold(TestCase):
     def test_installed_plugins_make_a_valid_source(self) -> None:
+        # given
         raw = yaml.safe_load(
             client_scaffold(["wcpan.drive.client.google", "crypt", "sqlite"])
         )
+        # when
         (source,) = _parse_main(raw)
+        # then
         self.assertEqual(source.name, "google")
         self.assertEqual(
             [_.name for _ in source.backend],

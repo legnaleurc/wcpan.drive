@@ -11,44 +11,56 @@ class SerializationTest(TestCase):
         self._dsn, self._root = self.enterContext(create_sandbox())
 
     def testDirectory(self):
+        # given
         expected = random_dir(self._root.id)
 
+        # when
         with read_write(self._dsn) as query:
             inner_insert_node(query, expected)
 
+        # then
         with read_only(self._dsn) as query:
             rv = inner_get_node_by_id(query, expected.id)
 
         self.assertEqual(rv, expected)
 
     def testFile(self):
+        # given
         expected = random_file(self._root.id)
 
+        # when
         with read_write(self._dsn) as query:
             inner_insert_node(query, expected)
 
+        # then
         with read_only(self._dsn) as query:
             rv = inner_get_node_by_id(query, expected.id)
 
         self.assertEqual(rv, expected)
 
     def testImage(self):
+        # given
         expected = random_image(self._root.id)
 
+        # when
         with read_write(self._dsn) as query:
             inner_insert_node(query, expected)
 
+        # then
         with read_only(self._dsn) as query:
             rv = inner_get_node_by_id(query, expected.id)
 
         self.assertEqual(rv, expected)
 
     def testVideo(self):
+        # given
         expected = random_video(self._root.id)
 
+        # when
         with read_write(self._dsn) as query:
             inner_insert_node(query, expected)
 
+        # then
         with read_only(self._dsn) as query:
             rv = inner_get_node_by_id(query, expected.id)
 

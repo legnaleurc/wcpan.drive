@@ -74,8 +74,10 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         return [c[0] for c in changes]
 
     async def test_node_and_locator_are_written_together(self) -> None:
+        # when
         await self.mirror.apply_observations([_obs(_node("d", _MOUNT), "101")])
 
+        # then
         self.assertEqual(await self.store.get_locators([NodeId("d")]), {"d": "101"})
         found = await self.store.get_node_by_locator(SynologyLocator("101"))
         assert found is not None
@@ -83,42 +85,54 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         self.assertEqual(await self._change_ids(), ["d"])
 
     async def test_locator_only_update_emits_no_change(self) -> None:
+        # given
         d = _node("d", _MOUNT)
         await self.mirror.apply_observations([_obs(d, "101")])
         _, cursor, _ = await self.mirror.get_changes_since(0, 1000)
 
+        # when
         await self.mirror.apply_observations([_obs(d, "202")])
 
+        # then
         self.assertEqual(await self.store.get_locators([d.id]), {"d": "202"})
         self.assertIsNone(await self.store.get_node_by_locator(SynologyLocator("101")))
         changes, _, _ = await self.mirror.get_changes_since(cursor, 1000)
         self.assertEqual(changes, [])
 
     async def test_public_change_with_same_locator_emits_change(self) -> None:
+        # given
         d = _node("d", _MOUNT)
         await self.mirror.apply_observations([_obs(d, "101")])
         _, cursor, _ = await self.mirror.get_changes_since(0, 1000)
 
+        # when
         await self.mirror.apply_observations([_obs(replace(d, name="renamed"), "101")])
 
+        # then
         changes, _, _ = await self.mirror.get_changes_since(cursor, 1000)
         self.assertEqual([c[0] for c in changes], ["d"])
 
     async def test_none_locator_keeps_existing_binding(self) -> None:
+        # given
         d = _node("d", _MOUNT)
         await self.mirror.apply_observations([_obs(d, "101")])
 
+        # when
         await self.mirror.apply_observations([_obs(replace(d, name="renamed"), None)])
 
+        # then
         self.assertEqual(await self.store.get_locators([d.id]), {"d": "101"})
 
     async def test_subtree_delete_removes_bindings(self) -> None:
+        # given
         await self.mirror.apply_observations(
             [_obs(_node("d", _MOUNT), "101"), _obs(_node("e", "d"), "102")]
         )
 
+        # when
         await self.mirror.delete_subtree_and_emit_changes(NodeId("d"))
 
+        # then
         self.assertEqual(
             await self.store.get_locators([NodeId("d"), NodeId("e")]),
             {},
@@ -126,13 +140,16 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         self.assertIsNone(await self.store.get_node_by_locator(SynologyLocator("102")))
 
     async def test_dangling_cleanup_removes_bindings(self) -> None:
+        # given
         await self.mirror.apply_observations([_obs(_node("d", _MOUNT), "101")])
         # Detach "d" from the tree so the reachability GC treats it as dangling.
         await self.mirror.bulk_upsert_nodes([_node("d", "missing-parent")])
 
+        # when / then
         self.assertEqual(
             cleanup_dangling_nodes(self.db_path, schemas={"synology": SYNOLOGY_SCHEMA}),
             1,
         )
 
+        # then
         self.assertEqual(await self.store.get_locators([NodeId("d")]), {})

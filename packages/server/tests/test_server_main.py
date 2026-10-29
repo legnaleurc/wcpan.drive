@@ -50,23 +50,30 @@ class TestMain(unittest.TestCase):
         return _run_main(argv)
 
     def test_version_mismatch_stops_before_any_command(self):
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "server.yaml"
             path.write_text("database_url: /tmp/x.db\n")
             with patch("wcpan.drive.server.main.cleanup_dangling_nodes") as cleanup:
+                # when
                 code, _, err = self.run_main(["--config", str(path), "gc"])
+        # then
         self.assertEqual(code, 1)
         cleanup.assert_not_called()
         self.assertIn("config version mismatch", err)
 
     def test_missing_backend_package_is_reported(self):
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = _config(tmp, type="wcpan.drive.server.nonexistent.create_backend")
+            # when
             code, _, err = self.run_main(["--config", path, "serve"])
+        # then
         self.assertEqual(code, 1)
         self.assertIn("is its package installed", err)
 
     def test_backend_command_gets_the_rest_of_the_arguments(self):
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = _config(tmp)
             captured: list[list[str]] = []
@@ -78,13 +85,16 @@ class TestMain(unittest.TestCase):
                 await real(self, argv)
 
             with patch.object(_fake_backend.FakeBackend, "command", record):
+                # when
                 code, _, _ = self.run_main(
                     ["--config", path, "backend", "one", "poke", "--flag", "x"]
                 )
+        # then
         self.assertIsNone(code)
         self.assertEqual(captured, [["poke", "--flag", "x"]])
 
     def test_backend_help_is_left_to_the_backend(self):
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = _config(tmp)
             captured: list[list[str]] = []
@@ -93,42 +103,59 @@ class TestMain(unittest.TestCase):
                 captured.append(list(argv))
 
             with patch.object(_fake_backend.FakeBackend, "command", record):
+                # when
                 self.run_main(["--config", path, "backend", "one", "--help"])
+        # then
         self.assertEqual(captured, [["--help"]])
 
     def test_unknown_instance_is_rejected(self):
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = _config(tmp)
+            # when
             code, _, err = self.run_main(["--config", path, "backend", "two", "x"])
+        # then
         self.assertEqual(code, 2)
         self.assertIn("invalid choice", err)
 
     def test_backend_help_lists_configured_instances(self):
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = _config(tmp)
+            # when
             code, out, _ = self.run_main(["--config", path, "backend", "--help"])
+        # then
         self.assertEqual(code, 0)
         self.assertIn(f"one ({_FACTORY})", out)
 
     def test_invalid_settings_name_the_instance(self):
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = _config(tmp, invalid=True)
+            # when
             code, _, err = self.run_main(["--config", path, "backend", "one", "x"])
+        # then
         self.assertEqual(code, 1)
         self.assertIn("backends.one: invalid setting", err)
 
     def test_help_works_without_config(self):
+        # when
         code, _, _ = self.run_main(["--config", "/nonexistent.yaml", "--help"])
+        # then
         self.assertEqual(code, 0)
 
     def test_settings_are_checked_against_the_factory(self):
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = _config(
                 tmp, type="tests._fake_backend.create_typed_backend", depth="2"
             )
+            # when
             code, _, err = self.run_main(["--config", path, "backend", "one", "x"])
+        # then
         self.assertEqual(code, 1)
         self.assertIn("backends.one: missing settings: root", err)
+        # given
         with tempfile.TemporaryDirectory() as tmp:
             path = _config(
                 tmp,
@@ -136,7 +163,9 @@ class TestMain(unittest.TestCase):
                 root="/srv",
                 depth="2",
             )
+            # when
             code, _, err = self.run_main(["--config", path, "backend", "one", "x"])
+        # then
         self.assertEqual(code, 1)
         self.assertIn("backends.one: depth must be int", err)
 
@@ -154,7 +183,9 @@ class TestInit(unittest.TestCase):
         return _run_main(argv)
 
     def test_lists_installed_plugins(self):
+        # when
         code, out, _ = self.run_main(["init", "--list"])
+        # then
         self.assertIsNone(code)
         self.assertEqual(
             out.splitlines(),
@@ -165,30 +196,39 @@ class TestInit(unittest.TestCase):
         )
 
     def test_scaffold_loads_once_required_values_are_filled(self):
+        # when
         # A config that does not exist or is broken is never read.
         code, out, _ = self.run_main(
             ["--config", "/nonexistent.yaml", "init", "-p", "typed", "-p", "open"]
         )
+        # then
         self.assertIsNone(code)
         self.assertIn("    root:  # required\n", out)
         self.assertIn("    # depth: 1\n", out)
         raw = yaml.safe_load(out)
         self.assertIsNone(raw["backends"]["typed"]["root"])
+        # given
         raw["server"]["database_url"] = "/tmp/mirror.db"
         raw["backends"]["typed"]["root"] = "/srv"
         for mount in raw["mounts"].values():
             mount["source"] = "/srv"
+        # when
         config = parse_config(raw)
+        # then
         self.assertEqual(set(config.backends), {"typed", "open"})
         self.assertEqual(config.backends["typed"].settings, {"root": "/srv"})
         self.assertEqual(config.mounts["open"].backend, "open")
 
     def test_unknown_plugin_is_reported(self):
+        # when
         code, _, err = self.run_main(["init", "-p", "nothing"])
+        # then
         self.assertEqual(code, 1)
         self.assertIn("is its package installed", err)
 
     def test_duplicate_plugin_is_rejected(self):
+        # when
         code, _, err = self.run_main(["init", "-p", "typed", "-p", "typed"])
+        # then
         self.assertEqual(code, 1)
         self.assertIn("given twice", err)

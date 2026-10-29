@@ -120,29 +120,38 @@ class TestCreateDirectory409(DecoyTestCase):
         }
 
     async def test_exist_ok_returns_node(self) -> None:
+        # given
         await self._stub_post(self._node_body())
 
+        # when
         node = await self.svc.create_directory(
             "d", _parent_node(), exist_ok=True, private=None
         )
+        # then
         self.assertEqual(node.id, "existing-dir")
 
     async def test_exist_ok_false_raises_node_exists(self) -> None:
+        # given
         await self._stub_post(self._node_body())
 
+        # when / then
         with self.assertRaises(NodeExistsError) as ctx:
             await self.svc.create_directory(
                 "d", _parent_node(), exist_ok=False, private=None
             )
+        # then
         self.assertEqual(ctx.exception.node.id, "existing-dir")
 
     async def test_missing_node_body_raises_server_error(self) -> None:
+        # given
         await self._stub_post({})
 
+        # when / then
         with self.assertRaises(SynologyServerError) as ctx:
             await self.svc.create_directory(
                 "d", _parent_node(), exist_ok=True, private=None
             )
+        # then
         self.assertEqual(ctx.exception.status, 409)
 
 
@@ -185,6 +194,7 @@ class TestGetChangesReplay(DecoyTestCase):
         return {"removed": True, "node_id": node_id}
 
     async def test_replays_duplicate_same_node_across_pages(self) -> None:
+        # given
         pages = {
             "0": {
                 "cursor": 2,
@@ -198,10 +208,12 @@ class TestGetChangesReplay(DecoyTestCase):
             },
         }
         svc = await self._create_backend(pages)
+        # when
         actions_by_page = []
         async for actions, cursor in svc.get_changes("0"):
             actions_by_page.append((actions, cursor))
 
+        # then
         self.assertEqual([c for _, c in actions_by_page], ["2", "3"])
         self.assertEqual(len(actions_by_page[0][0]), 2)
         self.assertEqual(actions_by_page[0][0][0][1].id, "n1")
@@ -209,6 +221,7 @@ class TestGetChangesReplay(DecoyTestCase):
         self.assertEqual(actions_by_page[1][0], [(True, "n1")])
 
     async def test_parent_child_delete_order_does_not_break_iteration(self) -> None:
+        # given
         pages = {
             "0": {
                 "cursor": 3,
@@ -222,10 +235,12 @@ class TestGetChangesReplay(DecoyTestCase):
         }
         svc = await self._create_backend(pages)
 
+        # when
         seen = []
         async for actions, cursor in svc.get_changes("0"):
             seen.append((actions, cursor))
 
+        # then
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][1], "3")
         self.assertEqual(seen[0][0][0], (True, "parent"))

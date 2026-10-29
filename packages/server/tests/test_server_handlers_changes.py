@@ -113,10 +113,13 @@ def _make_app(mirror: _FakeMirror) -> web.Application:
 
 class TestGetCursor(IsolatedAsyncioTestCase):
     async def test_returns_cursor(self):
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/cursor")
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
         self.assertEqual(body["cursor"], 42)
@@ -129,6 +132,7 @@ class TestGetCursor(IsolatedAsyncioTestCase):
 
 class TestGetRoot(IsolatedAsyncioTestCase):
     async def test_returns_root(self):
+        # given
         mirror = _FakeMirror()
         root = NodeRecord(
             id=SERVER_ROOT_ID,
@@ -151,16 +155,21 @@ class TestGetRoot(IsolatedAsyncioTestCase):
         mirror._nodes[SERVER_ROOT_ID] = root
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/root")
+            # then
             self.assertEqual(resp.status, 200)
             record = node_record_from_dict(await resp.json())
         self.assertEqual(record.id, SERVER_ROOT_ID)
 
     async def test_not_found(self):
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/root")
+            # then
             self.assertEqual(resp.status, 404)
 
 
@@ -171,12 +180,15 @@ class TestGetRoot(IsolatedAsyncioTestCase):
 
 class TestGetChanges(IsolatedAsyncioTestCase):
     async def test_returns_changes(self):
+        # given
         mirror = _FakeMirror()
         node = _make_node("n1")
         mirror._changes = [("n1", False, node)]
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/changes", params={"cursor": "0"})
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
         self.assertEqual(body["cursor"], 42)
@@ -186,11 +198,14 @@ class TestGetChanges(IsolatedAsyncioTestCase):
         self.assertIn("node", body["changes"][0])
 
     async def test_returns_removals(self):
+        # given
         mirror = _FakeMirror()
         mirror._changes = [("del1", True, None)]
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/changes", params={"cursor": "0"})
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
         self.assertEqual(len(body["changes"]), 1)
@@ -198,38 +213,50 @@ class TestGetChanges(IsolatedAsyncioTestCase):
         self.assertEqual(body["changes"][0]["node_id"], "del1")
 
     async def test_invalid_cursor_returns_400(self):
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/changes", params={"cursor": "abc"})
+            # then
             self.assertEqual(resp.status, 400)
 
     async def test_invalid_max_size_returns_400(self):
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get(
                 "/api/v1/changes", params={"cursor": "0", "max_size": "not-a-number"}
             )
+            # then
             self.assertEqual(resp.status, 400)
 
     async def test_default_params(self):
+        # given
         mirror = _FakeMirror()
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get("/api/v1/changes")
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
         self.assertEqual(body["changes"], [])
 
     async def test_max_size_caps_at_1000(self):
+        # given
         mirror = _FakeMirror()
         mirror._changes = [("n1", False, _make_node())] * 5
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
+            # when
             resp = await client.get(
                 "/api/v1/changes", params={"cursor": "0", "max_size": "9999"}
             )
+            # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
         # max_size is capped at 1000 internally, and we only have 5 items

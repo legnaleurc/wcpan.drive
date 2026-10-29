@@ -22,13 +22,17 @@ class GetMediaInfoTestCase(TestCase):
             return get_media_info(_PATH)
 
     def testImage(self) -> None:
+        # when / then
         self.assertIs(self._get("image/png"), _IMAGE)
 
     def testVideo(self) -> None:
+        # when / then
         self.assertIs(self._get("video/mp4"), _VIDEO)
 
     def testOther(self) -> None:
+        # when / then
         self.assertIsNone(self._get("text/plain"))
 
     def testUnknown(self) -> None:
+        # when / then
         self.assertIsNone(self._get(""))

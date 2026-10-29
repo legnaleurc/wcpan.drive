@@ -63,89 +63,124 @@ def make_node(
 
 class TestUtilities(TestCase):
     def testIsValidName(self) -> None:
+        # when
         ok = is_valid_name("name")
+        # then
         self.assertTrue(ok)
 
+        # when
         ok = is_valid_name("name/name")
+        # then
         self.assertFalse(ok)
 
+        # when
         ok = is_valid_name("./name")
+        # then
         self.assertFalse(ok)
 
+        # when
         ok = is_valid_name("name\\/name")
+        # then
         self.assertFalse(ok)
 
+        # when
         ok = is_valid_name("name\\name")
+        # then
         self.assertFalse(ok)
 
 
 class TestNormalizePath(TestCase):
     def testDot(self) -> None:
+        # when
         result = normalize_path(PurePath("/a/./b"))
+        # then
         self.assertEqual(result, PurePath("/a/b"))
 
     def testDotDot(self) -> None:
+        # when
         result = normalize_path(PurePath("/a/b/../c"))
+        # then
         self.assertEqual(result, PurePath("/a/c"))
 
     def testMixed(self) -> None:
+        # when
         result = normalize_path(PurePath("/a/b/../../c/./d"))
+        # then
         self.assertEqual(result, PurePath("/c/d"))
 
     def testRelativeRaises(self) -> None:
+        # when / then
         with self.assertRaises(ValueError):
             normalize_path(PurePath("relative"))
 
     def testRoot(self) -> None:
+        # when
         result = normalize_path(PurePath("/"))
+        # then
         self.assertEqual(result, PurePath("/"))
 
 
 class TestElseNone(IsolatedAsyncioTestCase):
     async def testSuccess(self) -> None:
+        # given
         mock = AsyncMock(return_value=42)
+        # when
         result = await else_none(mock())
+        # then
         self.assertEqual(result, 42)
 
     async def testNodeNotFound(self) -> None:
+        # given
         mock = AsyncMock(side_effect=NodeNotFoundError("missing"))
+        # when
         result = await else_none(mock())
+        # then
         self.assertIsNone(result)
 
 
 class TestTypeGuards(TestCase):
     def testIsRemove(self) -> None:
+        # given
         change: RemoveAction = (True, "some-id")
+        # when / then
         self.assertTrue(is_remove(change))
         self.assertFalse(is_update(change))
 
     def testIsUpdate(self) -> None:
+        # given
         node = make_node(node_id="abc")
         change: UpdateAction = (False, node)
+        # when / then
         self.assertTrue(is_update(change))
         self.assertFalse(is_remove(change))
 
 
 class TestDispatchChange(TestCase):
     def testDispatchRemove(self) -> None:
+        # given
         on_remove = MagicMock(return_value="removed")
         on_update = MagicMock(return_value="updated")
         change: RemoveAction = (True, "node-id")
 
+        # when
         result = dispatch_change(change, on_remove=on_remove, on_update=on_update)
 
+        # then
         self.assertEqual(result, "removed")
         on_remove.assert_called_once_with("node-id")
         on_update.assert_not_called()
 
     def testDispatchUpdate(self) -> None:
+        # given
         node = make_node(node_id="abc")
         on_remove = MagicMock(return_value="removed")
         on_update = MagicMock(return_value="updated")
         change: UpdateAction = (False, node)
 
+        # when
         result = dispatch_change(change, on_remove=on_remove, on_update=on_update)
 
+        # then
         self.assertEqual(result, "updated")
         on_update.assert_called_once_with(node)
         on_remove.assert_not_called()
@@ -164,6 +199,7 @@ class TestMoveNode(IsolatedAsyncioTestCase):
         return drive
 
     async def testRenameOnly(self) -> None:
+        # given
         src_node = make_node(node_id="src", parent_id="par", name="old.txt")
         renamed = make_node(node_id="src", parent_id="par", name="new.txt")
         parent_node = make_node(node_id="par", name="a", is_directory=True)
@@ -178,11 +214,14 @@ class TestMoveNode(IsolatedAsyncioTestCase):
             await drive.move(src_node, new_parent=parent_node, new_name="new.txt")
         ).then_return(renamed)
 
+        # when
         result = await move_node(drive, PurePath("/a/old.txt"), PurePath("new.txt"))
 
+        # then
         self.assertEqual(result, renamed)
 
     async def testNoop(self) -> None:
+        # given
         src_node = make_node(node_id="src", parent_id="par", name="file.txt")
         parent_node = make_node(node_id="par", name="a", is_directory=True)
         drive = await self._make_drive(
@@ -195,11 +234,14 @@ class TestMoveNode(IsolatedAsyncioTestCase):
             await drive.move(src_node, new_parent=parent_node, new_name=None)
         ).then_return(src_node)
 
+        # when
         result = await move_node(drive, PurePath("/a/file.txt"), PurePath("."))
 
+        # then
         self.assertEqual(result, src_node)
 
     async def testMoveToParent(self) -> None:
+        # given
         src_node = make_node(node_id="src", parent_id="b", name="file.txt")
         grandparent = make_node(node_id="a", name="a", is_directory=True)
         moved = make_node(node_id="src", parent_id="a", name="file.txt")
@@ -213,11 +255,14 @@ class TestMoveNode(IsolatedAsyncioTestCase):
             await drive.move(src_node, new_parent=grandparent, new_name=None)
         ).then_return(moved)
 
+        # when
         result = await move_node(drive, PurePath("/a/b/file.txt"), PurePath(".."))
 
+        # then
         self.assertEqual(result, moved)
 
     async def testMoveAbsoluteIntoDirectory(self) -> None:
+        # given
         src_node = make_node(node_id="src", parent_id="a", name="file.txt")
         dst_dir = make_node(node_id="dst", name="dir", is_directory=True)
         moved = make_node(node_id="src", parent_id="dst", name="file.txt")
@@ -231,11 +276,14 @@ class TestMoveNode(IsolatedAsyncioTestCase):
             await drive.move(src_node, new_parent=dst_dir, new_name=None)
         ).then_return(moved)
 
+        # when
         result = await move_node(drive, PurePath("/a/file.txt"), PurePath("/b/dir"))
 
+        # then
         self.assertEqual(result, moved)
 
     async def testMoveAbsoluteNewName(self) -> None:
+        # given
         src_node = make_node(node_id="src", parent_id="a", name="file.txt")
         new_parent = make_node(node_id="b", name="b", is_directory=True)
         moved = make_node(node_id="src", parent_id="b", name="renamed.txt")
@@ -250,13 +298,16 @@ class TestMoveNode(IsolatedAsyncioTestCase):
             await drive.move(src_node, new_parent=new_parent, new_name="renamed.txt")
         ).then_return(moved)
 
+        # when
         result = await move_node(
             drive, PurePath("/a/file.txt"), PurePath("/b/renamed.txt")
         )
 
+        # then
         self.assertEqual(result, moved)
 
     async def testMoveAbsoluteParentMissing(self) -> None:
+        # given
         src_node = make_node(node_id="src", parent_id="a", name="file.txt")
         drive = await self._make_drive(
             {
@@ -266,12 +317,14 @@ class TestMoveNode(IsolatedAsyncioTestCase):
             }
         )
 
+        # when / then
         with self.assertRaises(ValueError):
             await move_node(
                 drive, PurePath("/a/file.txt"), PurePath("/missing/new.txt")
             )
 
     async def testMoveAbsoluteDestIsFile(self) -> None:
+        # given
         src_node = make_node(node_id="src", parent_id="a", name="file.txt")
         dst_file = make_node(
             node_id="dst", parent_id="b", name="existing.txt", is_directory=False
@@ -283,6 +336,7 @@ class TestMoveNode(IsolatedAsyncioTestCase):
             }
         )
 
+        # when / then
         with self.assertRaises(NodeExistsError):
             await move_node(drive, PurePath("/a/file.txt"), PurePath("/b/existing.txt"))
 
@@ -293,6 +347,7 @@ class TestFindDuplicateNodes(IsolatedAsyncioTestCase):
         self.addCleanup(self.decoy.reset)
 
     async def testNoDuplicates(self) -> None:
+        # given
         drive = self.decoy.mock(cls=Drive)
         root = make_node(node_id="root", is_directory=True)
         file1 = make_node(node_id="f1", parent_id="root", name="a.txt")
@@ -301,11 +356,14 @@ class TestFindDuplicateNodes(IsolatedAsyncioTestCase):
             _async_walk_results([(root, [], [file1, file2])])
         )
 
+        # when
         result = await find_duplicate_nodes(drive, root)
 
+        # then
         self.assertEqual(result, [])
 
     async def testWithDuplicates(self) -> None:
+        # given
         drive = self.decoy.mock(cls=Drive)
         root = make_node(node_id="root", is_directory=True)
         file1 = make_node(node_id="f1", parent_id="root", name="dup.txt")
@@ -314,13 +372,16 @@ class TestFindDuplicateNodes(IsolatedAsyncioTestCase):
             _async_walk_results([(root, [], [file1, file2])])
         )
 
+        # when
         result = await find_duplicate_nodes(drive, root)
 
+        # then
         self.assertEqual(len(result), 1)
         self.assertIn(file1, result[0])
         self.assertIn(file2, result[0])
 
     async def testDefaultRoot(self) -> None:
+        # given
         drive = self.decoy.mock(cls=Drive)
         root = make_node(node_id="root", is_directory=True)
         self.decoy.when(await drive.get_root()).then_return(root)
@@ -328,8 +389,10 @@ class TestFindDuplicateNodes(IsolatedAsyncioTestCase):
             _async_walk_results([(root, [], [])])
         )
 
+        # when
         result = await find_duplicate_nodes(drive)
 
+        # then
         self.assertEqual(result, [])
 
 
@@ -356,22 +419,29 @@ def _path_map(
 
 class NodeHashInvariantTestCase(TestCase):
     def testFileWithBothFields(self) -> None:
+        # when
         node = replace(make_node(node_id="f"), hash="abc", hash_algorithm="md5")
+        # then
         self.assertEqual(node.hash_algorithm, "md5")
 
     def testFileWithoutChecksum(self) -> None:
+        # when
         node = make_node(node_id="f")
+        # then
         self.assertEqual(node.hash, "")
 
     def testFileWithHashOnly(self) -> None:
+        # when / then
         with self.assertRaises(ValueError):
             replace(make_node(node_id="f"), hash="abc")
 
     def testFileWithAlgorithmOnly(self) -> None:
+        # when / then
         with self.assertRaises(ValueError):
             replace(make_node(node_id="f"), hash_algorithm="md5")
 
     def testDirectoryWithHash(self) -> None:
+        # when / then
         with self.assertRaises(ValueError):
             replace(
                 make_node(node_id="d", is_directory=True),
@@ -405,6 +475,7 @@ async def _create_md5_hasher() -> Hasher:
 
 class TestGetFileHash(IsolatedAsyncioTestCase):
     async def testUsesNodeHasher(self) -> None:
+        # given
         data = b"x" * (300 * 1024)
         node = make_node(node_id="f1", name="a.bin")
         decoy = Decoy()
@@ -415,6 +486,8 @@ class TestGetFileHash(IsolatedAsyncioTestCase):
         with TemporaryDirectory() as tmp, ThreadPoolExecutor() as pool:
             path = Path(tmp) / "a.bin"
             path.write_bytes(data)
+            # when
             rv = await get_file_hash(path, pool=pool, drive=drive, node=node)
 
+        # then
         self.assertEqual(rv, md5(data).hexdigest())

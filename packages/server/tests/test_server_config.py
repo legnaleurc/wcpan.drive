@@ -33,7 +33,9 @@ def _v3(**overrides):
 
 class TestVersion3(unittest.TestCase):
     def test_parses_backends_and_mounts(self):
+        # when
         config = parse_config(_v3())
+        # then
         self.assertEqual(config.database_url, "/tmp/mirror.db")
         self.assertEqual((config.host, config.port), ("127.0.0.1", 8080))
         self.assertEqual(
@@ -46,6 +48,7 @@ class TestVersion3(unittest.TestCase):
         self.assertEqual(config.mounts_of("nas"), {"photos": "/volume1/photos"})
 
     def test_server_settings(self):
+        # when
         config = parse_config(
             _v3(
                 server={
@@ -57,32 +60,40 @@ class TestVersion3(unittest.TestCase):
                 }
             )
         )
+        # then
         self.assertEqual((config.host, config.port), ("0.0.0.0", 9000))
         self.assertEqual(config.log_path, "/tmp/s.log")
         self.assertEqual(config.upload_tmp_dir, "/tmp/up")
 
     def test_mount_must_name_a_configured_backend(self):
+        # given
         raw = _v3()
         raw["mounts"]["x"] = {"backend": "missing", "source": "/x"}
+        # when / then
         with self.assertRaisesRegex(ValueError, "unknown backend"):
             parse_config(raw)
 
     def test_backend_needs_a_type(self):
+        # given
         raw = _v3()
         del raw["backends"]["disk"]["type"]
+        # when / then
         with self.assertRaisesRegex(ValueError, "backends.disk.type"):
             parse_config(raw)
 
     def test_mount_names_are_single_components(self):
+        # given
         for name in ("", ".", "..", "a/b"):
             raw = _v3()
             raw["mounts"][name] = {"backend": "disk", "source": "/x"}
+            # when / then
             with self.subTest(name=name), self.assertRaises(ValueError):
                 parse_config(raw)
 
 
 class TestLegacyVersion2(unittest.TestCase):
     def test_reads_as_one_synology_backend(self):
+        # when
         config = parse_config(
             {
                 "version": 2,
@@ -96,6 +107,7 @@ class TestLegacyVersion2(unittest.TestCase):
                 "local_paths": {"/volume1": "/mnt/nas"},
             }
         )
+        # then
         backend = config.backends[LEGACY_BACKEND_NAME]
         self.assertEqual(backend.type, "wcpan.drive.server.synology.create_backend")
         self.assertEqual(backend.settings["url"], "https://nas")
@@ -112,15 +124,19 @@ class TestLegacyVersion2(unittest.TestCase):
 
 class TestVersionCheck(unittest.TestCase):
     def test_missing_version_is_rejected(self):
+        # given
         raw = _v3()
         del raw["version"]
+        # when / then
         with self.assertRaises(ConfigVersionError):
             parse_config(raw)
 
     def test_unknown_version_is_rejected(self):
+        # when / then
         with self.assertRaises(ConfigVersionError):
             parse_config(_v3(version=99))
 
     def test_non_integer_version_is_rejected(self):
+        # when / then
         with self.assertRaises(ConfigVersionError):
             parse_config(_v3(version="3"))

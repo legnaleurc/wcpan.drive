@@ -57,16 +57,21 @@ class TestCreateApp(IsolatedAsyncioTestCase):
                 os.unlink(self.db_path + suffix)
 
     async def test_backend_is_started_and_serves_after_discovery(self) -> None:
+        # when
         async with asyncio.timeout(5):
             await self.backend.running.wait()
+        # then
         self.assertEqual(self.backend.context.mounts, {"docs": "/docs"})
         self.assertFalse(self.backend.context.offline)
 
+        # when / then
         resp = await self.client.get("/readyz")
         self.assertEqual(resp.status, 503)
 
+        # given
         await self.ready()
 
+        # when / then
         resp = await self.client.post("/api/v1/backends/fake/hook")
         self.assertEqual(await resp.text(), "fake")
         resp = await self.client.post("/api/v1/backends/other/hook")
@@ -74,6 +79,7 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         resp = await self.client.post("/api/v1/backends/missing/hook")
         self.assertEqual(resp.status, 404)
 
+        # then
         con = sqlite3.connect(self.db_path)
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master")}
         con.close()
@@ -87,21 +93,28 @@ class TestCreateApp(IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.01)
 
     async def test_ready_waits_for_every_backend(self) -> None:
+        # when
         self.backend.discovered.set()
         await asyncio.sleep(0.05)
+        # then
         self.assertEqual((await self.client.get("/readyz")).status, 503)
+        # when
         self.other.discovered.set()
+        # then
         async with asyncio.timeout(5):
             while (await self.client.get("/readyz")).status != 200:
                 await asyncio.sleep(0.01)
 
     async def test_core_creates_root_and_mount_nodes(self) -> None:
+        # when
         await self.ready()
+        # then
         mirror = self.app[MIRROR_KEY]
         for node_id in ("_", "_docs", "_pics"):
             self.assertIsNotNone(await mirror.get_node_by_id(NodeId(node_id)))
 
     async def test_operations_go_to_the_mount_backend(self) -> None:
+        # given
         record = MagicMock()
         record.id = "made"
         record.name = "x"
@@ -110,33 +123,41 @@ class TestCreateApp(IsolatedAsyncioTestCase):
                 side_effect=OperationInvalidError(b is self.other and "other" or "fake")
             )
         await self.ready()
+        # when
         resp = await self.client.post(
             "/api/v1/nodes", json={"name": "x", "parent_id": "_pics"}
         )
+        # then
         self.assertEqual(resp.status, 400)
         self.assertEqual(resp.reason, "other")
         self.backend.operations.create_folder.assert_not_awaited()
 
     async def test_unsupported_operation_is_forbidden(self) -> None:
+        # given
         self.backend.operations.create_folder = AsyncMock(
             side_effect=OperationNotSupportedError("read-only")
         )
         await self.ready()
 
+        # when
         resp = await self.client.post(
             "/api/v1/nodes", json={"name": "x", "parent_id": "_docs"}
         )
 
+        # then
         self.assertEqual(resp.status, 403)
 
     async def test_invalid_operation_is_bad_request(self) -> None:
+        # given
         self.backend.operations.create_folder = AsyncMock(
             side_effect=OperationInvalidError("bad name")
         )
         await self.ready()
 
+        # when
         resp = await self.client.post(
             "/api/v1/nodes", json={"name": "x", "parent_id": "_docs"}
         )
 
+        # then
         self.assertEqual(resp.status, 400)

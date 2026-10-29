@@ -110,8 +110,10 @@ class TestBackendViews(IsolatedAsyncioTestCase):
                 Path(self.db_path + suffix).unlink()
 
     async def test_locators_bind_with_their_backend_schema(self) -> None:
+        # given
         view_a = self.node_sync.for_backend("a")
         view_b = self.node_sync.for_backend("b")
+        # when
         async with view_a.observe() as read:
             await view_a.upsert(
                 NodeObservation(
@@ -128,10 +130,12 @@ class TestBackendViews(IsolatedAsyncioTestCase):
             )
         await self.node_sync.wait_enrichment_drained()
 
+        # then
         self.assertEqual(self.a.bound, [("fa", "la")])
         self.assertEqual(self.b.bound, [("fb", "lb")])
 
     async def test_each_backend_retries_only_its_pending_media(self) -> None:
+        # given
         await self.mirror.mark_enrichment_pending(NodeId("fa"), "a")
         await self.mirror.mark_enrichment_pending(NodeId("fb"), "b")
         located: list[str] = []
@@ -139,21 +143,28 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         async def locate(node_id: NodeId) -> None:
             located.append(node_id)
 
+        # when
         await self.node_sync.for_backend("a").retry_pending_enrichment(locate=locate)
         await self.node_sync.wait_enrichment_drained()
 
+        # then
         self.assertEqual(located, ["fa"])
         self.assertEqual(await self.mirror.get_pending_enrichment("b"), ["fb"])
 
     async def test_new_mounts_are_published_once(self) -> None:
+        # given
         cursor = await self.mirror.get_cursor()
+        # when
         await ensure_mount_nodes(
             ["one", "two"], mirror=self.mirror, node_sync=self.node_sync
         )
+        # then
         self.assertEqual(await self.mirror.get_cursor(), cursor)
 
+        # when
         await ensure_mount_nodes(
             ["one", "two", "three"], mirror=self.mirror, node_sync=self.node_sync
         )
+        # then
         changes, _, _ = await self.mirror.get_changes_since(cursor, 100)
         self.assertEqual([c[0] for c in changes], [mount_id("three")])

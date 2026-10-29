@@ -44,66 +44,95 @@ class TestFollowChanges(_WatchTestCase):
         self.watcher.take()  # changes made before the initial scan
 
     async def test_new_file_appears(self) -> None:
+        # given
         self.write("a/new.txt", b"new")
+        # when
         await self.follow()
+        # then
         self.assertIsNotNone(await self.node("a/new.txt"))
 
     async def test_new_folder_is_read_recursively(self) -> None:
+        # given
         self.write("a/fresh/one/two.txt", b"2")
+        # when
         await self.follow()
+        # then
         self.assertIsNotNone(await self.node("a/fresh/one/two.txt"))
 
     async def test_new_folder_is_watched(self) -> None:
+        # given
         (self.source / "a/fresh").mkdir()
         await self.follow()
+        # when
         self.write("a/fresh/later.txt", b"later")
         await self.follow()
+        # then
         self.assertIsNotNone(await self.node("a/fresh/later.txt"))
 
     async def test_scoped_update_keeps_unlisted_subtrees(self) -> None:
+        # given
         deep = await self.node_id("a/inner/deep.txt")
+        # when
         self.write("top.txt", b"top")
         await self.follow()
+        # then
         self.assertIsNotNone(await self.node("top.txt"))
         self.assertIsNotNone(await self.mirror.get_node_by_id(deep))
 
     async def test_rename_keeps_node_id(self) -> None:
+        # given
         before = await self.node_id("a/inner/deep.txt")
+        # when
         os.rename(self.source / "a/inner/deep.txt", self.source / "a/inner/x.txt")
         await self.follow()
+        # then
         self.assertEqual(await self.node_id("a/inner/x.txt"), before)
         self.assertIsNone(await self.node("a/inner/deep.txt"))
 
     async def test_move_between_folders_keeps_node_id(self) -> None:
+        # given
         before = await self.node_id("a/inner/deep.txt")
+        # when
         os.rename(self.source / "a/inner/deep.txt", self.source / "b/deep.txt")
         await self.follow()
+        # then
         self.assertEqual(await self.node_id("b/deep.txt"), before)
         self.assertIsNone(await self.node("a/inner/deep.txt"))
 
     async def test_moved_folder_stays_watched(self) -> None:
+        # given
         inner = await self.node_id("a/inner")
+        # when
         os.rename(self.source / "a/inner", self.source / "b/inner")
         await self.follow()
+        # then
         self.assertEqual(await self.node_id("b/inner"), inner)
 
+        # when
         self.write("b/inner/after.txt", b"after")
         await self.follow()
+        # then
         self.assertIsNotNone(await self.node("b/inner/after.txt"))
 
     async def test_deletions_are_removed(self) -> None:
+        # given
         folder = await self.node_id("a/inner")
+        # when
         shutil.rmtree(self.source / "a/inner")
         await self.follow()
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(folder))
 
     async def test_replaced_folder_gets_new_node(self) -> None:
+        # given
         old_folder = await self.node_id("a/inner")
         old_file = await self.node_id("a/inner/deep.txt")
+        # when
         shutil.rmtree(self.source / "a/inner")
         self.write("a/inner/other.txt", b"other")
         await self.follow()
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(old_folder))
         self.assertIsNone(await self.mirror.get_node_by_id(old_file))
         self.assertNotEqual(await self.node_id("a/inner"), old_folder)
@@ -111,9 +140,11 @@ class TestFollowChanges(_WatchTestCase):
         self.assertIsNone(await self.node("a/inner/deep.txt"))
 
     async def test_content_change_is_picked_up(self) -> None:
+        # when
         with open(self.source / "a/inner/deep.txt", "wb") as f:
             f.write(b"rewritten")
         await self.follow()
+        # then
         record = await self.node("a/inner/deep.txt")
         assert record is not None
         self.assertEqual(record.hash, hashlib.md5(b"rewritten").hexdigest())
@@ -139,16 +170,20 @@ class TestRuntime(_WatchTestCase):
                 await asyncio.sleep(0.02)
 
     async def test_changes_after_ready_are_applied(self) -> None:
+        # given
         runtime = self.runtime()
         await runtime.run_until_ready()
         task = asyncio.create_task(runtime.run())
         try:
+            # when
             self.write("later/file.txt", b"x")
+            # then
             await self.until("later/file.txt")
         finally:
             task.cancel()
 
     async def test_changes_during_startup_scan_are_applied(self) -> None:
+        # given
         real_list = scan_module.list_directory
         made = False
 
@@ -160,17 +195,22 @@ class TestRuntime(_WatchTestCase):
                 (self.source / "racy.txt").write_bytes(b"x")
             return entries
 
+        # when
         runtime = self.runtime()
         with patch.object(scan_module, "list_directory", list_then_change):
             await runtime.run_until_ready()
+        # then
         self.assertIsNone(await self.node("racy.txt"))
+        # when
         task = asyncio.create_task(runtime.run())
         try:
+            # then
             await self.until("racy.txt")
         finally:
             task.cancel()
 
     async def test_lost_events_trigger_full_rescan(self) -> None:
+        # given
         assert self.watcher is not None
         runtime = self.runtime()
         await runtime.run_until_ready()
@@ -185,7 +225,9 @@ class TestRuntime(_WatchTestCase):
         ):
             task = asyncio.create_task(runtime.run())
             try:
+                # when
                 self.watcher._on_readable()  # pyright: ignore[reportPrivateUsage]
+                # then
                 async with asyncio.timeout(5):
                     while not full_scan.await_count:
                         await asyncio.sleep(0.02)

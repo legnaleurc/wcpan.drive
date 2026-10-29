@@ -21,17 +21,21 @@ class TransactionTestCase(IsolatedAsyncioTestCase):
             _prepare(query)
 
     def testRead(self):
+        # when
         with read_only(self._dsn) as query:
             rv = _inner_select(query, "alice")
 
+        # then
         self.assertIsNotNone(rv)
         assert rv
         self.assertEqual(rv, 1)
 
     def testWrite(self):
+        # when
         with read_write(self._dsn) as query:
             _inner_insert(query, 2, "bob")
 
+        # then
         with read_only(self._dsn) as query:
             rv = _inner_select(query, "bob")
 
@@ -40,12 +44,15 @@ class TransactionTestCase(IsolatedAsyncioTestCase):
         self.assertEqual(rv, 2)
 
     async def testParallelRead(self):
+        # given
         event = self._manager.Event()
+        # when
         async with TaskGroup() as group:
             r1 = group.create_task(self._bg(_sync_select, "alice", event))
             r2 = group.create_task(self._bg(_sync_select, "alice", event))
             event.set()
 
+        # then
         rv = r1.result()
         assert rv is not None
         self.assertEqual(rv, 1)
@@ -55,7 +62,9 @@ class TransactionTestCase(IsolatedAsyncioTestCase):
 
     @skip("unstable")
     async def testParallelWrite(self):
+        # given
         event = self._manager.Event()
+        # when / then
         with self.assertRaises(Exception, msg="database is locked"):
             async with TaskGroup() as group:
                 group.create_task(self._bg(_sync_update, 1, "bob", event))
@@ -64,12 +73,15 @@ class TransactionTestCase(IsolatedAsyncioTestCase):
 
     @skip("unstable")
     async def testParallelReadWrite(self):
+        # given
         event = self._manager.Event()
+        # when
         async with TaskGroup() as group:
             group.create_task(self._bg(_sync_update, 1, "cat", event))
             r = group.create_task(self._bg(_sync_select, "alice", event))
             event.set()
 
+        # then
         rv = r.result()
         assert rv is not None
         self.assertEqual(rv, 1)

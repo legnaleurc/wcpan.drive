@@ -146,6 +146,7 @@ class TestDeferredScan(DecoyTestCase):
             raise
 
     async def test_cross_mount_reparent_no_remove_change_for_file_id(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -199,6 +200,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         await svc._scan_all_mounts({"a": 50, "b": 50})
                 finally:
                     await mq.join()
@@ -210,6 +212,7 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 row = await mirror.get_node_by_id("x1")
                 self.assertIsNotNone(row)
                 assert row is not None
@@ -222,6 +225,7 @@ class TestDeferredScan(DecoyTestCase):
             os.unlink(db_path)
 
     async def test_max_id_prune_preserves_db_subtree(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -284,6 +288,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         await svc._scan_all_mounts({"a": 100})
                 finally:
                     await mq.join()
@@ -295,6 +300,7 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
                 self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
@@ -302,6 +308,7 @@ class TestDeferredScan(DecoyTestCase):
 
     async def test_initial_scan_enters_folder_with_zero_max_id(self) -> None:
         """Full initial scan (last_max_id=0) must enter folders whose max_id is 0."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -360,6 +367,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         await svc._scan_all_mounts({"a": 0})
                 finally:
                     await mq.join()
@@ -371,6 +379,7 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
                 self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
@@ -378,6 +387,7 @@ class TestDeferredScan(DecoyTestCase):
 
     async def test_new_folder_with_stale_max_id_is_force_scanned(self) -> None:
         """A folder absent from DB must be entered even when max_id <= last_max_id."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -436,6 +446,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         await svc._scan_all_mounts({"a": 100})
                 finally:
                     await mq.join()
@@ -447,6 +458,7 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
                 self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
@@ -455,6 +467,7 @@ class TestDeferredScan(DecoyTestCase):
     async def test_db_folder_with_no_children_is_force_scanned(self) -> None:
         """A folder already in DB but with no DB children must be entered even
         when max_id <= last_max_id (its contents were never successfully scanned)."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -514,6 +527,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         await svc._scan_all_mounts({"a": 100})
                 finally:
                     await mq.join()
@@ -525,12 +539,14 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
                 self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
             os.unlink(db_path)
 
     async def test_list_failure_preserves_db_subtree(self) -> None:
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -596,6 +612,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         await svc._scan_all_mounts({"a": 50})
                 finally:
                     await mq.join()
@@ -607,6 +624,7 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
                 self.assertIsNotNone(await mirror.get_node_by_id("childC"))
         finally:
@@ -614,6 +632,7 @@ class TestDeferredScan(DecoyTestCase):
 
     async def test_max_id_prune_detects_deletion_via_count_mismatch(self) -> None:
         """max_id unchanged but a child deleted: count check triggers a full scan."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -704,6 +723,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         await svc._scan_all_mounts({"a": 100})
                 finally:
                     await mq.join()
@@ -715,6 +735,7 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 self.assertIsNotNone(await mirror.get_node_by_id("child1"))
                 self.assertIsNone(await mirror.get_node_by_id("child2"))
         finally:
@@ -722,6 +743,7 @@ class TestDeferredScan(DecoyTestCase):
 
     async def test_failed_mount_does_not_advance_its_max_id(self) -> None:
         """A mount whose top-level list fails returns its input last_max_id unchanged."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -776,6 +798,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         result = await svc._scan_all_mounts({"a": 100, "b": 100})
                 finally:
                     await mq.join()
@@ -787,6 +810,7 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 per_mount_highest, _ = result
                 self.assertEqual(per_mount_highest["a"], 100)
                 self.assertEqual(per_mount_highest["b"], 200)
@@ -795,6 +819,7 @@ class TestDeferredScan(DecoyTestCase):
 
     async def test_per_mount_pruning_thresholds_are_independent(self) -> None:
         """Each mount uses its own last_max_id threshold for BFS pruning."""
+        # given
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         try:
@@ -867,6 +892,7 @@ class TestDeferredScan(DecoyTestCase):
                             ),
                             node_sync=cs,
                         )
+                        # when
                         await svc._scan_all_mounts({"a": 100, "b": 50})
                 finally:
                     await mq.join()
@@ -878,6 +904,7 @@ class TestDeferredScan(DecoyTestCase):
                     with suppress(asyncio.CancelledError):
                         await drain
 
+                # then
                 self.assertNotIn("dirX_a", entered)
                 self.assertIn("dirX_b", entered)
         finally:

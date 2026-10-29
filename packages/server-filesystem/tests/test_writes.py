@@ -51,39 +51,49 @@ class _WriteTestCase(ScanTestCase):
 
 class TestCreateFolder(_WriteTestCase):
     async def test_creates_directory_and_node(self) -> None:
+        # when
         record = await self.operations.create_folder(await self.node_id("a"), "new")
 
+        # then
         self.assertTrue((self.source / "a/new").is_dir())
         self.assertEqual(await self.node_id("a/new"), record.id)
         await self.assert_rescan_is_quiet()
 
     async def test_existing_name_conflicts_with_its_node(self) -> None:
+        # when / then
         with self.assertRaises(OperationConflictError) as cm:
             await self.operations.create_folder(DOCS, "a")
+        # then
         assert cm.exception.record is not None
         self.assertEqual(cm.exception.record.id, await self.node_id("a"))
 
     async def test_invalid_names_are_rejected(self) -> None:
+        # given
         for name in ("", ".", "..", "x/y", f"{STAGING_PREFIX}x"):
+            # when / then
             with self.subTest(name=name), self.assertRaises(OperationInvalidError):
                 await self.operations.create_folder(DOCS, name)
 
     async def test_server_root_is_not_writable(self) -> None:
+        # when / then
         with self.assertRaises(OperationNotSupportedError):
             await self.operations.create_folder(SERVER_ROOT_ID, "x")
 
 
 class TestRenameAndMove(_WriteTestCase):
     async def test_rename_keeps_id_and_checksum_without_rehashing(self) -> None:
+        # given
         record = await self.node("a/f.txt")
         assert record is not None
 
+        # when
         with patch(
             "wcpan.drive.server.filesystem.scan.hash_file",
             side_effect=AssertionError("a rename does not change content"),
         ):
             updated = await self.operations.update(record, name="g.txt", parent_id=None)
 
+        # then
         self.assertEqual((updated.id, updated.name), (record.id, "g.txt"))
         self.assertEqual(updated.hash, record.hash)
         self.assertTrue((self.source / "a/g.txt").exists())
@@ -91,96 +101,120 @@ class TestRenameAndMove(_WriteTestCase):
         await self.assert_rescan_is_quiet()
 
     async def test_rename_onto_existing_name_conflicts(self) -> None:
+        # given
         self.write("a/taken.txt", b"other")
         await self.scan()
         record = await self.node("a/f.txt")
         assert record is not None
 
+        # when / then
         with self.assertRaises(OperationConflictError):
             await self.operations.update(record, name="taken.txt", parent_id=None)
 
+        # then
         self.assertEqual((self.source / "a/taken.txt").read_bytes(), b"other")
         self.assertEqual((self.source / "a/f.txt").read_bytes(), b"hello")
 
     async def test_move_folder_keeps_subtree(self) -> None:
+        # given
         folder = await self.node("a")
         assert folder is not None
         file_id = await self.node_id("a/f.txt")
 
+        # when
         await self.operations.update(
             folder, name=None, parent_id=await self.node_id("b")
         )
 
+        # then
         self.assertTrue((self.source / "b/a/f.txt").exists())
         self.assertEqual(await self.node_id("b/a/f.txt"), file_id)
         await self.assert_rescan_is_quiet()
 
     async def test_move_into_own_subtree_is_invalid(self) -> None:
+        # given
         (self.source / "a/inner").mkdir()
         await self.scan()
         folder = await self.node("a")
         assert folder is not None
 
+        # when / then
         with self.assertRaises(OperationInvalidError):
             await self.operations.update(
                 folder, name=None, parent_id=await self.node_id("a/inner")
             )
 
     async def test_stale_node_is_not_renamed(self) -> None:
+        # given
         record = await self.node("a/f.txt")
         assert record is not None
         os.unlink(self.source / "a/f.txt")
         self.write("a/f.txt", b"someone else's file")
 
+        # when / then
         with self.assertRaises(OperationUnavailableError):
             await self.operations.update(record, name="g.txt", parent_id=None)
 
+        # then
         self.assertTrue((self.source / "a/f.txt").exists())
 
 
 class TestDelete(_WriteTestCase):
     async def test_deletes_file_permanently(self) -> None:
+        # given
         record = await self.node("a/f.txt")
         assert record is not None
 
+        # when
         await self.operations.delete(record)
 
+        # then
         self.assertFalse((self.source / "a/f.txt").exists())
         self.assertIsNone(await self.mirror.get_node_by_id(record.id))
 
     async def test_deletes_folder_with_contents(self) -> None:
+        # given
         folder = await self.node("a")
         assert folder is not None
         file_id = await self.node_id("a/f.txt")
 
+        # when
         await self.operations.delete(folder)
 
+        # then
         self.assertFalse((self.source / "a").exists())
         self.assertIsNone(await self.mirror.get_node_by_id(file_id))
 
     async def test_replaced_entry_is_not_deleted(self) -> None:
+        # given
         record = await self.node("a/f.txt")
         assert record is not None
         os.unlink(self.source / "a/f.txt")
         self.write("a/f.txt", b"someone else's file")
 
+        # when / then
         with self.assertRaises(OperationUnavailableError):
             await self.operations.delete(record)
 
+        # then
         self.assertEqual((self.source / "a/f.txt").read_bytes(), b"someone else's file")
 
     async def test_entry_already_gone_is_removed_from_mirror(self) -> None:
+        # given
         record = await self.node("a/f.txt")
         assert record is not None
         os.unlink(self.source / "a/f.txt")
 
+        # when
         await self.operations.delete(record)
 
+        # then
         self.assertIsNone(await self.mirror.get_node_by_id(record.id))
 
 
 class TestUpload(_WriteTestCase):
     async def test_upload_creates_file(self) -> None:
+        # when
         record = await self.uploader.upload(
             await self.node_id("b"),
             "new.bin",
@@ -189,6 +223,7 @@ class TestUpload(_WriteTestCase):
             media_info=None,
         )
 
+        # then
         self.assertEqual((self.source / "b/new.bin").read_bytes(), b"part one part two")
         self.assertEqual(record.hash, hashlib.md5(b"part one part two").hexdigest())
         self.assertEqual(await self.node_id("b/new.bin"), record.id)
@@ -196,6 +231,7 @@ class TestUpload(_WriteTestCase):
         await self.assert_rescan_is_quiet()
 
     async def test_upload_keeps_client_media_info(self) -> None:
+        # when
         record = await self.uploader.upload(
             DOCS,
             "pic.jpg",
@@ -205,11 +241,14 @@ class TestUpload(_WriteTestCase):
                 width=4, height=3, ms_duration=0, is_image=True, is_video=False
             ),
         )
+        # then
         self.assertEqual((record.width, record.height), (4, 3))
 
     async def test_upload_onto_existing_name_conflicts(self) -> None:
+        # given
         existing = await self.node_id("a/f.txt")
 
+        # when / then
         with self.assertRaises(UploadConflictError) as cm:
             await self.uploader.upload(
                 await self.node_id("a"),
@@ -219,29 +258,37 @@ class TestUpload(_WriteTestCase):
                 media_info=None,
             )
 
+        # then
         self.assertEqual(cm.exception.record.id, existing)
         self.assertEqual((self.source / "a/f.txt").read_bytes(), b"hello")
         self.assertEqual(self.staging_files(), [])
 
     async def test_find_conflict_reports_existing_node(self) -> None:
+        # when
         conflict = await self.uploader.find_conflict(await self.node_id("a"), "f.txt")
+        # then
         assert conflict is not None
         self.assertEqual(conflict.id, await self.node_id("a/f.txt"))
         self.assertIsNone(await self.uploader.find_conflict(DOCS, "free.txt"))
 
     async def test_interrupted_upload_leaves_nothing(self) -> None:
+        # when / then
         with self.assertRaises(ConnectionResetError):
             await self.uploader.upload(
                 DOCS, "broken.bin", _failing_content(), mime_type=None, media_info=None
             )
 
+        # then
         self.assertFalse((self.source / "broken.bin").exists())
         self.assertEqual(self.staging_files(), [])
         self.assertIsNone(await self.node("broken.bin"))
 
     async def test_staging_files_are_not_mirrored(self) -> None:
+        # given
         self.write(f"b/{STAGING_PREFIX}leftover", b"x")
+        # when
         await self.scan()
+        # then
         children = await self.mirror.get_children(await self.node_id("b"))
         self.assertEqual(children, [])
 
@@ -255,8 +302,10 @@ class TestWritesWithWatcher(_WriteTestCase):
             self.skipTest("inotify is not available")
 
     async def test_watched_write_is_not_mirrored_twice(self) -> None:
+        # given
         assert self.watcher is not None
         self.watcher.take()
+        # when
         created = await self.operations.create_folder(DOCS, "fresh")
         uploaded = await self.uploader.upload(
             created.id, "f.txt", _content(b"x"), mime_type=None, media_info=None
@@ -269,6 +318,7 @@ class TestWritesWithWatcher(_WriteTestCase):
         await self.scanner.scan_folders(dirty)
         await self.node_sync.wait_enrichment_drained()
 
+        # then
         root_names = [c.name for c in await self.mirror.get_children(DOCS)]
         self.assertEqual(root_names.count("fresh"), 1)
         self.assertEqual(await self.node_id("fresh"), created.id)

@@ -161,13 +161,17 @@ class TestNodeRecordRoundtrip(TestCase):
 
 class TestNodeRecordLocatorCompatibility(TestCase):
     def test_encoder_omits_locator(self):
+        # when
         d = node_record_to_dict(_make_record())
+        # then
         self.assertNotIn("mutable_id", d)
 
     def test_decoder_ignores_legacy_locator(self):
+        # given
         # Older servers still send the key.
         d: dict[str, object] = dict(node_record_to_dict(_make_record()))
         d["mutable_id"] = "12345"
+        # when / then
         self.assertEqual(node_record_from_dict(cast(NodeRecordDict, d)), _make_record())
 
 
