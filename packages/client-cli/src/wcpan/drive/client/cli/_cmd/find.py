@@ -23,9 +23,10 @@ async def _action_find(drive: Drive, kwargs: Namespace) -> int:
     pattern: str = kwargs.pattern
     id_only: bool = kwargs.id_only
 
-    nodes = await drive.find_nodes_by_regex(pattern)
-    if not kwargs.include_trash:
-        nodes = (_ for _ in nodes if not _.is_trashed)
+    query = drive.find_nodes().name_matches(pattern)
+    if kwargs.include_trash:
+        query.include_trashed()
+    nodes = await query.all()
 
     if id_only:
         for node in nodes:

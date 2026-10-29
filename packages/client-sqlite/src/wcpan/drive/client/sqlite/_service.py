@@ -4,12 +4,11 @@ from pathlib import PurePath
 from typing import Annotated
 
 from wcpan.drive.client.exceptions import NodeNotFoundError
-from wcpan.drive.client.types import Cache, ChangeAction, Node
+from wcpan.drive.client.types import Cache, ChangeAction, Node, NodeQuery
 
 from ._lib import OffMainProcess
 from ._outer import (
     apply_changes,
-    find_nodes_by_regex,
     get_child_by_name,
     get_children_by_id,
     get_current_cursor,
@@ -18,6 +17,7 @@ from ._outer import (
     get_root,
     get_trashed_nodes,
     initialize,
+    query_nodes,
     resolve_path_by_id,
     set_root,
 )
@@ -37,7 +37,7 @@ class SqliteCache(Cache):
 
     @property
     def api_version(self) -> int:
-        return 6
+        return 7
 
     async def get_current_cursor(self) -> str:
         cursor = await self._bg(get_current_cursor)
@@ -91,5 +91,8 @@ class SqliteCache(Cache):
     ) -> None:
         return await self._bg(apply_changes, changes, cursor)
 
-    async def find_nodes_by_regex(self, pattern: str) -> list[Node]:
-        return await self._bg(find_nodes_by_regex, pattern)
+    async def query_nodes(self, query: NodeQuery) -> list[Node]:
+        nodes = await self._bg(query_nodes, query)
+        if nodes is None:
+            raise NodeNotFoundError(query.ancestor_id or "")
+        return nodes

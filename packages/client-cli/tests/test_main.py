@@ -4,9 +4,9 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.client.cli._main import amain
-from wcpan.drive.client.types import Drive
+from wcpan.drive.client.types import Drive, NodeQuery
 
-from ._lib import aexpect, create_amock, make_node
+from ._lib import aexpect, bind_find_nodes, create_amock, make_node
 
 
 class TestMain(IsolatedAsyncioTestCase):
@@ -94,38 +94,42 @@ class TestFind(IsolatedAsyncioTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testFindIdOnly(self, stdout: StringIO):
         node = make_node(id="abc123", is_trashed=False)
-        aexpect(self._drive.find_nodes_by_regex).return_value = [node]
+        query_nodes = bind_find_nodes(self._drive)
+        query_nodes.return_value = [node]
 
         rv = await amain(["-cc.yaml", "find", "--id-only", ".*\\.txt"])
         self.assertEqual(rv, 0)
 
-        aexpect(self._drive.find_nodes_by_regex).assert_called_once_with(".*\\.txt")
+        query_nodes.assert_awaited_once_with(NodeQuery(name_pattern=".*\\.txt"))
         self.assertIn("abc123", stdout.getvalue())
 
     @patch("sys.stdout", new_callable=StringIO)
-    async def testFindFiltersTrash(self, stdout: StringIO):
-        active = make_node(id="active-id", is_trashed=False)
-        trashed = make_node(id="trashed-id", is_trashed=True)
-        aexpect(self._drive.find_nodes_by_regex).return_value = [active, trashed]
+    async def testFindExcludesTrash(self, stdout: StringIO):
+        query_nodes = bind_find_nodes(self._drive)
+        query_nodes.return_value = []
 
         rv = await amain(["-cc.yaml", "find", "--id-only", "pattern"])
         self.assertEqual(rv, 0)
 
-        output = stdout.getvalue()
-        self.assertIn("active-id", output)
-        self.assertNotIn("trashed-id", output)
+        query_nodes.assert_awaited_once_with(
+            NodeQuery(name_pattern="pattern", is_trashed=False)
+        )
 
     @patch("sys.stdout", new_callable=StringIO)
     async def testFindIncludeTrash(self, stdout: StringIO):
         active = make_node(id="active-id", is_trashed=False)
         trashed = make_node(id="trashed-id", is_trashed=True)
-        aexpect(self._drive.find_nodes_by_regex).return_value = [active, trashed]
+        query_nodes = bind_find_nodes(self._drive)
+        query_nodes.return_value = [active, trashed]
 
         rv = await amain(
             ["-cc.yaml", "find", "--id-only", "--include-trash", "pattern"]
         )
         self.assertEqual(rv, 0)
 
+        query_nodes.assert_awaited_once_with(
+            NodeQuery(name_pattern="pattern", is_trashed=None)
+        )
         output = stdout.getvalue()
         self.assertIn("active-id", output)
         self.assertIn("trashed-id", output)
@@ -133,7 +137,7 @@ class TestFind(IsolatedAsyncioTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testFindWithPath(self, stdout: StringIO):
         node = make_node(id="abc123", is_trashed=False)
-        aexpect(self._drive.find_nodes_by_regex).return_value = [node]
+        bind_find_nodes(self._drive).return_value = [node]
         aexpect(self._drive.resolve_path).return_value = PurePath("/some/file.txt")
 
         rv = await amain(["-cc.yaml", "find", "pattern"])

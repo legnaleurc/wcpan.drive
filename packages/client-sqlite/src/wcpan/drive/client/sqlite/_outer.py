@@ -3,7 +3,7 @@ from pathlib import PurePath
 from typing import cast
 
 from wcpan.drive.client.lib import dispatch_change
-from wcpan.drive.client.types import ChangeAction, Node
+from wcpan.drive.client.types import ChangeAction, Node, NodeQuery
 
 from ._inner import (
     inner_delete_node_by_id,
@@ -130,15 +130,27 @@ def apply_changes(dsn: str, changes: list[ChangeAction], cursor: str, /) -> None
         inner_set_metadata(query, KEY_CURSOR, cursor)
 
 
-def find_nodes_by_regex(dsn: str, pattern: str, /) -> list[Node]:
+def query_nodes(dsn: str, node_query: NodeQuery, /) -> list[Node] | None:
+    """Returns None if the ancestor in *node_query* does not exist."""
     from functools import partial
     from re import I, compile
 
-    from ._sql import SQL_SELECT_NODES_BY_REGEX
+    from ._query import compile_query
 
-    fn = partial(sqlite3_regexp, pattern=compile(pattern, I))
+    fn = (
+        None
+        if node_query.name_pattern is None
+        else partial(sqlite3_regexp, pattern=compile(node_query.name_pattern, I))
+    )
+    sql, params = compile_query(node_query)
     with read_only(dsn, regexp=fn) as query:
-        query.execute(SQL_SELECT_NODES_BY_REGEX)
+        if node_query.ancestor_id is not None:
+            query.execute(
+                "SELECT 1 FROM nodes WHERE id = ?;", (node_query.ancestor_id,)
+            )
+            if not query.fetchone():
+                return None
+        query.execute(sql, params)
         rv = [node_from_query(_) for _ in query]
     return rv
 

@@ -53,6 +53,8 @@ __all__ = (
     "Hasher",
     "MediaInfo",
     "Node",
+    "NodeQuery",
+    "NodeQueryBuilder",
     "PrivateDict",
     "ReadableFile",
     "RemoveAction",
@@ -84,7 +86,8 @@ class Node:
         parent_id: ID of the parent directory, or None for root node.
         name: Name of the file or directory (without path).
         is_directory: True if this node represents a directory.
-        is_trashed: True if this node is in the trash.
+        is_trashed: True if this node is in the trash, either directly or
+            because an ancestor directory is.
         created_time: Creation timestamp.
         modified_time: Content modification timestamp.
         changed_time: Last backend-observable node record change timestamp.
@@ -146,6 +149,194 @@ class Node:
             raise ValueError(
                 f"file {self.id} must have both hash and hash_algorithm, or neither"
             )
+
+
+@dataclass(frozen=True, kw_only=True)
+class NodeQuery:
+    """Search conditions for Drive.query_nodes() and Cache.query_nodes().
+
+    All conditions are combined with AND; None means "no condition". Build
+    one with Drive.find_nodes() instead of constructing it directly.
+
+    Attributes:
+        ancestor_id: Only match descendants of this node (excluding itself).
+        is_directory: Only match directories (True) or files (False).
+        is_trashed: Match trashed (True), non-trashed (False, the default),
+            or both (None). Node.is_trashed already covers nodes inside a
+            trashed directory, so no ancestor check is needed.
+        name_pattern: Case-insensitive regex searched in the node name.
+        mime_type_prefix: Only match files whose MIME type starts with this.
+        size_min: Only match files at least this many bytes.
+        size_max: Only match files at most this many bytes.
+        created_after: Only match nodes created at or after this time.
+        created_before: Only match nodes created before this time.
+        modified_after: Only match nodes modified at or after this time.
+        modified_before: Only match nodes modified before this time.
+        limit: Return at most this many nodes, in no particular order.
+
+    Note:
+        Size and MIME type conditions only match files.
+
+    Raises:
+        ValueError: If the conditions are invalid or contradictory.
+    """
+
+    ancestor_id: str | None = None
+    is_directory: bool | None = None
+    is_trashed: bool | None = False
+    name_pattern: str | None = None
+    mime_type_prefix: str | None = None
+    size_min: int | None = None
+    size_max: int | None = None
+    created_after: datetime | None = None
+    created_before: datetime | None = None
+    modified_after: datetime | None = None
+    modified_before: datetime | None = None
+    limit: int | None = None
+
+    def __post_init__(self) -> None:
+        import re
+
+        if self.name_pattern is not None:
+            try:
+                re.compile(self.name_pattern, re.I)
+            except re.error as e:
+                raise ValueError(f"invalid name pattern: {e}") from e
+        if self.mime_type_prefix == "":
+            raise ValueError("MIME type prefix must not be empty")
+        for size in (self.size_min, self.size_max):
+            if size is not None and size < 0:
+                raise ValueError("size must not be negative")
+        _check_range("size", self.size_min, self.size_max)
+        for time in (
+            self.created_after,
+            self.created_before,
+            self.modified_after,
+            self.modified_before,
+        ):
+            if time is not None and time.utcoffset() is None:
+                raise ValueError("time must be timezone-aware")
+        _check_range("created time", self.created_after, self.created_before)
+        _check_range("modified time", self.modified_after, self.modified_before)
+        if self.is_directory and self.has_file_conditions:
+            raise ValueError("size and MIME type conditions only match files")
+        if self.limit is not None and self.limit < 1:
+            raise ValueError("limit must be positive")
+
+    @property
+    def has_file_conditions(self) -> bool:
+        """True if any condition only matches files."""
+        return (
+            self.mime_type_prefix is not None
+            or self.size_min is not None
+            or self.size_max is not None
+        )
+
+
+def _check_range[T: (int, datetime)](name: str, low: T | None, high: T | None):
+    if low is not None and high is not None and low > high:
+        raise ValueError(f"{name} range is empty")
+
+
+class NodeQueryBuilder:
+    """Fluent builder for NodeQuery, bound to a function that runs it.
+
+    Each method updates the builder and returns it; calling a method again
+    replaces that condition. Get one from Drive.find_nodes().
+
+    Example:
+        Finding empty files under a directory::
+
+            >>> nodes = await drive.find_nodes().descendant_of(node).size(max=0).all()
+
+        Finding large videos modified this year::
+
+            >>> nodes = await (
+            ...     drive.find_nodes()
+            ...     .mime_type("video/")
+            ...     .size(min=100 * 1024**2)
+            ...     .modified(after=datetime(2026, 1, 1, tzinfo=UTC))
+            ...     .all()
+            ... )
+    """
+
+    def __init__(self, run: Callable[[NodeQuery], Awaitable[list[Node]]]) -> None:
+        self._run = run
+        self._fields: dict[str, object] = {}
+
+    def descendant_of(self, node: Node, /) -> Self:
+        """Only match descendants of *node*, excluding *node* itself."""
+        self._fields["ancestor_id"] = node.id
+        return self
+
+    def files_only(self) -> Self:
+        self._fields["is_directory"] = False
+        return self
+
+    def directories_only(self) -> Self:
+        self._fields["is_directory"] = True
+        return self
+
+    def include_trashed(self) -> Self:
+        """Match both trashed and non-trashed nodes."""
+        self._fields["is_trashed"] = None
+        return self
+
+    def trashed_only(self) -> Self:
+        self._fields["is_trashed"] = True
+        return self
+
+    def name_matches(self, pattern: str, /) -> Self:
+        """Only match names where the case-insensitive regex *pattern* is found."""
+        self._fields["name_pattern"] = pattern
+        return self
+
+    def mime_type(self, prefix: str, /) -> Self:
+        """Only match files whose MIME type starts with *prefix*."""
+        self._fields["mime_type_prefix"] = prefix
+        return self
+
+    def size(self, *, min: int | None = None, max: int | None = None) -> Self:
+        """Only match files with *min* <= size <= *max*."""
+        self._fields["size_min"] = min
+        self._fields["size_max"] = max
+        return self
+
+    def created(
+        self, *, after: datetime | None = None, before: datetime | None = None
+    ) -> Self:
+        """Only match nodes with *after* <= created time < *before*."""
+        self._fields["created_after"] = after
+        self._fields["created_before"] = before
+        return self
+
+    def modified(
+        self, *, after: datetime | None = None, before: datetime | None = None
+    ) -> Self:
+        """Only match nodes with *after* <= modified time < *before*."""
+        self._fields["modified_after"] = after
+        self._fields["modified_before"] = before
+        return self
+
+    def limit(self, count: int, /) -> Self:
+        self._fields["limit"] = count
+        return self
+
+    def to_query(self) -> NodeQuery:
+        """Build the query without running it.
+
+        Raises:
+            ValueError: If the conditions are invalid or contradictory.
+        """
+        return NodeQuery(**self._fields)  # pyright: ignore[reportArgumentType]
+
+    async def all(self) -> list[Node]:
+        """Run the query and return all matching nodes, in no particular order.
+
+        Raises:
+            ValueError: If the conditions are invalid or contradictory.
+        """
+        return await self._run(self.to_query())
 
 
 type RemoveAction = tuple[Literal[True], str]
@@ -716,7 +907,7 @@ class Service(metaclass=ABCMeta):
                 >>> class MyBackend(Backend):
                 ...     @property
                 ...     def api_version(self) -> int:
-                ...         return 6
+                ...         return 7
         """
 
 
@@ -777,7 +968,7 @@ class Backend(Service, metaclass=ABCMeta):
 
     Implementations must:
         - Provide all abstract methods
-        - Return api_version = 6
+        - Return api_version = 7
         - Handle authentication appropriately
         - Support async context manager protocol
         - Raise appropriate exceptions on errors
@@ -794,7 +985,7 @@ class Backend(Service, metaclass=ABCMeta):
             >>> class MyCloudBackend(Backend):
             ...     @property
             ...     def api_version(self) -> int:
-            ...         return 6
+            ...         return 7
             ...
             ...     async def get_root(self) -> Node:
             ...         # Fetch root from API
@@ -1236,7 +1427,7 @@ class Cache(Service, metaclass=ABCMeta):
             >>> class SQLiteCache(Cache):
             ...     @property
             ...     def api_version(self) -> int:
-            ...         return 6
+            ...         return 7
             ...
             ...     async def get_root(self) -> Node:
             ...         # Query from database
@@ -1515,27 +1706,25 @@ class Cache(Service, metaclass=ABCMeta):
         """
 
     @abstractmethod
-    async def find_nodes_by_regex(self, pattern: str) -> list[Node]:
-        """Find nodes whose names match a regex pattern.
+    async def query_nodes(self, query: NodeQuery) -> list[Node]:
+        """Find nodes matching all conditions in a query.
 
-        Searches the cache for nodes with names matching the given regular
-        expression pattern.
+        Node IDs in the query and in the result are this cache's own IDs.
+        See NodeQuery for the meaning of each condition.
 
         Args:
-            pattern: Regular expression pattern to match against node names.
+            query: Search conditions.
 
         Returns:
-            List of matching Nodes (may be empty).
+            List of matching Nodes in no particular order (may be empty).
 
         Example:
             Implementation pattern::
 
-                >>> async def find_nodes_by_regex(self, pattern: str) -> list[Node]:
-                ...     import re
-                ...     regex = re.compile(pattern)
-                ...     rows = await self.db.fetch_all("SELECT * FROM nodes")
-                ...     nodes = [self._row_to_node(row) for row in rows]
-                ...     return [n for n in nodes if regex.search(n.name)]
+                >>> async def query_nodes(self, query: NodeQuery) -> list[Node]:
+                ...     sql, params = self._compile(query)
+                ...     rows = await self.db.fetch_all(sql, params)
+                ...     return [self._row_to_node(row) for row in rows]
         """
 
 
@@ -1764,25 +1953,42 @@ class Drive(metaclass=ABCMeta):
                 >>> all_trashed = await drive.get_trashed_nodes(flatten=True)
         """
 
-    @abstractmethod
-    async def find_nodes_by_regex(self, pattern: str) -> list[Node]:
-        """Find nodes whose names match a regex pattern.
+    def find_nodes(self) -> NodeQueryBuilder:
+        """Start a search over the whole drive.
 
-        Searches the entire drive for nodes with names matching the
-        given regular expression.
-
-        Args:
-            pattern: Regular expression pattern to match.
+        Chain conditions on the returned builder, then await all() to run
+        it. Non-trashed nodes are matched unless the builder says otherwise.
 
         Returns:
-            List of matching Nodes (may be empty).
+            A NodeQueryBuilder bound to query_nodes().
 
         Example:
             Finding all Python files::
 
-                >>> nodes = await drive.find_nodes_by_regex(r".*\\.py$")
+                >>> nodes = await drive.find_nodes().name_matches(r"\\.py$").all()
                 >>> for node in nodes:
                 ...     print(f"Python file: {node.name}")
+
+            Finding empty files under a directory::
+
+                >>> nodes = await drive.find_nodes().descendant_of(node).size(max=0).all()
+        """
+        return NodeQueryBuilder(self.query_nodes)
+
+    @abstractmethod
+    async def query_nodes(self, query: NodeQuery) -> list[Node]:
+        """Find nodes matching all conditions in a query.
+
+        Prefer find_nodes(), which builds the query fluently.
+
+        Args:
+            query: Search conditions. See NodeQuery.
+
+        Returns:
+            List of matching Nodes in no particular order (may be empty).
+
+        Raises:
+            NodeNotFoundError: If query.ancestor_id is not a known node.
         """
 
     @abstractmethod

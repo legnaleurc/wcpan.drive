@@ -15,9 +15,9 @@ from wcpan.drive.client.cli._interaction import (
     resolve_path,
 )
 from wcpan.drive.client.exceptions import NodeNotFoundError
-from wcpan.drive.client.types import Drive
+from wcpan.drive.client.types import Drive, NodeQuery
 
-from ._lib import aexpect, create_amock, make_node
+from ._lib import aexpect, bind_find_nodes, create_amock, make_node
 
 
 class TestResolvePath(TestCase):
@@ -263,7 +263,8 @@ class TestShellContextFind(IsolatedAsyncioTestCase):
         home = make_node(is_directory=True)
         node1 = make_node(id="id1", name="file1.txt")
         node2 = make_node(id="id2", name="file2.txt")
-        aexpect(drive.find_nodes_by_regex).return_value = [node1, node2]
+        query_nodes = bind_find_nodes(drive)
+        query_nodes.return_value = [node1, node2]
         aexpect(drive.resolve_path).side_effect = [
             PurePath("/a/file1.txt"),
             PurePath("/a/file2.txt"),
@@ -274,6 +275,9 @@ class TestShellContextFind(IsolatedAsyncioTestCase):
         printed = [call.args[0] for call in mock_cout.call_args_list]
         self.assertIn("id1 - /a/file1.txt", printed)
         self.assertIn("id2 - /a/file2.txt", printed)
+        query_nodes.assert_awaited_once_with(
+            NodeQuery(name_pattern="pattern", is_trashed=None)
+        )
 
 
 class TestShellContextInfo(IsolatedAsyncioTestCase):

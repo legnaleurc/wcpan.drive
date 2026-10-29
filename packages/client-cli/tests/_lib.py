@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
-from wcpan.drive.client.types import Node
+from wcpan.drive.client.types import Drive, Node, NodeQueryBuilder
 
 
 def create_amock[T](t: type[T]) -> T:
@@ -11,6 +11,18 @@ def create_amock[T](t: type[T]) -> T:
 
 def aexpect(o: object) -> AsyncMock:
     return cast(AsyncMock, o)
+
+
+def bind_find_nodes(drive: Drive) -> AsyncMock:
+    """Make the mocked drive.find_nodes() return a real builder.
+
+    Returns the mocked query_nodes the builder runs.
+    """
+    query_nodes = aexpect(drive.query_nodes)
+    cast(MagicMock, drive.find_nodes).side_effect = lambda: NodeQueryBuilder(
+        query_nodes
+    )
+    return query_nodes
 
 
 def make_node(

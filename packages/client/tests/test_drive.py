@@ -23,6 +23,7 @@ from wcpan.drive.client.types import (
     Cache,
     ChangeAction,
     Node,
+    NodeQuery,
     ReadableFile,
     SourceConfig,
     UpdateAction,
@@ -64,14 +65,14 @@ def make_node(
 class CreateDriveTestCase(IsolatedAsyncioTestCase):
     async def testCreate(self) -> None:
         backend = Mock(spec=Backend)
-        backend.api_version = 6
+        backend.api_version = 7
         create_backend = create_mocked_acm(backend)
 
         create_backend_middleware_1 = create_mocked_acm(backend)
         create_backend_middleware_2 = create_mocked_acm(backend)
 
         cache = Mock(spec=Cache)
-        cache.api_version = 6
+        cache.api_version = 7
         create_cache = create_mocked_acm(cache)
 
         create_cache_middleware_1 = create_mocked_acm(cache)
@@ -98,14 +99,14 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
 
     async def testMultiMode(self) -> None:
         backend_1 = Mock(spec=Backend)
-        backend_1.api_version = 6
+        backend_1.api_version = 7
         backend_2 = Mock(spec=Backend)
-        backend_2.api_version = 6
+        backend_2.api_version = 7
 
         cache_1 = Mock(spec=Cache)
-        cache_1.api_version = 6
+        cache_1.api_version = 7
         cache_2 = Mock(spec=Cache)
-        cache_2.api_version = 6
+        cache_2.api_version = 7
 
         async with create_multi_drive(
             sources=[
@@ -259,12 +260,14 @@ class CacheTestCase(IsolatedAsyncioTestCase):
         self.assertEqual(rv, path)
         aexpect(self._ss.resolve_path_by_id).assert_awaited_once_with("123")
 
-    async def testFindNodesByRegex(self) -> None:
-        aexpect(self._ss.find_nodes_by_regex).return_value = []
-        rv = await self._drive.find_nodes_by_regex("123")
+    async def testFindNodes(self) -> None:
+        aexpect(self._ss.query_nodes).return_value = []
+        rv = await self._drive.find_nodes().name_matches("123").all()
 
         self.assertEqual(rv, [])
-        aexpect(self._ss.find_nodes_by_regex).assert_awaited_once_with("123")
+        aexpect(self._ss.query_nodes).assert_awaited_once_with(
+            NodeQuery(name_pattern="123")
+        )
 
 
 class WalkTestCase(IsolatedAsyncioTestCase):
@@ -965,23 +968,66 @@ class MultiDriveFindNodesTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         ctx = create_mocked_multi_drive(["google", "local"])
         self._drive, self._sources = await self.enterAsyncContext(ctx)
+        self._google = aexpect(self._sources["google"].cache.query_nodes)
+        self._local = aexpect(self._sources["local"].cache.query_nodes)
 
-    async def testFindNodesByRegexMergesResults(self) -> None:
-        google_node = make_node(node_id="g1", parent_id="groot", name="photo.jpg")
-        local_node = make_node(node_id="l1", parent_id="lroot", name="photo.png")
-        aexpect(self._sources["google"].cache.find_nodes_by_regex).return_value = [
-            google_node
+    async def testWithoutAncestorQueriesAllSources(self) -> None:
+        self._google.return_value = [
+            make_node(node_id="g1", parent_id="groot", name="photo.jpg")
         ]
-        aexpect(self._sources["local"].cache.find_nodes_by_regex).return_value = [
-            local_node
+        self._local.return_value = [
+            make_node(node_id="l1", parent_id="lroot", name="photo.png")
         ]
 
-        results = await self._drive.find_nodes_by_regex(r"photo")
+        results = await self._drive.find_nodes().name_matches(r"photo").all()
 
-        self.assertEqual(len(results), 2)
-        ids = {n.id for n in results}
-        self.assertIn("google:g1", ids)
-        self.assertIn("local:l1", ids)
+        self.assertEqual({n.id for n in results}, {"google:g1", "local:l1"})
+        self.assertEqual(
+            {n.parent_id for n in results}, {"google:groot", "local:lroot"}
+        )
+        self._google.assert_awaited_once_with(NodeQuery(name_pattern="photo"))
+        self._local.assert_awaited_once_with(NodeQuery(name_pattern="photo"))
+
+    async def testVirtualRootAncestorQueriesAllSources(self) -> None:
+        self._google.return_value = []
+        self._local.return_value = []
+        root = await self._drive.get_root()
+
+        await self._drive.find_nodes().descendant_of(root).all()
+
+        self._google.assert_awaited_once_with(NodeQuery())
+        self._local.assert_awaited_once_with(NodeQuery())
+
+    async def testScopedAncestorQueriesOneSource(self) -> None:
+        self._local.return_value = [
+            make_node(node_id="l2", parent_id="l1", name="a.txt")
+        ]
+        ancestor = make_node(node_id="local:l1", parent_id="local:lroot")
+
+        results = await self._drive.find_nodes().descendant_of(ancestor).all()
+
+        self.assertEqual([n.id for n in results], ["local:l2"])
+        self._local.assert_awaited_once_with(NodeQuery(ancestor_id="l1"))
+        self._google.assert_not_awaited()
+
+    async def testUnknownSourceRaises(self) -> None:
+        ancestor = make_node(node_id="missing:x", parent_id="missing:root")
+
+        with self.assertRaises(NodeNotFoundError):
+            await self._drive.find_nodes().descendant_of(ancestor).all()
+
+    async def testLimitTruncatesMergedResults(self) -> None:
+        self._google.return_value = [
+            make_node(node_id="g1", parent_id="groot"),
+            make_node(node_id="g2", parent_id="groot"),
+        ]
+        self._local.return_value = [make_node(node_id="l1", parent_id="lroot")]
+
+        results = await self._drive.find_nodes().limit(1).all()
+
+        self.assertEqual(len(results), 1)
+        self._google.assert_awaited_once_with(NodeQuery(limit=1))
+        self._local.assert_not_awaited()
 
 
 class MultiDriveGetNodeByIdTestCase(IsolatedAsyncioTestCase):
@@ -1155,11 +1201,11 @@ async def to_async_iterable[T](rv: Iterable[T]) -> AsyncGenerator[T, None]:
 @asynccontextmanager
 async def create_mocked_drive() -> AsyncIterator[tuple[Any, Backend, Cache]]:
     backend = MagicMock(spec=Backend)
-    backend.api_version = 6
+    backend.api_version = 7
     create_backend = create_mocked_acm(backend)
 
     cache = MagicMock(spec=Cache)
-    cache.api_version = 6
+    cache.api_version = 7
     create_cache = create_mocked_acm(cache)
 
     async with create_drive(
@@ -1182,12 +1228,12 @@ async def create_mocked_multi_drive(source_names: list[str]) -> AsyncIterator[An
 
     for name in source_names:
         fs = MagicMock(spec=Backend)
-        fs.api_version = 6
+        fs.api_version = 7
         # Default: authenticated
         fs.is_authenticated = AsyncMock(return_value=True)
 
         ss = MagicMock(spec=Cache)
-        ss.api_version = 6
+        ss.api_version = 7
 
         source_configs.append(
             SourceConfig(

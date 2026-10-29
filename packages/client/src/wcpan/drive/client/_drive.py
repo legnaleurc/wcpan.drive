@@ -31,6 +31,7 @@ from .types import (
     Drive,
     MediaInfo,
     Node,
+    NodeQuery,
     ReadableFile,
     Service,
     SourceConfig,
@@ -38,7 +39,7 @@ from .types import (
 )
 
 
-_API_VERSION = 6
+_API_VERSION = 7
 
 _VIRTUAL_ROOT_ID = "__virtual_root__"
 
@@ -190,8 +191,8 @@ class _SingleDrive(Drive):
         return [_ for _ in rv if not _in_ancestor_set(table, _, ancestor_set)]
 
     @override
-    async def find_nodes_by_regex(self, pattern: str) -> list[Node]:
-        return await self._cache.find_nodes_by_regex(pattern)
+    async def query_nodes(self, query: NodeQuery) -> list[Node]:
+        return await self._cache.query_nodes(query)
 
     @override
     async def walk(
@@ -505,12 +506,25 @@ class _MultiDrive(Drive):
         return all_nodes
 
     @override
-    async def find_nodes_by_regex(self, pattern: str) -> list[Node]:
+    async def query_nodes(self, query: NodeQuery) -> list[Node]:
+        if query.ancestor_id is None or query.ancestor_id == _VIRTUAL_ROOT_ID:
+            # every source is under the virtual root
+            unscoped = replace(query, ancestor_id=None)
+            targets = [(name, unscoped) for name in self._sources]
+        else:
+            source_name, original_id = _parse_id(query.ancestor_id)
+            if source_name not in self._sources:
+                raise NodeNotFoundError(query.ancestor_id)
+            targets = [(source_name, replace(query, ancestor_id=original_id))]
+
         results: list[Node] = []
-        for source_name, state in self._sources.items():
-            nodes = await state.cache.find_nodes_by_regex(pattern)
+        for source_name, source_query in targets:
+            state = self._sources[source_name]
+            nodes = await state.cache.query_nodes(source_query)
             results.extend(_scope_node(source_name, n) for n in nodes)
-        return results
+            if query.limit is not None and len(results) >= query.limit:
+                break
+        return results[: query.limit]
 
     @override
     async def walk(

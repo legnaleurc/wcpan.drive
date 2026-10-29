@@ -163,7 +163,9 @@ class ShellContext:
         cout(path)
 
     async def _find(self, src: str) -> None:
-        node_list = await self._drive.find_nodes_by_regex(src)
+        node_list = (
+            await self._drive.find_nodes().name_matches(src).include_trashed().all()
+        )
         path_list = await asyncio.gather(
             *[self._drive.resolve_path(n) for n in node_list]
         )

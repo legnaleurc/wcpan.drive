@@ -53,7 +53,7 @@ class GoogleDriveBackend(Backend):
     @property
     @override
     def api_version(self) -> int:
-        return 6
+        return 7
 
     @override
     async def get_initial_cursor(self) -> str:

@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import PurePath
 from tempfile import NamedTemporaryFile
+from typing import Any
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.client.exceptions import NodeNotFoundError
@@ -14,7 +15,7 @@ from wcpan.drive.client.sqlite._outer import (
 )
 from wcpan.drive.client.sqlite._service import create_cache
 from wcpan.drive.client.sqlite.exceptions import SqliteCacheError
-from wcpan.drive.client.types import ChangeAction, Node
+from wcpan.drive.client.types import ChangeAction, Node, NodeQuery
 
 
 class GetCurrentCursorTestCase(IsolatedAsyncioTestCase):
@@ -247,14 +248,117 @@ class SearchNodesTestCase(IsolatedAsyncioTestCase):
         with read_write(self._dsn) as query:
             a = _make_dir("2", "1", "a")
             inner_insert_node(query, a)
-            b = _make_file("3", "1", "b")
+            b = _make_file("3", "1", "B")
             inner_insert_node(query, b)
             c = _make_file("4", "1", "c")
             inner_insert_node(query, c)
 
-        rv = await self._ss.find_nodes_by_regex(r"a|b")
+        rv = await self._ss.query_nodes(NodeQuery(name_pattern=r"a|b"))
         rv = sorted(rv, key=lambda x: x.name)
-        self.assertEqual(rv, [a, b])
+        self.assertEqual(rv, [b, a])
+
+
+class QueryNodesTestCase(IsolatedAsyncioTestCase):
+    """Tree used by every test:
+
+    1 (root)
+    +-- 2 a/
+    |   +-- 3 b      42 bytes, application/octet-stream
+    |   +-- 4 c/
+    |       +-- 5 d  0 bytes, video/mp4, modified 2025-06-01
+    +-- 6 e          trashed
+    +-- 7 f/         trashed
+        +-- 8 g      trashed (inherited from f)
+    """
+
+    async def asyncSetUp(self):
+        tmp = self.enterContext(NamedTemporaryFile())
+        self._dsn = tmp.name
+        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+
+        await self._ss.set_root(_make_root("1"))
+        with read_write(self._dsn) as query:
+            for node in (
+                _make_dir("2", "1", "a"),
+                _make_file("3", "2", "b"),
+                _make_dir("4", "2", "c"),
+                replace(
+                    _make_file("5", "4", "d"),
+                    size=0,
+                    mime_type="video/mp4",
+                    modified_time=datetime(2025, 6, 1, tzinfo=UTC),
+                ),
+                replace(_make_file("6", "1", "e"), is_trashed=True),
+                replace(_make_dir("7", "1", "f"), is_trashed=True),
+                replace(_make_file("8", "7", "g"), is_trashed=True),
+            ):
+                inner_insert_node(query, node)
+
+    async def _ids(self, **kwargs: Any) -> set[str]:
+        nodes = await self._ss.query_nodes(NodeQuery(**kwargs))
+        return {_.id for _ in nodes}
+
+    async def testExcludesTrashedByDefault(self):
+        self.assertEqual(await self._ids(), {"1", "2", "3", "4", "5"})
+
+    async def testIncludeTrashed(self):
+        self.assertEqual(
+            await self._ids(is_trashed=None), {"1", "2", "3", "4", "5", "6", "7", "8"}
+        )
+
+    async def testTrashedOnly(self):
+        self.assertEqual(await self._ids(is_trashed=True), {"6", "7", "8"})
+
+    async def testDescendantsExcludeAncestor(self):
+        self.assertEqual(await self._ids(ancestor_id="2"), {"3", "4", "5"})
+
+    async def testDescendantsOfFile(self):
+        self.assertEqual(await self._ids(ancestor_id="3"), set())
+
+    async def testUnknownAncestorRaises(self):
+        with self.assertRaises(NodeNotFoundError):
+            await self._ss.query_nodes(NodeQuery(ancestor_id="404"))
+
+    async def testFilesOnly(self):
+        self.assertEqual(
+            await self._ids(ancestor_id="2", is_directory=False), {"3", "5"}
+        )
+
+    async def testDirectoriesOnly(self):
+        self.assertEqual(await self._ids(is_directory=True), {"1", "2", "4"})
+
+    async def testSizeOnlyMatchesFiles(self):
+        self.assertEqual(await self._ids(size_max=0), {"5"})
+        self.assertEqual(await self._ids(size_min=42, size_max=42), {"3"})
+
+    async def testMimeTypePrefix(self):
+        self.assertEqual(await self._ids(mime_type_prefix="video/"), {"5"})
+        self.assertEqual(await self._ids(mime_type_prefix="VIDEO/"), set())
+
+    async def testMimeTypePrefixIsLiteral(self):
+        self.assertEqual(await self._ids(mime_type_prefix="%"), set())
+        self.assertEqual(await self._ids(mime_type_prefix="video_"), set())
+
+    async def testModifiedRange(self):
+        start = datetime(2025, 6, 1, tzinfo=UTC)
+        end = datetime(2025, 6, 2, tzinfo=UTC)
+        self.assertEqual(
+            await self._ids(modified_after=start, modified_before=end), {"5"}
+        )
+        self.assertEqual(await self._ids(modified_before=start), set())
+
+    async def testNameAndDescendant(self):
+        self.assertEqual(await self._ids(ancestor_id="4", name_pattern="^D$"), {"5"})
+
+    async def testLimit(self):
+        self.assertEqual(len(await self._ids(limit=2)), 2)
+
+    async def testParentCycleTerminates(self):
+        with read_write(self._dsn) as query:
+            inner_insert_node(query, _make_dir("9", "10", "x"))
+            inner_insert_node(query, _make_dir("10", "9", "y"))
+
+        self.assertEqual(await self._ids(ancestor_id="9"), {"10"})
 
 
 class ApplyChangesTestCase(IsolatedAsyncioTestCase):
