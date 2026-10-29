@@ -58,7 +58,7 @@ Hash algorithms are per file. Nodes carry a digest in `hash` and its algorithm i
 Each provider defines its identifiers: Google reports `md5`, the Synology backend
 reports `md4`, and the feed client accepts `md4`, `md5`, `sha1`, and `sha256`. Use `Drive.get_hasher_factory(node)` to verify
 a file; it raises `UnsupportedHashAlgorithmError` instead of guessing. The client
-service API version is 6. Existing client SQLite caches (schema 6) are
+service API version is 7. Existing client SQLite caches (schema 6) are
 rejected and must be rebuilt or migrated manually to schema 7.
 
 The server database is at schema 7 and migrates older databases (schema 3 to 6)
@@ -123,6 +123,35 @@ async with create_backend(server_url="http://localhost:8080") as backend:
     root = await backend.get_root()
     print(f"Root: {root}")
 ```
+
+
+#### Querying cached nodes
+
+Use `drive.find_nodes()` to combine filters over the local cache. Await `.all()`
+for matching nodes, or `.summarize()` for `NodeSummary(count, total_size)` without
+loading node objects:
+
+```python
+summary = await (
+    drive.find_nodes()
+    .files_only()
+    .include_trashed()
+    .created(after=begin, before=end)
+    .summarize()
+)
+print(summary.total_size)
+```
+
+Creation windows include `begin` and exclude `end`; times must be timezone-aware.
+Queries exclude trashed nodes by default. Summaries count all matching nodes;
+directories contribute zero bytes. No matches produce zero for both fields.
+Use `.descendant_of(node)` to restrict a query to a directory's descendants,
+excluding the directory itself. Across sources, summaries combine their totals.
+Summaries reject `.limit()` because there is no defined ordering for a subset.
+
+This replaces the SQLite-specific `get_uploaded_size` helper. The example sums
+cached file sizes by creation time; it does not track upload traffic or files
+that have been permanently deleted. CLI `usage` (`du`) also uses cached summaries.
 
 ### Server
 

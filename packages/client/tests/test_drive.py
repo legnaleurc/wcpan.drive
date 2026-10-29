@@ -24,6 +24,7 @@ from wcpan.drive.client.types import (
     ChangeAction,
     Node,
     NodeQuery,
+    NodeSummary,
     ReadableFile,
     SourceConfig,
     UpdateAction,
@@ -268,6 +269,20 @@ class CacheTestCase(IsolatedAsyncioTestCase):
         aexpect(self._ss.query_nodes).assert_awaited_once_with(
             NodeQuery(name_pattern="123")
         )
+
+    async def testSummarizeNodes(self):
+        summary = NodeSummary(count=2, total_size=42)
+        aexpect(self._ss.summarize_nodes).return_value = summary
+        result = await self._drive.find_nodes().files_only().summarize()
+        self.assertEqual(result, summary)
+        aexpect(self._ss.summarize_nodes).assert_awaited_once_with(
+            NodeQuery(is_directory=False)
+        )
+
+    async def testSummaryRejectsLimit(self):
+        with self.assertRaises(ValueError):
+            await self._drive.summarize_nodes(NodeQuery(limit=1))
+        aexpect(self._ss.summarize_nodes).assert_not_awaited()
 
 
 class WalkTestCase(IsolatedAsyncioTestCase):
@@ -1027,6 +1042,46 @@ class MultiDriveFindNodesTestCase(IsolatedAsyncioTestCase):
 
         self.assertEqual(len(results), 1)
         self._google.assert_awaited_once_with(NodeQuery(limit=1))
+        self._local.assert_not_awaited()
+
+
+class MultiDriveSummaryTestCase(IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        ctx = create_mocked_multi_drive(["google", "local"])
+        self._drive, sources = await self.enterAsyncContext(ctx)
+        self._google = aexpect(sources["google"].cache.summarize_nodes)
+        self._local = aexpect(sources["local"].cache.summarize_nodes)
+        self._google.return_value = NodeSummary(count=2, total_size=42)
+        self._local.return_value = NodeSummary(count=3, total_size=100)
+
+    async def testCombinesAllSources(self) -> None:
+        result = await self._drive.find_nodes().files_only().summarize()
+        self.assertEqual(result, NodeSummary(count=5, total_size=142))
+        self._google.assert_awaited_once_with(NodeQuery(is_directory=False))
+        self._local.assert_awaited_once_with(NodeQuery(is_directory=False))
+
+    async def testVirtualRoot(self) -> None:
+        root = await self._drive.get_root()
+        result = await self._drive.find_nodes().descendant_of(root).summarize()
+        self.assertEqual(result, NodeSummary(count=5, total_size=142))
+        self._google.assert_awaited_once_with(NodeQuery())
+        self._local.assert_awaited_once_with(NodeQuery())
+
+    async def testScopedAncestor(self) -> None:
+        ancestor = make_node(node_id="local:l1")
+        result = await self._drive.find_nodes().descendant_of(ancestor).summarize()
+        self.assertEqual(result, NodeSummary(count=3, total_size=100))
+        self._local.assert_awaited_once_with(NodeQuery(ancestor_id="l1"))
+        self._google.assert_not_awaited()
+
+    async def testUnknownSource(self) -> None:
+        with self.assertRaises(NodeNotFoundError):
+            await self._drive.summarize_nodes(NodeQuery(ancestor_id="missing:x"))
+
+    async def testRejectsLimit(self) -> None:
+        with self.assertRaises(ValueError):
+            await self._drive.summarize_nodes(NodeQuery(limit=1))
+        self._google.assert_not_awaited()
         self._local.assert_not_awaited()
 
 

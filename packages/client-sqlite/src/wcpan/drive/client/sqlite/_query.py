@@ -24,6 +24,26 @@ def compile_query(query: NodeQuery, /) -> tuple[str, list[Param]]:
 
     Uses the REGEXP function when query.name_pattern is set.
     """
+    prefix, conditions, params = compile_conditions(query)
+    sql = prefix + SQL_JOIN_TABLES + conditions
+    if query.limit is not None:
+        sql += " LIMIT ?"
+        params.append(query.limit)
+    return sql + ";", params
+
+
+def compile_summary(query: NodeQuery, /) -> tuple[str, list[Param]]:
+    if query.limit is not None:
+        raise ValueError("summaries do not support limit")
+    prefix, conditions, params = compile_conditions(query)
+    return (
+        prefix + "SELECT COUNT(*) AS count, COALESCE(SUM(files.size), 0) AS total_size "
+        "FROM nodes LEFT JOIN files ON nodes.id = files.id " + conditions + ";",
+        params,
+    )
+
+
+def compile_conditions(query: NodeQuery, /) -> tuple[str, str, list[Param]]:
     prefix = ""
     where: list[str] = []
     params: list[Param] = []
@@ -70,13 +90,8 @@ def compile_query(query: NodeQuery, /) -> tuple[str, list[Param]]:
         where.append("nodes.name REGEXP ?")
         params.append(query.name_pattern)
 
-    sql = prefix + SQL_JOIN_TABLES
-    if where:
-        sql += "WHERE " + " AND ".join(where)
-    if query.limit is not None:
-        sql += " LIMIT ?"
-        params.append(query.limit)
-    return sql + ";", params
+    conditions = "WHERE " + " AND ".join(where) if where else ""
+    return prefix, conditions, params
 
 
 def _to_timestamp(time: datetime) -> int:

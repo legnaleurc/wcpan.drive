@@ -4,7 +4,7 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.client.cli._main import amain
-from wcpan.drive.client.types import Drive, NodeQuery
+from wcpan.drive.client.types import Drive, NodeQuery, NodeSummary
 
 from ._lib import aexpect, bind_find_nodes, create_amock, make_node
 
@@ -255,19 +255,20 @@ class TestUsage(IsolatedAsyncioTestCase):
     @patch("sys.stdout", new_callable=StringIO)
     async def testUsageDirectory(self, stdout: StringIO):
         dir_node = make_node(is_directory=True)
-        file1 = make_node(id="f1", size=500, is_directory=False)
-        file2 = make_node(id="f2", size=300, is_directory=False)
         aexpect(self._drive.get_node_by_path).return_value = dir_node
-
-        async def fake_walk(node):
-            yield dir_node, [], [file1, file2]
-
-        self._drive.walk = fake_walk
+        bind_find_nodes(self._drive)
+        aexpect(self._drive.summarize_nodes).return_value = NodeSummary(
+            count=2, total_size=800
+        )
 
         rv = await amain(["-cc.yaml", "usage", "/mydir"])
         self.assertEqual(rv, 0)
 
         self.assertIn("800", stdout.getvalue())
+        aexpect(self._drive.summarize_nodes).assert_awaited_once_with(
+            NodeQuery(ancestor_id=dir_node.id, is_directory=False)
+        )
+        aexpect(self._drive.query_nodes).assert_not_awaited()
 
     @patch("sys.stderr", new_callable=StringIO)
     @patch("sys.stdout", new_callable=StringIO)

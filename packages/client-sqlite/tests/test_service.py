@@ -4,6 +4,7 @@ from pathlib import PurePath
 from tempfile import NamedTemporaryFile
 from typing import Any
 from unittest import IsolatedAsyncioTestCase
+from unittest.mock import patch
 
 from wcpan.drive.client.exceptions import NodeNotFoundError
 from wcpan.drive.client.sqlite._lib import read_only, read_write
@@ -15,7 +16,7 @@ from wcpan.drive.client.sqlite._outer import (
 )
 from wcpan.drive.client.sqlite._service import create_cache
 from wcpan.drive.client.sqlite.exceptions import SqliteCacheError
-from wcpan.drive.client.types import ChangeAction, Node, NodeQuery
+from wcpan.drive.client.types import ChangeAction, Node, NodeQuery, NodeSummary
 
 
 class GetCurrentCursorTestCase(IsolatedAsyncioTestCase):
@@ -359,6 +360,90 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
             inner_insert_node(query, _make_dir("10", "9", "y"))
 
         self.assertEqual(await self._ids(ancestor_id="9"), {"10"})
+
+    async def testSummaries(self):
+        cases = [
+            (NodeQuery(), NodeSummary(count=5, total_size=42)),
+            (NodeQuery(is_trashed=None), NodeSummary(count=8, total_size=126)),
+            (NodeQuery(is_trashed=True), NodeSummary(count=3, total_size=84)),
+            (NodeQuery(is_directory=True), NodeSummary(count=3, total_size=0)),
+            (NodeQuery(is_directory=False), NodeSummary(count=2, total_size=42)),
+            (NodeQuery(ancestor_id="2"), NodeSummary(count=3, total_size=42)),
+            (NodeQuery(ancestor_id="3"), NodeSummary(count=0, total_size=0)),
+            (NodeQuery(name_pattern="^B$"), NodeSummary(count=1, total_size=42)),
+            (NodeQuery(name_pattern="missing"), NodeSummary(count=0, total_size=0)),
+            (NodeQuery(mime_type_prefix="video/"), NodeSummary(count=1, total_size=0)),
+            (NodeQuery(size_min=42), NodeSummary(count=1, total_size=42)),
+            (
+                NodeQuery(
+                    modified_after=datetime(2025, 6, 1, tzinfo=UTC),
+                    modified_before=datetime(2025, 6, 2, tzinfo=UTC),
+                ),
+                NodeSummary(count=1, total_size=0),
+            ),
+        ]
+        for query, expected in cases:
+            with self.subTest(query=query):
+                self.assertEqual(await self._ss.summarize_nodes(query), expected)
+
+    async def testSummaryCreatedWindowIncludesStartExcludesEndAndIncludesOrphans(self):
+        begin = datetime(2026, 1, 1, tzinfo=UTC)
+        end = datetime(2026, 1, 2, tzinfo=UTC)
+        with read_write(self._dsn) as query:
+            inner_insert_node(
+                query,
+                replace(
+                    _make_file("9", "1", "start"), created_time=begin, is_trashed=True
+                ),
+            )
+            inner_insert_node(
+                query, replace(_make_file("10", "1", "end"), created_time=end)
+            )
+            inner_insert_node(
+                query,
+                replace(_make_file("11", "missing", "orphan"), created_time=begin),
+            )
+        result = await self._ss.summarize_nodes(
+            NodeQuery(
+                is_directory=False,
+                is_trashed=None,
+                created_after=begin,
+                created_before=end,
+            )
+        )
+        self.assertEqual(result, NodeSummary(count=2, total_size=84))
+
+    async def testSummaryDoesNotCountMultipleParentsTwice(self):
+        with read_write(self._dsn) as query:
+            query.execute(
+                "INSERT INTO parents (id, parent_id) VALUES (?, ?)", ("3", "4")
+            )
+        self.assertEqual(
+            await self._ss.summarize_nodes(
+                NodeQuery(ancestor_id="2", is_directory=False)
+            ),
+            NodeSummary(count=2, total_size=42),
+        )
+
+    async def testSummaryDoesNotConstructNodes(self):
+        from wcpan.drive.client.sqlite._outer import summarize_nodes
+
+        with patch(
+            "wcpan.drive.client.sqlite._outer.node_from_query",
+            side_effect=AssertionError,
+        ):
+            self.assertEqual(
+                summarize_nodes(self._dsn, NodeQuery()),
+                NodeSummary(count=5, total_size=42),
+            )
+
+    async def testSummaryUnknownAncestor(self):
+        with self.assertRaises(NodeNotFoundError):
+            await self._ss.summarize_nodes(NodeQuery(ancestor_id="missing"))
+
+    async def testSummaryRejectsLimit(self):
+        with self.assertRaises(ValueError):
+            await self._ss.summarize_nodes(NodeQuery(limit=1))
 
 
 class ApplyChangesTestCase(IsolatedAsyncioTestCase):

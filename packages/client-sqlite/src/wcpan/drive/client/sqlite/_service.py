@@ -4,7 +4,7 @@ from pathlib import PurePath
 from typing import Annotated
 
 from wcpan.drive.client.exceptions import NodeNotFoundError
-from wcpan.drive.client.types import Cache, ChangeAction, Node, NodeQuery
+from wcpan.drive.client.types import Cache, ChangeAction, Node, NodeQuery, NodeSummary
 
 from ._lib import OffMainProcess
 from ._outer import (
@@ -20,6 +20,7 @@ from ._outer import (
     query_nodes,
     resolve_path_by_id,
     set_root,
+    summarize_nodes,
 )
 
 
@@ -96,3 +97,9 @@ class SqliteCache(Cache):
         if nodes is None:
             raise NodeNotFoundError(query.ancestor_id or "")
         return nodes
+
+    async def summarize_nodes(self, query: NodeQuery) -> NodeSummary:
+        summary = await self._bg(summarize_nodes, query)
+        if summary is None:
+            raise NodeNotFoundError(query.ancestor_id or "")
+        return summary

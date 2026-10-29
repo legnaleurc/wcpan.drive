@@ -1,9 +1,9 @@
-from datetime import datetime
+from contextlib import contextmanager
 from pathlib import PurePath
 from typing import cast
 
 from wcpan.drive.client.lib import dispatch_change
-from wcpan.drive.client.types import ChangeAction, Node, NodeQuery
+from wcpan.drive.client.types import ChangeAction, Node, NodeQuery, NodeSummary
 
 from ._inner import (
     inner_delete_node_by_id,
@@ -130,29 +130,50 @@ def apply_changes(dsn: str, changes: list[ChangeAction], cursor: str, /) -> None
         inner_set_metadata(query, KEY_CURSOR, cursor)
 
 
-def query_nodes(dsn: str, node_query: NodeQuery, /) -> list[Node] | None:
-    """Returns None if the ancestor in *node_query* does not exist."""
+@contextmanager
+def _query_cursor(dsn: str, node_query: NodeQuery):
     from functools import partial
     from re import I, compile
-
-    from ._query import compile_query
 
     fn = (
         None
         if node_query.name_pattern is None
         else partial(sqlite3_regexp, pattern=compile(node_query.name_pattern, I))
     )
-    sql, params = compile_query(node_query)
     with read_only(dsn, regexp=fn) as query:
         if node_query.ancestor_id is not None:
             query.execute(
                 "SELECT 1 FROM nodes WHERE id = ?;", (node_query.ancestor_id,)
             )
             if not query.fetchone():
-                return None
+                yield None
+                return
+        yield query
+
+
+def query_nodes(dsn: str, node_query: NodeQuery, /) -> list[Node] | None:
+    """Returns None if the ancestor in *node_query* does not exist."""
+    from ._query import compile_query
+
+    sql, params = compile_query(node_query)
+    with _query_cursor(dsn, node_query) as query:
+        if query is None:
+            return None
         query.execute(sql, params)
-        rv = [node_from_query(_) for _ in query]
-    return rv
+        return [node_from_query(_) for _ in query]
+
+
+def summarize_nodes(dsn: str, node_query: NodeQuery, /) -> NodeSummary | None:
+    """Returns None if the ancestor in *node_query* does not exist."""
+    from ._query import compile_summary
+
+    sql, params = compile_summary(node_query)
+    with _query_cursor(dsn, node_query) as query:
+        if query is None:
+            return None
+        query.execute(sql, params)
+        row = query.fetchone()
+        return NodeSummary(count=row["count"], total_size=row["total_size"])
 
 
 def get_current_cursor(dsn: str, /) -> str | None:
@@ -177,25 +198,6 @@ def set_root(dsn: str, root: Node, /) -> None:
 def get_node_by_id(dsn: str, node_id: str, /) -> Node | None:
     with read_only(dsn) as query:
         return inner_get_node_by_id(query, node_id)
-
-
-def get_uploaded_size(dsn: str, begin: datetime, end: datetime) -> int:
-    b = int(begin.timestamp() * 1_000_000)
-    e = int(end.timestamp() * 1_000_000)
-    with read_only(dsn) as query:
-        query.execute(
-            "SELECT SUM(size) AS sum "
-            "FROM files "
-            "INNER JOIN nodes ON files.id = nodes.id "
-            "WHERE created_time >= ? AND created_time < ?;",
-            (b, e),
-        )
-        rv = query.fetchone()
-        if not rv:
-            return 0
-        if rv["sum"] is None:
-            return 0
-        return rv["sum"]
 
 
 def find_orphan_nodes(dsn: str) -> list[Node]:

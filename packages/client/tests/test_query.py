@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock
 
-from wcpan.drive.client.types import NodeQuery, NodeQueryBuilder
+from wcpan.drive.client.types import NodeQuery, NodeQueryBuilder, NodeSummary
 
 from .test_drive import make_node
 
@@ -56,7 +56,8 @@ class NodeQueryTestCase(TestCase):
 class NodeQueryBuilderTestCase(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._run = AsyncMock(return_value=[])
-        self._builder = NodeQueryBuilder(self._run)
+        self._summarize = AsyncMock(return_value=NodeSummary(count=2, total_size=42))
+        self._builder = NodeQueryBuilder(self._run, summarize=self._summarize)
 
     def testEmptyBuilder(self) -> None:
         self.assertEqual(self._builder.to_query(), NodeQuery())
@@ -120,3 +121,14 @@ class NodeQueryBuilderTestCase(IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self._builder.limit(0).all()
         self._run.assert_not_awaited()
+
+    async def testSummarizeRunsWithoutLoadingNodes(self) -> None:
+        result = await self._builder.files_only().summarize()
+        self.assertEqual(result, NodeSummary(count=2, total_size=42))
+        self._summarize.assert_awaited_once_with(NodeQuery(is_directory=False))
+        self._run.assert_not_awaited()
+
+    async def testSummarizeRejectsLimit(self) -> None:
+        with self.assertRaises(ValueError):
+            await self._builder.limit(1).summarize()
+        self._summarize.assert_not_awaited()

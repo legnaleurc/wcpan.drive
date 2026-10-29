@@ -20,7 +20,7 @@ def bind_find_nodes(drive: Drive) -> AsyncMock:
     """
     query_nodes = aexpect(drive.query_nodes)
     cast(MagicMock, drive.find_nodes).side_effect = lambda: NodeQueryBuilder(
-        query_nodes
+        query_nodes, summarize=drive.summarize_nodes
     )
     return query_nodes
 

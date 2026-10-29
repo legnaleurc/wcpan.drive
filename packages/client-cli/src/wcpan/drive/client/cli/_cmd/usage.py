@@ -45,7 +45,5 @@ async def _get_usage(drive: Drive, id_or_path: str) -> int:
     if not node.is_directory:
         return node.size
 
-    rv = 0
-    async for _root, _folders, files in drive.walk(node):
-        rv += sum(_.size for _ in files)
-    return rv
+    summary = await drive.find_nodes().descendant_of(node).files_only().summarize()
+    return summary.total_size

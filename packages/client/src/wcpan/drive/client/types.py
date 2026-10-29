@@ -153,7 +153,7 @@ class Node:
 
 @dataclass(frozen=True, kw_only=True)
 class NodeQuery:
-    """Search conditions for Drive.query_nodes() and Cache.query_nodes().
+    """Filters for node queries and summaries on Drive and Cache.
 
     All conditions are combined with AND; None means "no condition". Build
     one with Drive.find_nodes() instead of constructing it directly.
@@ -238,8 +238,16 @@ def _check_range[T: (int, datetime)](name: str, low: T | None, high: T | None):
         raise ValueError(f"{name} range is empty")
 
 
+@dataclass(frozen=True, kw_only=True)
+class NodeSummary:
+    """Aggregate of matching nodes: directories count but contribute no size."""
+
+    count: int
+    total_size: int
+
+
 class NodeQueryBuilder:
-    """Fluent builder for NodeQuery, bound to a function that runs it.
+    """Fluent builder for NodeQuery, bound to retrieval and summary functions.
 
     Each method updates the builder and returns it; calling a method again
     replaces that condition. Get one from Drive.find_nodes().
@@ -260,8 +268,14 @@ class NodeQueryBuilder:
             ... )
     """
 
-    def __init__(self, run: Callable[[NodeQuery], Awaitable[list[Node]]]) -> None:
+    def __init__(
+        self,
+        run: Callable[[NodeQuery], Awaitable[list[Node]]],
+        *,
+        summarize: Callable[[NodeQuery], Awaitable[NodeSummary]],
+    ) -> None:
         self._run = run
+        self._summarize = summarize
         self._fields: dict[str, object] = {}
 
     def descendant_of(self, node: Node, /) -> Self:
@@ -337,6 +351,17 @@ class NodeQueryBuilder:
             ValueError: If the conditions are invalid or contradictory.
         """
         return await self._run(self.to_query())
+
+    async def summarize(self) -> NodeSummary:
+        """Count matching nodes and sum file sizes without loading nodes.
+
+        Raises:
+            ValueError: If conditions are invalid or a limit is set.
+        """
+        query = self.to_query()
+        if query.limit is not None:
+            raise ValueError("summaries do not support limit")
+        return await self._summarize(query)
 
 
 type RemoveAction = tuple[Literal[True], str]
@@ -1727,6 +1752,18 @@ class Cache(Service, metaclass=ABCMeta):
                 ...     return [self._row_to_node(row) for row in rows]
         """
 
+    @abstractmethod
+    async def summarize_nodes(self, query: NodeQuery) -> NodeSummary:
+        """Count matching nodes and sum matching file sizes.
+
+        Directories contribute to count but add no size. Empty matches return
+        zero for both fields. Uses the same filters as query_nodes().
+
+        Raises:
+            ValueError: If query.limit is set.
+            NodeNotFoundError: If query.ancestor_id is not a known node.
+        """
+
 
 type CacheFactory = CreateService[Cache]
 """Factory type for creating Cache instances.
@@ -1956,11 +1993,12 @@ class Drive(metaclass=ABCMeta):
     def find_nodes(self) -> NodeQueryBuilder:
         """Start a search over the whole drive.
 
-        Chain conditions on the returned builder, then await all() to run
-        it. Non-trashed nodes are matched unless the builder says otherwise.
+        Chain conditions, then await all() to retrieve nodes or summarize()
+        to count nodes and sum file sizes. Non-trashed nodes are matched
+        unless the builder says otherwise.
 
         Returns:
-            A NodeQueryBuilder bound to query_nodes().
+            A NodeQueryBuilder bound to query_nodes() and summarize_nodes().
 
         Example:
             Finding all Python files::
@@ -1973,7 +2011,7 @@ class Drive(metaclass=ABCMeta):
 
                 >>> nodes = await drive.find_nodes().descendant_of(node).size(max=0).all()
         """
-        return NodeQueryBuilder(self.query_nodes)
+        return NodeQueryBuilder(self.query_nodes, summarize=self.summarize_nodes)
 
     @abstractmethod
     async def query_nodes(self, query: NodeQuery) -> list[Node]:
@@ -1988,6 +2026,18 @@ class Drive(metaclass=ABCMeta):
             List of matching Nodes in no particular order (may be empty).
 
         Raises:
+            NodeNotFoundError: If query.ancestor_id is not a known node.
+        """
+
+    @abstractmethod
+    async def summarize_nodes(self, query: NodeQuery) -> NodeSummary:
+        """Count matching nodes and sum matching file sizes.
+
+        Directories contribute to count but add no size. Empty matches return
+        zero for both fields. Uses the same filters as query_nodes().
+
+        Raises:
+            ValueError: If query.limit is set.
             NodeNotFoundError: If query.ancestor_id is not a known node.
         """
 

@@ -32,6 +32,7 @@ from .types import (
     MediaInfo,
     Node,
     NodeQuery,
+    NodeSummary,
     ReadableFile,
     Service,
     SourceConfig,
@@ -193,6 +194,12 @@ class _SingleDrive(Drive):
     @override
     async def query_nodes(self, query: NodeQuery) -> list[Node]:
         return await self._cache.query_nodes(query)
+
+    @override
+    async def summarize_nodes(self, query: NodeQuery) -> NodeSummary:
+        if query.limit is not None:
+            raise ValueError("summaries do not support limit")
+        return await self._cache.summarize_nodes(query)
 
     @override
     async def walk(
@@ -507,15 +514,7 @@ class _MultiDrive(Drive):
 
     @override
     async def query_nodes(self, query: NodeQuery) -> list[Node]:
-        if query.ancestor_id is None or query.ancestor_id == _VIRTUAL_ROOT_ID:
-            # every source is under the virtual root
-            unscoped = replace(query, ancestor_id=None)
-            targets = [(name, unscoped) for name in self._sources]
-        else:
-            source_name, original_id = _parse_id(query.ancestor_id)
-            if source_name not in self._sources:
-                raise NodeNotFoundError(query.ancestor_id)
-            targets = [(source_name, replace(query, ancestor_id=original_id))]
+        targets = self._route_query(query)
 
         results: list[Node] = []
         for source_name, source_query in targets:
@@ -525,6 +524,30 @@ class _MultiDrive(Drive):
             if query.limit is not None and len(results) >= query.limit:
                 break
         return results[: query.limit]
+
+    def _route_query(self, query: NodeQuery) -> list[tuple[str, NodeQuery]]:
+        if query.ancestor_id is None or query.ancestor_id == _VIRTUAL_ROOT_ID:
+            # every source is under the virtual root
+            unscoped = replace(query, ancestor_id=None)
+            return [(name, unscoped) for name in self._sources]
+        else:
+            source_name, original_id = _parse_id(query.ancestor_id)
+            if source_name not in self._sources:
+                raise NodeNotFoundError(query.ancestor_id)
+            return [(source_name, replace(query, ancestor_id=original_id))]
+
+    @override
+    async def summarize_nodes(self, query: NodeQuery) -> NodeSummary:
+        if query.limit is not None:
+            raise ValueError("summaries do not support limit")
+        count = total_size = 0
+        for source_name, source_query in self._route_query(query):
+            summary = await self._sources[source_name].cache.summarize_nodes(
+                source_query
+            )
+            count += summary.count
+            total_size += summary.total_size
+        return NodeSummary(count=count, total_size=total_size)
 
     @override
     async def walk(
