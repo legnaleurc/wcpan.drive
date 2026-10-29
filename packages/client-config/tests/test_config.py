@@ -1,12 +1,16 @@
+from importlib import import_module
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import ModuleType
 from typing import Any
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import yaml
+from decoy import Decoy, matchers
+from wcpan.drive.client.api import create_multi_drive
 from wcpan.drive.client.config import create_drive_from_config
-from wcpan.drive.client.types import SourceConfig
+from wcpan.drive.client.types import Drive, SourceConfig
 
 
 _CFG = "wcpan.drive.client.config._cfg"
@@ -29,8 +33,10 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
         self.addCleanup(tmp.cleanup)
         self._path = Path(tmp.name) / "config.yaml"
 
-        self._import_module = MagicMock()
-        self._create_multi_drive = MagicMock()
+        self.decoy = Decoy()
+        self.addCleanup(self.decoy.reset)
+        self._import_module = self.decoy.mock(func=import_module)
+        self._create_multi_drive = self.decoy.mock(func=create_multi_drive)
         for target, mock in (
             (f"{_CFG}.import_module", self._import_module),
             (f"{_CFG}.create_multi_drive", self._create_multi_drive),
@@ -47,25 +53,32 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             async with create_drive_from_config(self._path):
                 pass
-        self._import_module.assert_not_called()
-        self._create_multi_drive.assert_not_called()
+        self.decoy.verify(self._import_module(matchers.Anything()), times=0)
+        self.decoy.verify(
+            self._create_multi_drive(sources=matchers.Anything()), times=0
+        )
 
     async def testValid(self) -> None:
-        drive = object()
-        self._create_multi_drive.return_value.__aenter__.return_value = drive
+        for name, fn in (
+            ("pkg.backend", "create_backend"),
+            ("pkg.crypt", "create_middleware"),
+            ("pkg.cache", "create_cache"),
+        ):
+            module = ModuleType(name)
+            setattr(module, fn, self.decoy.mock(name=f"{name}.{fn}"))
+            self.decoy.when(self._import_module(name)).then_return(module)
+        drive = self.decoy.mock(cls=Drive)
+        sources = matchers.Captor()
+        self.decoy.when(self._create_multi_drive(sources=sources)).then_enter_with(
+            drive
+        )
         self._write({"version": 4, "sources": [_source("google"), _source("local")]})
 
         async with create_drive_from_config(self._path) as rv:
             self.assertIs(rv, drive)
 
-        self.assertEqual(
-            [_.args[0] for _ in self._import_module.call_args_list],
-            ["pkg.backend", "pkg.crypt", "pkg.cache"] * 2,
-        )
-        sources: list[SourceConfig] = self._create_multi_drive.call_args.kwargs[
-            "sources"
-        ]
-        self.assertEqual([_.name for _ in sources], ["google", "local"])
+        captured: list[SourceConfig] = sources.value
+        self.assertEqual([_.name for _ in captured], ["google", "local"])
 
     async def testWrongVersion(self) -> None:
         await self._assert_invalid({"version": 3, "sources": [_source()]})

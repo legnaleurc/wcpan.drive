@@ -2,8 +2,9 @@
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest import IsolatedAsyncioTestCase, TestCase
+from unittest import TestCase
 
+from aiohttp import ClientSession
 from wcpan.drive.client.exceptions import NodeExistsError, NodeNotFoundError
 from wcpan.drive.client.feed.exceptions import (
     SynologyAccessError,
@@ -11,6 +12,8 @@ from wcpan.drive.client.feed.exceptions import (
 )
 from wcpan.drive.client.feed.service import FeedBackend, _check
 from wcpan.drive.client.types import Node
+
+from ._lib import DecoyTestCase
 
 
 class TestCheck(TestCase):
@@ -80,23 +83,22 @@ def _parent_node() -> Node:
     )
 
 
-class _Fake409Response:
-    def __init__(self, status: int, payload: dict) -> None:
-        self.status = status
-        self._payload = payload
+class TestCreateDirectory409(DecoyTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.session = self.decoy.mock(cls=ClientSession)
+        self.svc = FeedBackend(session=self.session, server_url="http://srv")
 
-    async def json(self) -> dict:
-        return self._payload
+    async def _stub_post(self, body: dict[str, Any]) -> None:
+        conflict = await self.create_response(409, body=body)
+        self.when_enter(
+            self.session.post(
+                "http://srv/api/v1/nodes", json={"name": "d", "parent_id": "p"}
+            ),
+            conflict,
+        )
 
-    async def __aenter__(self) -> "_Fake409Response":
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        return None
-
-
-class TestCreateDirectory409(IsolatedAsyncioTestCase):
-    def _node_body(self) -> dict:
+    def _node_body(self) -> dict[str, Any]:
         t = 1_704_067_200
         return {
             "id": "existing-dir",
@@ -118,68 +120,43 @@ class TestCreateDirectory409(IsolatedAsyncioTestCase):
         }
 
     async def test_exist_ok_returns_node(self) -> None:
-        body = self._node_body()
+        await self._stub_post(self._node_body())
 
-        class _Sess:
-            def post(self, *a, **k):
-                return _Fake409Response(409, body)
-
-        svc = FeedBackend(session=_Sess(), server_url="http://srv")  # type: ignore[arg-type]
-        node = await svc.create_directory(
+        node = await self.svc.create_directory(
             "d", _parent_node(), exist_ok=True, private=None
         )
         self.assertEqual(node.id, "existing-dir")
 
     async def test_exist_ok_false_raises_node_exists(self) -> None:
-        body = self._node_body()
+        await self._stub_post(self._node_body())
 
-        class _Sess2:
-            def post(self, *a, **k):
-                return _Fake409Response(409, body)
-
-        svc = FeedBackend(session=_Sess2(), server_url="http://srv")  # type: ignore[arg-type]
         with self.assertRaises(NodeExistsError) as ctx:
-            await svc.create_directory(
+            await self.svc.create_directory(
                 "d", _parent_node(), exist_ok=False, private=None
             )
         self.assertEqual(ctx.exception.node.id, "existing-dir")
 
     async def test_missing_node_body_raises_server_error(self) -> None:
-        class _Sess:
-            def post(self, *a, **k):
-                return _Fake409Response(409, {})
+        await self._stub_post({})
 
-        svc = FeedBackend(session=_Sess(), server_url="http://srv")  # type: ignore[arg-type]
         with self.assertRaises(SynologyServerError) as ctx:
-            await svc.create_directory("d", _parent_node(), exist_ok=True, private=None)
+            await self.svc.create_directory(
+                "d", _parent_node(), exist_ok=True, private=None
+            )
         self.assertEqual(ctx.exception.status, 409)
 
 
-class _FakeChangesResponse:
-    def __init__(self, payload: dict[str, Any], status: int = 200) -> None:
-        self.status = status
-        self._payload = payload
+class TestGetChangesReplay(DecoyTestCase):
+    async def _create_backend(self, pages: dict[str, dict[str, Any]]) -> FeedBackend:
+        session = self.decoy.mock(cls=ClientSession)
+        for cursor, page in pages.items():
+            response = await self.create_response(200, body=page)
+            self.when_enter(
+                session.get("http://srv/api/v1/changes", params={"cursor": cursor}),
+                response,
+            )
+        return FeedBackend(session=session, server_url="http://srv")
 
-    async def json(self) -> dict[str, Any]:
-        return self._payload
-
-    async def __aenter__(self) -> "_FakeChangesResponse":
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        return None
-
-
-class _FakeChangesSession:
-    def __init__(self, pages: dict[str, dict[str, Any]]) -> None:
-        self._pages = pages
-
-    def get(self, _url: str, *, params: dict[str, str]):
-        cursor = params["cursor"]
-        return _FakeChangesResponse(self._pages[cursor])
-
-
-class TestGetChangesReplay(IsolatedAsyncioTestCase):
     def _node_change(self, node_id: str, parent_id: str | None = "p") -> dict[str, Any]:
         t = 1_704_067_200
         return {
@@ -220,7 +197,7 @@ class TestGetChangesReplay(IsolatedAsyncioTestCase):
                 "changes": [self._remove_change("n1")],
             },
         }
-        svc = FeedBackend(session=_FakeChangesSession(pages), server_url="http://srv")  # type: ignore[arg-type]
+        svc = await self._create_backend(pages)
         actions_by_page = []
         async for actions, cursor in svc.get_changes("0"):
             actions_by_page.append((actions, cursor))
@@ -243,7 +220,7 @@ class TestGetChangesReplay(IsolatedAsyncioTestCase):
                 ],
             }
         }
-        svc = FeedBackend(session=_FakeChangesSession(pages), server_url="http://srv")  # type: ignore[arg-type]
+        svc = await self._create_backend(pages)
 
         seen = []
         async for actions, cursor in svc.get_changes("0"):
