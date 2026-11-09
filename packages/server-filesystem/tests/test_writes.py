@@ -319,8 +319,7 @@ class TestResumableUpload(_WriteTestCase):
         return file
 
     async def write_at(self, file: FilesystemFile, offset: int, data: bytes) -> None:
-        await file.seek(offset)
-        self.assertEqual(await file.write(data), len(data))
+        self.assertEqual(await file.write(offset, data), len(data))
 
     async def test_file_is_published_by_close(self) -> None:
         # given

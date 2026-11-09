@@ -90,21 +90,22 @@ class TestSpooledFiles(IsolatedAsyncioTestCase):
         self.assertTrue(file.path.is_relative_to(self.area.directory))
         self.assertTrue(file.path.exists())
 
-    async def test_write_keeps_everything_and_advances(self) -> None:
+    async def test_write_keeps_everything(self) -> None:
         # given
         file = await self.open(6)
         # when
-        kept = [await file.write(b"abc"), await file.write(b"def")]
-        await file.flush()
+        kept = [await file.write(0, b"abc"), await file.write(3, b"def")]
         # then
         self.assertEqual(kept, [3, 3])
-        self.assertEqual(file.path.read_bytes(), b"abcdef")
+        self.assertEqual(self.uploader.received, [])
+        await file.close()
+        self.assertEqual(self.uploader.received, [b"abcdef"])
 
     async def test_close_streams_the_spooled_bytes(self) -> None:
         # given
         media = MediaInfo(width=1, height=2, ms_duration=0, is_image=True)
         file = await self.open(6, mime_type="image/png", media_info=media)
-        await file.write(b"abcdef")
+        await file.write(0, b"abcdef")
         # when
         record = await file.close()
         # then
@@ -115,14 +116,13 @@ class TestSpooledFiles(IsolatedAsyncioTestCase):
         )
         self.assertFalse(file.path.exists())
 
-    async def test_seek_back_overwrites(self) -> None:
+    async def test_rewrite_overwrites(self) -> None:
         # given
         file = await self.open(6)
-        await file.write(b"abc")
+        await file.write(0, b"abc")
         # when
-        await file.seek(0)
-        await file.write(b"xyz")
-        await file.write(b"def")
+        await file.write(0, b"xyz")
+        await file.write(3, b"def")
         await file.close()
         # then
         self.assertEqual(self.uploader.received, [b"xyzdef"])
@@ -130,7 +130,7 @@ class TestSpooledFiles(IsolatedAsyncioTestCase):
     async def test_short_file_is_not_uploaded(self) -> None:
         # given
         file = await self.open(6)
-        await file.write(b"abc")
+        await file.write(0, b"abc")
         # when / then
         with self.assertRaises(UploadPermanentError):
             await file.close()
@@ -140,7 +140,7 @@ class TestSpooledFiles(IsolatedAsyncioTestCase):
     async def test_failed_upload_keeps_the_file_for_a_retry(self) -> None:
         # given
         file = await self.open(3)
-        await file.write(b"abc")
+        await file.write(0, b"abc")
         self.uploader.error = UploadTransientError("later")
         with self.assertRaises(UploadTransientError):
             await file.close()
@@ -159,4 +159,4 @@ class TestSpooledFiles(IsolatedAsyncioTestCase):
         # then
         self.assertFalse(file.path.exists())
         with self.assertRaises(UploadPermanentError):
-            await file.write(b"abc")
+            await file.write(0, b"abc")

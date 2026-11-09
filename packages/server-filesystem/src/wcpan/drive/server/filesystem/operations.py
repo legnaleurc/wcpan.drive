@@ -386,9 +386,12 @@ class FilesystemUploader(_Writes):
         )
         try:
             # Errors from the request stream propagate unchanged.
+            offset = 0
             async for chunk in content:
                 while chunk:
-                    chunk = chunk[await file.write(chunk) :]
+                    kept = await file.write(offset, chunk)
+                    offset += kept
+                    chunk = chunk[kept:]
             return await file.close()
         finally:
             await file.abort()
@@ -491,31 +494,15 @@ class FilesystemFile:
         self.staged = staged
         # Where the file was created, to find it on abort if the folder is gone.
         self._created_at = path
-        self._position = 0
         self._digest: str | None = None
         self._open = True
 
-    async def seek(self, offset: int) -> None:
-        self._require_open()
-        if offset < 0:
-            raise ValueError(f"negative offset {offset}")
-        self._position = offset
-
-    async def write(self, data: bytes) -> int:
+    async def write(self, offset: int, data: bytes) -> int:
         self._require_open()
         try:
-            written = await self._blocking.to_completion(
-                self.staged.write_at, self._position, data
+            return await self._blocking.to_completion(
+                self.staged.write_at, offset, data
             )
-        except OSError as e:
-            raise _upload_error(e, self.name) from e
-        self._position += written
-        return written
-
-    async def flush(self) -> None:
-        self._require_open()
-        try:
-            await self._blocking.to_completion(self.staged.file.flush)
         except OSError as e:
             raise _upload_error(e, self.name) from e
 

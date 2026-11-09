@@ -117,32 +117,16 @@ class SpooledFile:
         self._area = area
         self.path = path
         self._file: BinaryIO | None = file
-        self._position = 0
         self._parent_id = parent_id
         self._name = name
         self._size = size
         self._mime_type = mime_type
         self._media_info = media_info
 
-    async def seek(self, offset: int) -> None:
-        self._require_file()
-        if offset < 0:
-            raise ValueError(f"negative offset {offset}")
-        self._position = offset
-
-    async def write(self, data: bytes) -> int:
+    async def write(self, offset: int, data: bytes) -> int:
         f = self._require_file()
         try:
-            kept = await self._area.run(_write_at, f, self._position, data)
-        except OSError as e:
-            raise _storage_error(e) from e
-        self._position += kept
-        return kept
-
-    async def flush(self) -> None:
-        f = self._require_file()
-        try:
-            await self._area.run(f.flush)
+            return await self._area.run(_write_at, f, offset, data)
         except OSError as e:
             raise _storage_error(e) from e
 

@@ -96,30 +96,22 @@ class Uploader(Protocol):
 class WritableFile(Protocol):
     """A file opened for one resumable upload, with random access.
 
-    The core calls one method at a time, never seeks past the bytes it saw
-    kept, and calls nothing after a successful ``close`` or any ``abort``.
+    The core calls one method at a time, and nothing after a successful
+    ``close`` or any ``abort``.
     """
 
-    async def seek(self, offset: int) -> None:
-        """Move the position to *offset*, which the core has seen kept."""
-        ...
-
-    async def write(self, data: bytes) -> int:
-        """Write *data* at the position and return how many bytes were kept.
+    async def write(self, offset: int, data: bytes) -> int:
+        """Write *data* at *offset* and return how many bytes were kept.
 
         Kept bytes are stored and will not be lost while the file stays open in
-        this process; they need not be durable yet. Returns 1 to ``len(data)``
-        and advances the position by that much.
+        this process; they need not be durable yet. Returns 1 to ``len(data)``.
+        *offset* is never past the bytes the core has seen kept.
 
         A failed or cancelled write may have stored part of *data*; the core
-        counts it as nothing kept, seeks back, and writes that range again,
-        possibly with different bytes.
+        counts it as nothing kept and writes that range again, possibly with
+        different bytes.
         Raises ``UploadTransientError`` or ``UploadPermanentError``.
         """
-        ...
-
-    async def flush(self) -> None:
-        """Push buffered bytes to the backend's storage; never publishes."""
         ...
 
     async def close(self) -> NodeRecord:
@@ -378,8 +370,6 @@ class UploadService:
         session.idle.clear()
         session.last_activity = time.monotonic()
         try:
-            # A failed request may have left the position anywhere.
-            await session.file.seek(session.received)
             await self._receive(session, content)
             if session.cancelled:
                 raise UploadSessionNotFoundError()
@@ -417,7 +407,7 @@ class UploadService:
         # Immutable batches: a write still running after a cancellation can
         # never see the buffer change under it.
         while data:
-            kept = await session.file.write(data)
+            kept = await session.file.write(session.received, data)
             if not 0 < kept <= len(data):
                 raise UploadTransientError(f"Backend kept {kept} of {len(data)} bytes")
             session.received += kept

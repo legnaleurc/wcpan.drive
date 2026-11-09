@@ -50,8 +50,6 @@ class _FakeFile:
     def __init__(self, name: str) -> None:
         self.name = name
         self.data = bytearray()
-        self.position = 0
-        self.seeks: list[int] = []
         self.writes: list[tuple[int, bytes]] = []
         # How many bytes each write keeps, at most.
         self.keep: int | None = None
@@ -60,19 +58,11 @@ class _FakeFile:
         self.commit_error: Exception | None = None
         self.commit_gate: asyncio.Event | None = None
 
-    async def seek(self, offset: int) -> None:
-        self.seeks.append(offset)
-        self.position = offset
-
-    async def write(self, data: bytes) -> int:
+    async def write(self, offset: int, data: bytes) -> int:
         kept = data if self.keep is None else data[: self.keep]
-        self.writes.append((self.position, kept))
-        self.data[self.position : self.position + len(kept)] = kept
-        self.position += len(kept)
+        self.writes.append((offset, kept))
+        self.data[offset : offset + len(kept)] = kept
         return len(kept)
-
-    async def flush(self) -> None:
-        pass
 
     async def close(self) -> NodeRecord:
         self.commits += 1
@@ -215,7 +205,7 @@ class TestAppendChunk(_ServiceTestCase):
         assert status is not None
         self.assertEqual(status.received, 0)
 
-    async def test_each_request_seeks_to_the_saved_offset(self) -> None:
+    async def test_next_request_writes_from_the_saved_offset(self) -> None:
         # given
         session_id = await self.create(10)
 
@@ -229,7 +219,7 @@ class TestAppendChunk(_ServiceTestCase):
         # when
         await self.service.append_chunk(session_id, 4, _content(b"ef"))
         # then
-        self.assertEqual(self.file().seeks, [0, 4])
+        self.assertEqual(self.file().writes, [(0, b"abcd"), (4, b"ef")])
         self.assertEqual(bytes(self.file().data), b"abcdef")
 
     async def test_wrong_offset_reports_received(self) -> None:
