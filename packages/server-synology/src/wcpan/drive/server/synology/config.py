@@ -19,6 +19,8 @@ class SynologyConfig:
     otp_code: str | None = None
     # Synology path prefix to host path, for local media probing.
     local_paths: dict[str, str] = field(default_factory=dict[str, str])
+    # Parent of the spool directory for resumable uploads; None for the system's.
+    upload_tmp_dir: str | None = None
 
 
 def create_synology_client(

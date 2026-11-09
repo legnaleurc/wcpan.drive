@@ -39,7 +39,7 @@ class FakeBackend:
         self.settings = settings
         self.operations = MagicMock()
         self.uploader = MagicMock()
-        self.staging = None
+        self.files = MagicMock()
         self.discovered = asyncio.Event()
         self.running = asyncio.Event()
         self.commands: list[list[str]] = []

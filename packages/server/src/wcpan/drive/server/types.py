@@ -90,7 +90,6 @@ class ServerConfig:
     backends: dict[str, BackendConfig]
     mounts: dict[str, MountConfig]
     log_path: str | None = None
-    upload_tmp_dir: str | None = None
 
     def mounts_of(self, backend: str) -> dict[str, str]:
         """Mount name to source for the mounts *backend* serves."""

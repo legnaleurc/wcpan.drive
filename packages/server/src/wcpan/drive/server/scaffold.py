@@ -17,9 +17,7 @@ server:
   # HTTP port.
   # port: 8080
   # Log file path for wcpan.logging (default: stderr only).
-  # log_path: null
-  # Directory for temporary upload files (default: system temp dir).
-  # upload_tmp_dir: null"""
+  # log_path: null"""
 
 
 def create_config_scaffold(plugins: Sequence[str]) -> str:

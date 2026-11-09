@@ -11,6 +11,7 @@ import os
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from functools import partial
 from logging import getLogger
 from typing import BinaryIO
 
@@ -37,6 +38,7 @@ from .blocking import Blocking
 from .mutation import (
     StagedFile,
     create_staging,
+    discard_new_staging,
     make_directory,
     remove,
     rename_no_replace,
@@ -327,11 +329,11 @@ def _upload_error(e: OSError, name: str) -> Exception:
 
 
 class FilesystemUploader(_Writes):
-    """Stages uploads next to their destination and renames them into place.
+    """Writes uploads next to their destination and renames them into place.
 
-    A resumable upload keeps its staging file for the whole session. The file
-    sits inside the parent folder, so it moves with it; commit finds the folder
-    again by node and checks the file is still there.
+    A resumable upload keeps its staging file open for the whole session. The
+    file sits inside the parent folder, so it moves with it; close finds the
+    folder again by node and checks the file is still there.
     """
 
     async def find_conflict(self, parent_id: NodeId, name: str) -> NodeRecord | None:
@@ -341,23 +343,25 @@ class FilesystemUploader(_Writes):
             return None
         return await self._mirrored_child(parent_id, name)
 
-    async def begin(
+    async def open(
         self,
         parent_id: NodeId,
         name: str,
-        total_size: int,
+        size: int,
         *,
         mime_type: str | None,
         media_info: MediaInfo | None,
-    ) -> "FilesystemStage":
+    ) -> "FilesystemFile":
         self._check_writable()
         _check_name(name)
         folder = await self._folder(parent_id)
         try:
-            path, f = await self._blocking(create_staging, folder)
+            path, f = await self._blocking.allocate(
+                partial(create_staging, folder), release=discard_new_staging
+            )
         except OSError as e:
             raise _upload_error(e, name) from e
-        return FilesystemStage(
+        return FilesystemFile(
             uploader=self,
             blocking=self._blocking,
             parent_id=parent_id,
@@ -376,53 +380,51 @@ class FilesystemUploader(_Writes):
         mime_type: str | None,
         media_info: MediaInfo | None,
     ) -> NodeRecord:
-        stage = await self.begin(
+        # The size is not known up front, and this file does not need it.
+        file = await self.open(
             parent_id, name, 0, mime_type=mime_type, media_info=media_info
         )
         try:
             # Errors from the request stream propagate unchanged.
-            offset = 0
             async for chunk in content:
-                await stage.write_at(offset, chunk)
-                offset += len(chunk)
-            return await stage.commit()
+                while chunk:
+                    chunk = chunk[await file.write(chunk) :]
+            return await file.close()
         finally:
-            await stage.abort()
+            await file.abort()
 
-    async def staged_folder(self, stage: "FilesystemStage") -> str:
-        """The parent folder's current path, checked to hold *stage*'s file."""
-        folder = await self._scanner.folder_path(stage.parent_id)
+    async def staged_folder(self, file: "FilesystemFile") -> str:
+        """The parent folder's current path; raises if it is gone."""
+        folder = await self._scanner.folder_path(file.parent_id)
         if folder is None:
-            raise UploadParentGoneError(f"Folder {stage.parent_id} no longer exists")
-        if not await self._blocking(
-            stage.staged.is_at, os.path.join(folder, stage.staging_name)
-        ):
-            # The folder moved or went away, and a scan has not caught up yet.
-            raise UploadTransientError(
-                f"Folder {stage.parent_id} changed during the upload"
-            )
+            raise UploadParentGoneError(f"Folder {file.parent_id} no longer exists")
         return folder
 
-    async def publish(self, stage: "FilesystemStage", digest: str) -> NodeRecord:
-        """Rename *stage*'s file into place and record the new node."""
+    async def publish(self, file: "FilesystemFile", digest: str) -> NodeRecord:
+        """Rename *file* into place and record the new node.
+
+        A retry after the rename finds the file already in place and only
+        records it.
+        """
         async with self._scanner.exclusive():
-            folder = await self.staged_folder(stage)
-            staging = os.path.join(folder, stage.staging_name)
-            destination = os.path.join(folder, stage.name)
+            folder = await self.staged_folder(file)
+            destination = os.path.join(folder, file.name)
             async with self._node_sync.observe() as read:
-                try:
-                    await self._blocking(rename_no_replace, staging, destination)
-                except FileExistsError:
-                    pass
-                except OSError as e:
-                    raise _upload_error(e, stage.name) from e
-                else:
-                    stage.published()
+                renamed_before = await self._blocking(file.staged.is_at, destination)
+                if renamed_before or await self._place(file, folder):
+                    node_id = new_node_id()
+                    if renamed_before:
+                        # A scan may have mirrored it since the earlier attempt;
+                        # read the mirror only, as a scan here would deadlock.
+                        children = await self._mirror.get_children(file.parent_id)
+                        for child in children:
+                            if child.name == file.name:
+                                node_id = child.id
                     entry = await self._entry(destination)
                     observation = FilesystemScanner.observation(
-                        entry, new_node_id(), stage.parent_id, digest
+                        entry, node_id, file.parent_id, digest
                     )
-                    media_info = stage.media_info
+                    media_info = file.media_info
                     if media_info is not None:
                         observation = replace(
                             observation,
@@ -435,19 +437,39 @@ class FilesystemUploader(_Writes):
                                 ms_duration=media_info.ms_duration,
                             ),
                         )
-                    return await self._record(
-                        observation, read, folders=[stage.parent_id]
+                    record = await self._record(
+                        observation, read, folders=[file.parent_id]
                     )
-        existing = await self._mirrored_child(stage.parent_id, stage.name)
+                    file.published()
+                    return record
+        existing = await self._mirrored_child(file.parent_id, file.name)
         if existing is None:
             raise UploadPermanentError(
-                f"{stage.name!r} is taken by an entry that is not mirrored"
+                f"{file.name!r} is taken by an entry that is not mirrored"
             )
         raise UploadConflictError(existing)
 
+    async def _place(self, file: "FilesystemFile", folder: str) -> bool:
+        """Rename *file* to its name in *folder*; ``False`` if the name is taken."""
+        staging = os.path.join(folder, file.staging_name)
+        if not await self._blocking(file.staged.is_at, staging):
+            # The folder moved or went away, and a scan has not caught up yet.
+            raise UploadTransientError(
+                f"Folder {file.parent_id} changed during the upload"
+            )
+        try:
+            await self._blocking.to_completion(
+                rename_no_replace, staging, os.path.join(folder, file.name)
+            )
+        except FileExistsError:
+            return False
+        except OSError as e:
+            raise _upload_error(e, file.name) from e
+        return True
 
-class FilesystemStage:
-    """One upload staged next to its destination; see ``UploadStage``."""
+
+class FilesystemFile:
+    """One upload written next to its destination; see ``WritableFile``."""
 
     def __init__(
         self,
@@ -469,27 +491,48 @@ class FilesystemStage:
         self.staged = staged
         # Where the file was created, to find it on abort if the folder is gone.
         self._created_at = path
+        self._position = 0
+        self._digest: str | None = None
         self._open = True
 
-    async def write_at(self, offset: int, data: bytes) -> None:
+    async def seek(self, offset: int) -> None:
+        self._require_open()
+        if offset < 0:
+            raise ValueError(f"negative offset {offset}")
+        self._position = offset
+
+    async def write(self, data: bytes) -> int:
         self._require_open()
         try:
-            await self._blocking.to_completion(self.staged.write_at, offset, data)
+            written = await self._blocking.to_completion(
+                self.staged.write_at, self._position, data
+            )
+        except OSError as e:
+            raise _upload_error(e, self.name) from e
+        self._position += written
+        return written
+
+    async def flush(self) -> None:
+        self._require_open()
+        try:
+            await self._blocking.to_completion(self.staged.file.flush)
         except OSError as e:
             raise _upload_error(e, self.name) from e
 
-    async def commit(self) -> NodeRecord:
+    async def close(self) -> NodeRecord:
         self._require_open()
-        try:
-            digest = await self._blocking.to_completion(self.staged.finish)
-        except OSError as e:
-            raise _upload_error(e, self.name) from e
-        return await self._uploader.publish(self, digest)
+        if self._digest is None:
+            try:
+                self._digest = await self._blocking.to_completion(self.staged.finish)
+            except OSError as e:
+                raise _upload_error(e, self.name) from e
+        return await self._uploader.publish(self, self._digest)
 
     async def abort(self) -> None:
         if not self._open:
             return
         self._open = False
+        # Only staging paths: a file an earlier close renamed into place stays.
         paths = [self._created_at]
         try:
             folder = await self._uploader.staged_folder(self)
@@ -503,7 +546,7 @@ class FilesystemStage:
             _L.warning("cannot discard staging file %r: %s", self.staging_name, e)
 
     def published(self) -> None:
-        """The file was renamed into place; close it without deleting it."""
+        """The file is in place and recorded; close it without deleting it."""
         self._open = False
         self.staged.file.close()
 

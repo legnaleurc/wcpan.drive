@@ -10,6 +10,7 @@ from typing import Annotated
 
 from wcpan.drive.server.backend import BackendContext
 from wcpan.drive.server.services.paths import map_by_prefix
+from wcpan.drive.server.services.spool import SpooledFiles, create_spool_area
 from wcpan.synology import SynologyClient, SynologyPath
 
 from .backfill import BackfillService
@@ -40,6 +41,7 @@ class _Connection:
 class _Serving:
     operations: SynologyNodeOperations
     uploader: SynologyUploader
+    files: SpooledFiles
     startup_scan: StartupScanService
     webhook_service: WebhookService
 
@@ -68,6 +70,10 @@ async def create_backend(
         dict[str, str] | None,
         "Synology path prefix -> host path, for media metadata probing.",
     ] = None,
+    upload_tmp_dir: Annotated[
+        str | None,
+        "Directory for resumable upload spool files (default: system temp dir).",
+    ] = None,
 ) -> AsyncGenerator["SynologyBackend", None]:
     """Backend factory for ``type: wcpan.drive.server.synology.create_backend``.
 
@@ -81,6 +87,7 @@ async def create_backend(
         webhook_app_id=webhook_app_id,
         otp_code=otp_code,
         local_paths=dict(local_paths or {}),
+        upload_tmp_dir=upload_tmp_dir,
     )
     await context.core.mirror.register_schema(context.name, SYNOLOGY_SCHEMA)
     backend = SynologyBackend(context=context, config=config)
@@ -129,9 +136,9 @@ class SynologyBackend:
         return self._require_serving().uploader
 
     @property
-    def staging(self) -> None:
-        # The Drive API takes a file in one request, so the core spools it.
-        return None
+    def files(self) -> SpooledFiles:
+        # The Drive API takes a file in one request, so resumable uploads spool.
+        return self._require_serving().files
 
     async def run_until_ready(self) -> None:
         """Startup scan, then the webhooks that arrived meanwhile."""
@@ -186,17 +193,23 @@ class SynologyBackend:
                     c.drive_api, self._config, url=f"{self._config.public_url}{path}"
                 )
             )
+            tmp_dir = self._config.upload_tmp_dir
+            spool = stack.enter_context(
+                create_spool_area(tmp_dir=Path(tmp_dir) if tmp_dir else None)
+            )
+            uploader = SynologyUploader(
+                drive_api=c.drive_api,
+                syno_paths=c.syno_paths,
+                node_sync=core.node_sync,
+            )
             self._serving = _Serving(
                 operations=SynologyNodeOperations(
                     drive_api=c.drive_api,
                     syno_paths=c.syno_paths,
                     node_sync=core.node_sync,
                 ),
-                uploader=SynologyUploader(
-                    drive_api=c.drive_api,
-                    syno_paths=c.syno_paths,
-                    node_sync=core.node_sync,
-                ),
+                uploader=uploader,
+                files=SpooledFiles(uploader=uploader, area=spool),
                 startup_scan=StartupScanService(
                     drive_api=c.drive_api,
                     mirror=core.mirror,

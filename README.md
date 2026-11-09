@@ -188,7 +188,6 @@ server:
   port: 8080               # default 8080
   database_url: "/data/mirror.db"
   # log_path: "/var/log/wcpan-drive-server.log"
-  # upload_tmp_dir: "/tmp/wcpan-uploads"
 backends:
   nas:
     type: wcpan.drive.server.synology.create_backend
@@ -234,10 +233,12 @@ hex and Synology IDs are its permanent links, so collisions are not expected.
 
 Settings: `url`, `username`, `password`, `webhook_callback_url`, optional
 `webhook_app_id` (default `wcpan-drive-server-synology`), optional `otp_code`,
-and optional `local_paths`. Version 3 configs with a nested `webhook` section
-(`callback_url`, `app_id`) are rejected; rename its keys to
-`webhook_callback_url` and `webhook_app_id`. Version 2 files are converted.
-Each instance:
+optional `local_paths`, and optional `upload_tmp_dir`. Version 3 configs with a
+nested `webhook` section (`callback_url`, `app_id`) are rejected; rename its
+keys to `webhook_callback_url` and `webhook_app_id`. `upload_tmp_dir` used to
+be a `server` setting; version 3 configs that still set `server.upload_tmp_dir`
+are rejected, so move it to each Synology backend. Version 2 files are
+converted. Each instance:
 
 - connects to Synology Drive through DSM's WebStation API using
   `wcpan-synology`
@@ -245,6 +246,12 @@ Each instance:
   `NAME` is the backend instance name
 - keeps its mounts in sync through a startup scan, webhook events, and the
   `backend NAME backfill PATH` command
+- spools resumable uploads to a temporary file under `upload_tmp_dir`
+  (default: the system temporary directory), since Synology Drive takes a file
+  in one request; the file is uploaded when the last chunk arrives. Direct
+  uploads stream straight through. If Synology Drive accepted the file but the
+  server failed before recording it, finishing the session again reports the
+  upload as a conflict with that file
 
 `backfill PATH` takes a virtual mirror path (`/` is the server root, then mount
 names and folders) and reconciles this instance's mounts under it.
@@ -289,9 +296,8 @@ Settings, all optional:
 - Uploads are written to a hidden `.wcpan-upload-*` file in the destination
   folder and renamed into place when complete; interrupted uploads are removed,
   and these files are never mirrored. Resumable upload sessions write there
-  directly, so they do not use `upload_tmp_dir`. If the folder moves during a
-  session, finishing it returns 503 until a scan has seen the move; if the
-  folder is deleted, it returns 410.
+  directly. If the folder moves during a session, finishing it returns 503
+  until a scan has seen the move; if the folder is deleted, it returns 410.
 - With `read_only: true`, every change returns 403.
 - Images and videos are probed from the mount sources unless `local_paths` maps
   them elsewhere.

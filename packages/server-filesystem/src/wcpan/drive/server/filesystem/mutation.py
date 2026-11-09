@@ -77,6 +77,16 @@ def create_staging(directory: str) -> tuple[str, BinaryIO]:
     return path, os.fdopen(os.open(path, flags, 0o666), "r+b")
 
 
+def discard_new_staging(staging: tuple[str, BinaryIO]) -> None:
+    """Close and delete a staging file from ``create_staging``."""
+    path, f = staging
+    f.close()
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 class StagedFile:
     """An open staging file, hashed as it is written in order.
 
@@ -89,19 +99,20 @@ class StagedFile:
         self._hashed = 0
         self._in_order = True
 
-    def write_at(self, offset: int, data: bytes) -> None:
+    def write_at(self, offset: int, data: bytes) -> int:
+        """Write *data* at *offset*; return how many bytes were written."""
         self.file.seek(offset)
-        self.file.write(data)
+        written = self.file.write(data)
         # Updated in the same call as the write, so a caller cancelled while it
-        # ran cannot leave the two apart; a rewritten range is hashed once.
-        end = offset + len(data)
-        if not self._in_order or end <= self._hashed:
-            return
-        if offset > self._hashed:
-            self._in_order = False
-            return
-        self._digest.update(memoryview(data)[self._hashed - offset :])
-        self._hashed = end
+        # ran cannot leave the two apart.
+        if self._in_order:
+            if offset == self._hashed:
+                self._digest.update(memoryview(data)[:written])
+                self._hashed += written
+            else:
+                # A gap, or a range written again, perhaps with other bytes.
+                self._in_order = False
+        return written
 
     def finish(self) -> str:
         """Flush the content to disk and return its checksum."""

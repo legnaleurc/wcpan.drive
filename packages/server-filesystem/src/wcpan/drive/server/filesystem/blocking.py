@@ -5,6 +5,8 @@ from collections.abc import Callable
 from concurrent.futures import Executor
 from functools import partial
 
+from wcpan.drive.server.lib.executor import allocate, run_to_completion
+
 
 class Blocking:
     """Bounded executor for directory listings, hashing, and file reads.
@@ -29,10 +31,10 @@ class Blocking:
 
         For calls that use a file the caller closes afterwards.
         """
-        loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self._executor, partial(fn, *args, **kwargs))
-        try:
-            return await asyncio.shield(future)
-        except asyncio.CancelledError:
-            await future
-            raise
+        return await run_to_completion(self._executor, fn, *args, **kwargs)
+
+    async def allocate[R](
+        self, fn: Callable[[], R], /, *, release: Callable[[R], None]
+    ) -> R:
+        """Run *fn*, releasing what it returns if the caller is cancelled."""
+        return await allocate(self._executor, fn, release=release)

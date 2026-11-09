@@ -5,10 +5,11 @@ import hashlib
 import os
 import shutil
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import patch
 
-from wcpan.drive.protocol.types import MediaInfo
-from wcpan.drive.server.filesystem.operations import FilesystemStage
+from wcpan.drive.protocol.types import MediaInfo, NodeRecord
+from wcpan.drive.server.filesystem.operations import FilesystemFile
 from wcpan.drive.server.filesystem.reading import STAGING_PREFIX
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
 from wcpan.drive.server.services.operations import (
@@ -302,30 +303,34 @@ class TestUpload(_WriteTestCase):
 class TestResumableUpload(_WriteTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.stages: list[FilesystemStage] = []
+        self.files: list[FilesystemFile] = []
 
     async def asyncTearDown(self) -> None:
-        # Before the harness stops the pool the stages close their files on.
-        for stage in self.stages:
-            await stage.abort()
+        # Before the harness stops the pool the files are closed on.
+        for file in self.files:
+            await file.abort()
         await super().asyncTearDown()
 
-    async def begin(self, parent: str, name: str) -> FilesystemStage:
-        stage = await self.uploader.begin(
+    async def open(self, parent: str, name: str) -> FilesystemFile:
+        file = await self.uploader.open(
             await self.node_id(parent), name, 0, mime_type=None, media_info=None
         )
-        self.stages.append(stage)
-        return stage
+        self.files.append(file)
+        return file
 
-    async def test_stage_is_published_by_commit(self) -> None:
+    async def write_at(self, file: FilesystemFile, offset: int, data: bytes) -> None:
+        await file.seek(offset)
+        self.assertEqual(await file.write(data), len(data))
+
+    async def test_file_is_published_by_close(self) -> None:
         # given
-        stage = await self.begin("b", "new.bin")
-        await stage.write_at(0, b"part one ")
-        await stage.write_at(9, b"part two")
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"part one ")
+        await self.write_at(file, 9, b"part two")
         self.assertEqual(len(self.staging_files()), 1)
 
         # when
-        record = await stage.commit()
+        record = await file.close()
 
         # then
         self.assertEqual((self.source / "b/new.bin").read_bytes(), b"part one part two")
@@ -336,26 +341,106 @@ class TestResumableUpload(_WriteTestCase):
 
     async def test_rewritten_range_keeps_the_checksum(self) -> None:
         # given
-        stage = await self.begin("b", "new.bin")
-        await stage.write_at(0, b"abc")
-        await stage.write_at(0, b"abc")
-        await stage.write_at(3, b"def")
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"abc")
+        await self.write_at(file, 0, b"abc")
+        await self.write_at(file, 3, b"def")
 
         # when
-        record = await stage.commit()
+        record = await file.close()
 
         # then
         self.assertEqual(record.hash, hashlib.md5(b"abcdef").hexdigest())
 
-    async def test_commit_follows_a_moved_folder(self) -> None:
+    async def test_range_rewritten_with_other_bytes_is_rehashed(self) -> None:
         # given
-        stage = await self.begin("b", "new.bin")
-        await stage.write_at(0, b"data")
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"abc")
+        await self.write_at(file, 0, b"xyz")
+        await self.write_at(file, 3, b"def")
+
+        # when
+        record = await file.close()
+
+        # then
+        self.assertEqual((self.source / "b/new.bin").read_bytes(), b"xyzdef")
+        self.assertEqual(record.hash, hashlib.md5(b"xyzdef").hexdigest())
+
+    async def test_close_after_a_failed_record_finishes_it(self) -> None:
+        # given
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"data")
+        record_once = self.uploader._record
+        failures = [OSError("mirror unavailable")]
+
+        async def flaky(*args: Any, **kwargs: Any) -> NodeRecord:
+            if failures:
+                raise failures.pop()
+            return await record_once(*args, **kwargs)
+
+        with patch.object(self.uploader, "_record", flaky):
+            with self.assertRaises(OSError):
+                await file.close()
+            self.assertEqual((self.source / "b/new.bin").read_bytes(), b"data")
+
+            # when
+            record = await file.close()
+
+        # then
+        self.assertEqual(await self.node_id("b/new.bin"), record.id)
+        await file.abort()
+        self.assertEqual((self.source / "b/new.bin").read_bytes(), b"data")
+        self.assertEqual(self.staging_files(), [])
+        await self.assert_rescan_is_quiet()
+
+    async def test_close_after_a_scan_keeps_the_scanned_node(self) -> None:
+        # given
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"data")
+        with patch.object(
+            self.uploader, "_record", side_effect=OSError("mirror unavailable")
+        ):
+            with self.assertRaises(OSError):
+                await file.close()
+        await self.scan()
+        scanned = await self.node_id("b/new.bin")
+
+        # when
+        record = await file.close()
+
+        # then
+        self.assertEqual(record.id, scanned)
+        children = await self.mirror.get_children(await self.node_id("b"))
+        self.assertEqual([c.name for c in children], ["new.bin"])
+        await self.assert_rescan_is_quiet()
+
+    async def test_abort_after_a_failed_record_keeps_the_published_file(
+        self,
+    ) -> None:
+        # given
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"data")
+        with patch.object(
+            self.uploader, "_record", side_effect=OSError("mirror unavailable")
+        ):
+            with self.assertRaises(OSError):
+                await file.close()
+
+        # when
+        await file.abort()
+
+        # then
+        self.assertEqual((self.source / "b/new.bin").read_bytes(), b"data")
+
+    async def test_close_follows_a_moved_folder(self) -> None:
+        # given
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"data")
         os.rename(self.source / "b", self.source / "a/b-moved")
         await self.scan()
 
         # when
-        record = await stage.commit()
+        record = await file.close()
 
         # then
         self.assertEqual((self.source / "a/b-moved/new.bin").read_bytes(), b"data")
@@ -363,54 +448,54 @@ class TestResumableUpload(_WriteTestCase):
 
     async def test_folder_moved_before_a_scan_is_transient(self) -> None:
         # given
-        stage = await self.begin("b", "new.bin")
-        await stage.write_at(0, b"data")
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"data")
         os.rename(self.source / "b", self.source / "b-moved")
 
         # when / then
         with self.assertRaises(UploadTransientError):
-            await stage.commit()
+            await file.close()
 
         # then: nothing was published, and the staged bytes are kept for a retry
         self.assertEqual(list((self.source / "b-moved").glob("new.bin")), [])
         await self.scan()
-        record = await stage.commit()
+        record = await file.close()
         self.assertEqual(await self.node_id("b-moved/new.bin"), record.id)
 
     async def test_deleted_folder_is_parent_gone(self) -> None:
         # given
-        stage = await self.begin("b", "new.bin")
-        await stage.write_at(0, b"data")
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"data")
         shutil.rmtree(self.source / "b")
         await self.scan()
 
         # when / then
         with self.assertRaises(UploadParentGoneError):
-            await stage.commit()
+            await file.close()
 
-    async def test_conflict_on_commit_keeps_the_existing_file(self) -> None:
+    async def test_conflict_on_close_keeps_the_existing_file(self) -> None:
         # given
-        stage = await self.begin("a", "f.txt")
-        await stage.write_at(0, b"replacement")
+        file = await self.open("a", "f.txt")
+        await self.write_at(file, 0, b"replacement")
 
         # when / then
         with self.assertRaises(UploadConflictError) as cm:
-            await stage.commit()
+            await file.close()
 
         # then
         self.assertEqual(cm.exception.record.id, await self.node_id("a/f.txt"))
         self.assertEqual((self.source / "a/f.txt").read_bytes(), b"hello")
-        await stage.abort()
+        await file.abort()
         self.assertEqual(self.staging_files(), [])
 
     async def test_abort_removes_the_staging_file(self) -> None:
         # given
-        stage = await self.begin("b", "new.bin")
-        await stage.write_at(0, b"data")
+        file = await self.open("b", "new.bin")
+        await self.write_at(file, 0, b"data")
 
         # when
-        await stage.abort()
-        await stage.abort()
+        await file.abort()
+        await file.abort()
 
         # then
         self.assertEqual(self.staging_files(), [])
@@ -418,12 +503,12 @@ class TestResumableUpload(_WriteTestCase):
 
     async def test_abort_finds_the_file_in_a_moved_folder(self) -> None:
         # given
-        stage = await self.begin("b", "new.bin")
+        file = await self.open("b", "new.bin")
         os.rename(self.source / "b", self.source / "b-moved")
         await self.scan()
 
         # when
-        await stage.abort()
+        await file.abort()
 
         # then
         self.assertEqual(self.staging_files(), [])

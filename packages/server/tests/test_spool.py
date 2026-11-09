@@ -8,8 +8,8 @@ from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 from wcpan.drive.server.services.spool import (
-    SpoolStage,
-    SpoolStaging,
+    SpooledFile,
+    SpooledFiles,
     create_spool_area,
 )
 from wcpan.drive.server.services.upload import (
@@ -63,90 +63,100 @@ class _RecordingUploader:
         )
 
 
-class TestSpoolStaging(IsolatedAsyncioTestCase):
+class TestSpooledFiles(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.area = self.enterContext(create_spool_area(tmp_dir=self.tmp))
         self.uploader = _RecordingUploader()
-        self.staging = SpoolStaging(uploader=self.uploader, area=self.area)
+        self.files = SpooledFiles(uploader=self.uploader, area=self.area)
 
-    async def begin(
+    async def open(
         self,
-        total: int,
+        size: int,
         *,
         mime_type: str | None = None,
         media_info: MediaInfo | None = None,
-    ) -> SpoolStage:
-        stage = await self.staging.begin(
-            NodeId("p"), "f.bin", total, mime_type=mime_type, media_info=media_info
+    ) -> SpooledFile:
+        file = await self.files.open(
+            NodeId("p"), "f.bin", size, mime_type=mime_type, media_info=media_info
         )
-        self.addAsyncCleanup(stage.abort)
-        return stage
+        self.addAsyncCleanup(file.abort)
+        return file
 
-    async def test_begin_creates_a_file_in_the_area(self) -> None:
+    async def test_open_creates_a_file_in_the_area(self) -> None:
         # when
-        stage = await self.begin(4)
+        file = await self.open(4)
         # then
-        self.assertTrue(stage.path.is_relative_to(self.area.directory))
-        self.assertTrue(stage.path.exists())
+        self.assertTrue(file.path.is_relative_to(self.area.directory))
+        self.assertTrue(file.path.exists())
 
-    async def test_commit_streams_the_spooled_bytes(self) -> None:
+    async def test_write_keeps_everything_and_advances(self) -> None:
+        # given
+        file = await self.open(6)
+        # when
+        kept = [await file.write(b"abc"), await file.write(b"def")]
+        await file.flush()
+        # then
+        self.assertEqual(kept, [3, 3])
+        self.assertEqual(file.path.read_bytes(), b"abcdef")
+
+    async def test_close_streams_the_spooled_bytes(self) -> None:
         # given
         media = MediaInfo(width=1, height=2, ms_duration=0, is_image=True)
-        stage = await self.begin(6, mime_type="image/png", media_info=media)
-        await stage.write_at(0, b"abc")
-        await stage.write_at(3, b"def")
+        file = await self.open(6, mime_type="image/png", media_info=media)
+        await file.write(b"abcdef")
         # when
-        record = await stage.commit()
+        record = await file.close()
         # then
         self.assertEqual(record.name, "f.bin")
         self.assertEqual(self.uploader.received, [b"abcdef"])
         self.assertEqual(
             self.uploader.calls, [(NodeId("p"), "f.bin", "image/png", media)]
         )
-        self.assertFalse(stage.path.exists())
+        self.assertFalse(file.path.exists())
 
-    async def test_rewritten_range_is_not_duplicated(self) -> None:
+    async def test_seek_back_overwrites(self) -> None:
         # given
-        stage = await self.begin(6)
-        await stage.write_at(0, b"abc")
-        await stage.write_at(0, b"abc")
-        await stage.write_at(3, b"def")
+        file = await self.open(6)
+        await file.write(b"abc")
         # when
-        await stage.commit()
+        await file.seek(0)
+        await file.write(b"xyz")
+        await file.write(b"def")
+        await file.close()
         # then
-        self.assertEqual(self.uploader.received, [b"abcdef"])
+        self.assertEqual(self.uploader.received, [b"xyzdef"])
 
     async def test_short_file_is_not_uploaded(self) -> None:
         # given
-        stage = await self.begin(6)
-        await stage.write_at(0, b"abc")
+        file = await self.open(6)
+        await file.write(b"abc")
         # when / then
         with self.assertRaises(UploadPermanentError):
-            await stage.commit()
+            await file.close()
         # then
         self.assertEqual(self.uploader.calls, [])
 
     async def test_failed_upload_keeps_the_file_for_a_retry(self) -> None:
         # given
-        stage = await self.begin(3)
-        await stage.write_at(0, b"abc")
+        file = await self.open(3)
+        await file.write(b"abc")
         self.uploader.error = UploadTransientError("later")
         with self.assertRaises(UploadTransientError):
-            await stage.commit()
+            await file.close()
         self.uploader.error = None
         # when
-        await stage.commit()
+        await file.close()
         # then
         self.assertEqual(self.uploader.received, [b"abc", b"abc"])
 
     async def test_abort_removes_the_file_and_is_idempotent(self) -> None:
         # given
-        stage = await self.begin(3)
+        file = await self.open(3)
         # when
-        await stage.abort()
-        await stage.abort()
+        await file.abort()
+        await file.abort()
         # then
-        self.assertFalse(stage.path.exists())
+        self.assertFalse(file.path.exists())
         with self.assertRaises(UploadPermanentError):
-            await stage.write_at(0, b"abc")
+            await file.write(b"abc")

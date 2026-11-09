@@ -38,7 +38,7 @@ from wcpan.drive.server.keys import (
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 from wcpan.drive.server.services.spool import (
     SpoolArea,
-    SpoolStaging,
+    SpooledFiles,
     create_spool_area,
 )
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -170,7 +170,7 @@ def _make_app(
     app[UPLOAD_SERVICE_KEY] = UploadService(
         store=UploadSessionStore(),
         uploader=uploader,
-        staging=SpoolStaging(uploader=uploader, area=spool),
+        files=SpooledFiles(uploader=uploader, area=spool),
     )
 
     app.router.add_get("/api/v1/root", get_root)

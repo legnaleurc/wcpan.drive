@@ -31,7 +31,7 @@ from wcpan.drive.server.keys import (
 )
 from wcpan.drive.server.services.spool import (
     SpoolArea,
-    SpoolStaging,
+    SpooledFiles,
     create_spool_area,
 )
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -249,7 +249,7 @@ class _NodesTestCase(DecoyTestCase):
         app[UPLOAD_SERVICE_KEY] = UploadService(
             store=UploadSessionStore(),
             uploader=uploader,
-            staging=SpoolStaging(uploader=uploader, area=spool),
+            files=SpooledFiles(uploader=uploader, area=spool),
         )
 
         app.router.add_get("/api/v1/nodes/{id}", get_node)

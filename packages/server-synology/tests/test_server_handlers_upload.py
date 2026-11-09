@@ -31,8 +31,8 @@ from wcpan.drive.server.keys import (
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.spool import _L as _SPOOL_L
 from wcpan.drive.server.services.spool import (
-    SpoolStage,
-    SpoolStaging,
+    SpooledFile,
+    SpooledFiles,
     create_spool_area,
 )
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -128,9 +128,9 @@ class _UploadTestCase(DecoyTestCase):
             syno_paths=syno_paths,
             node_sync=node_sync,
         )
-        self._staging = SpoolStaging(uploader=uploader, area=self._spool)
+        self._files = SpooledFiles(uploader=uploader, area=self._spool)
         self._service = UploadService(
-            store=self._store, uploader=uploader, staging=self._staging
+            store=self._store, uploader=uploader, files=self._files
         )
         app[UPLOAD_SERVICE_KEY] = self._service
         self._app = app
@@ -139,7 +139,7 @@ class _UploadTestCase(DecoyTestCase):
     async def _session(self, total: int, name: str = "f.bin") -> UploadSession:
         """A registered session spooling to a real temporary file."""
         await self._make_app()
-        stage = await self._staging.begin(
+        file = await self._files.open(
             NodeId("p1"), name, total, mime_type=None, media_info=None
         )
         session = UploadSession(
@@ -149,7 +149,7 @@ class _UploadTestCase(DecoyTestCase):
             total_size=total,
             mime_type=None,
             media_info=None,
-            stage=stage,
+            file=file,
         )
         self._store.add(session)
         return session
@@ -385,7 +385,7 @@ class TestHeadUploadSession(_UploadTestCase):
     async def test_expired_session_is_removed_with_temp_file(self):
         # given
         session = await self._session(2048)
-        path = cast(SpoolStage, session.stage).path
+        path = cast(SpooledFile, session.file).path
         session.last_activity = 10.0
 
         # when

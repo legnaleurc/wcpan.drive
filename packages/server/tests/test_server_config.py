@@ -56,14 +56,19 @@ class TestVersion3(unittest.TestCase):
                     "host": "0.0.0.0",
                     "port": 9000,
                     "log_path": "/tmp/s.log",
-                    "upload_tmp_dir": "/tmp/up",
                 }
             )
         )
         # then
         self.assertEqual((config.host, config.port), ("0.0.0.0", 9000))
         self.assertEqual(config.log_path, "/tmp/s.log")
-        self.assertEqual(config.upload_tmp_dir, "/tmp/up")
+
+    def test_server_upload_tmp_dir_is_rejected(self):
+        # given
+        raw = _v3(server={"database_url": "/tmp/m.db", "upload_tmp_dir": "/tmp/up"})
+        # when / then
+        with self.assertRaisesRegex(ValueError, "backends.<name>"):
+            parse_config(raw)
 
     def test_mount_must_name_a_configured_backend(self):
         # given
@@ -120,6 +125,22 @@ class TestLegacyVersion2(unittest.TestCase):
             MountConfig(backend=LEGACY_BACKEND_NAME, source="/volume1/photos"),
         )
         self.assertEqual(config.port, 9000)
+
+    def test_upload_tmp_dir_moves_to_the_synology_backend(self):
+        # when
+        config = parse_config(
+            {
+                "version": 2,
+                "database_url": "/tmp/mirror.db",
+                "upload_tmp_dir": "/tmp/up",
+                "synology": {"url": "https://nas"},
+                "mounts": {},
+                "local_paths": {},
+            }
+        )
+        # then
+        settings = config.backends[LEGACY_BACKEND_NAME].settings
+        self.assertEqual(settings["upload_tmp_dir"], "/tmp/up")
 
 
 class TestVersionCheck(unittest.TestCase):

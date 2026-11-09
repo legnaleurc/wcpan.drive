@@ -47,6 +47,7 @@ class RawServerSection:
     host: str = "127.0.0.1"
     port: int = 8080
     log_path: str | None = None
+    # Moved to the settings of backends that spool uploads; rejected here.
     upload_tmp_dir: str | None = None
 
 
@@ -126,6 +127,11 @@ def _parse_version(raw: Any) -> int:
 
 
 def _from_raw(raw: RawServerConfig) -> ServerConfig:
+    if raw.server.upload_tmp_dir is not None:
+        raise ValueError(
+            "server.upload_tmp_dir has moved: set upload_tmp_dir on each"
+            " Synology backend under backends.<name> instead"
+        )
     backends: dict[str, BackendConfig] = {}
     for name, section in raw.backends.items():
         settings = dict(section)
@@ -143,7 +149,6 @@ def _from_raw(raw: RawServerConfig) -> ServerConfig:
             for name, m in raw.mounts.items()
         },
         log_path=raw.server.log_path,
-        upload_tmp_dir=raw.server.upload_tmp_dir,
     )
 
 
@@ -154,6 +159,8 @@ def _from_legacy(raw: _RawLegacyConfig) -> ServerConfig:
         for key, value in cast(dict[str, Any], webhook).items():
             settings[f"webhook_{key}"] = value
     settings["local_paths"] = dict(raw.local_paths)
+    if raw.upload_tmp_dir is not None:
+        settings["upload_tmp_dir"] = raw.upload_tmp_dir
     return ServerConfig(
         host=raw.host,
         port=raw.port,
@@ -168,7 +175,6 @@ def _from_legacy(raw: _RawLegacyConfig) -> ServerConfig:
             for name, source in raw.mounts.items()
         },
         log_path=raw.log_path,
-        upload_tmp_dir=raw.upload_tmp_dir,
     )
 
 

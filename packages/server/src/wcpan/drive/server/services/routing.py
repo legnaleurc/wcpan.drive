@@ -12,11 +12,11 @@ from .operations import (
     OperationNotSupportedError,
     OperationUnavailableError,
 )
-from .upload import Uploader, UploadStage, UploadStaging
+from .upload import FileOpener, Uploader, WritableFile
 
 
 class BackendRouter:
-    """``NodeOperations``, ``Uploader``, and ``UploadStaging`` over several backends."""
+    """``NodeOperations``, ``Uploader``, and ``FileOpener`` over several backends."""
 
     def __init__(
         self,
@@ -25,13 +25,13 @@ class BackendRouter:
         mount_backends: Mapping[str, str],
         operations: Mapping[str, NodeOperations],
         uploaders: Mapping[str, Uploader],
-        stagings: Mapping[str, UploadStaging],
+        files: Mapping[str, FileOpener],
     ) -> None:
         self._mirror = mirror
         self._mount_backends = mount_backends
         self._operations = operations
         self._uploaders = uploaders
-        self._stagings = stagings
+        self._files = files
 
     async def backend_of(self, node_id: NodeId) -> str:
         """The backend instance serving the mount that contains *node_id*."""
@@ -94,19 +94,19 @@ class BackendRouter:
             parent_id, name, content, mime_type=mime_type, media_info=media_info
         )
 
-    async def begin(
+    async def open(
         self,
         parent_id: NodeId,
         name: str,
-        total_size: int,
+        size: int,
         *,
         mime_type: str | None,
         media_info: MediaInfo | None,
-    ) -> UploadStage:
-        # The stage stays bound to this backend for the rest of the session.
+    ) -> WritableFile:
+        # The file stays bound to this backend for the rest of the session.
         backend = await self.backend_of(parent_id)
-        return await self._stagings[backend].begin(
-            parent_id, name, total_size, mime_type=mime_type, media_info=media_info
+        return await self._files[backend].open(
+            parent_id, name, size, mime_type=mime_type, media_info=media_info
         )
 
     def operations_of(self, backend: str) -> NodeOperations:

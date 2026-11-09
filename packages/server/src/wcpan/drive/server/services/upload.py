@@ -1,16 +1,16 @@
 """Upload workflow service plus in-memory resumable session store.
 
-A resumable session writes into an ``UploadStage`` that its backend owns: native
-staging where the backend has it, otherwise a local spool (``spool.py``). The
-core owns the request stream, so it always knows exactly how many bytes the
-stage accepted.
+A resumable session is a ``WritableFile`` that the core opened on the parent's
+backend. The backend decides how to store it: in place where it can, or in a
+local spool (``spool.py``) for backends that take a file only whole. The core
+owns the request stream and counts only the bytes the file reports kept.
 """
 
 import asyncio
 import secrets
 import time
 from collections.abc import AsyncIterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from logging import getLogger
 from typing import Protocol
@@ -22,7 +22,7 @@ from ..lib.names import normalize_name
 
 _L = getLogger(__name__)
 
-FILE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB per stage write
+FILE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB per file write
 UPLOAD_SESSION_TTL = 60 * 60
 UPLOAD_CLEANUP_INTERVAL = 5 * 60
 
@@ -93,28 +93,43 @@ class Uploader(Protocol):
         ...
 
 
-class UploadStage(Protocol):
-    """Storage for one resumable upload, published by ``commit``.
+class WritableFile(Protocol):
+    """A file opened for one resumable upload, with random access.
 
-    The core calls one method at a time, and nothing after a successful
-    ``commit`` or any ``abort``.
+    The core calls one method at a time, never seeks past the bytes it saw
+    kept, and calls nothing after a successful ``close`` or any ``abort``.
     """
 
-    async def write_at(self, offset: int, data: bytes) -> None:
-        """Store all of *data* at *offset*, or raise.
+    async def seek(self, offset: int) -> None:
+        """Move the position to *offset*, which the core has seen kept."""
+        ...
 
-        After a failure or cancellation the core retries from the last offset
-        it saw accepted, so a range may be written again with the same bytes.
+    async def write(self, data: bytes) -> int:
+        """Write *data* at the position and return how many bytes were kept.
+
+        Kept bytes are stored and will not be lost while the file stays open in
+        this process; they need not be durable yet. Returns 1 to ``len(data)``
+        and advances the position by that much.
+
+        A failed or cancelled write may have stored part of *data*; the core
+        counts it as nothing kept, seeks back, and writes that range again,
+        possibly with different bytes.
         Raises ``UploadTransientError`` or ``UploadPermanentError``.
         """
         ...
 
-    async def commit(self) -> NodeRecord:
-        """Publish the staged bytes under the parent and name given to ``begin``.
+    async def flush(self) -> None:
+        """Push buffered bytes to the backend's storage; never publishes."""
+        ...
+
+    async def close(self) -> NodeRecord:
+        """Publish the written bytes under the parent and name given to ``open``.
 
         Never replaces an existing entry, and never publishes under a different
-        folder than that parent. After any error but a conflict the stage is
-        still usable, so the core may commit again or abort.
+        folder than that parent. Unlike ``io`` close, a failure other than a
+        conflict, including cancellation, leaves the file open: the core may
+        close again, and a retry after a partial publish finishes it rather than
+        publishing twice.
 
         Raises ``UploadConflictError``, ``UploadTransientError``,
         ``UploadNameTooLongError``, ``UploadParentGoneError``, or
@@ -123,27 +138,36 @@ class UploadStage(Protocol):
         ...
 
     async def abort(self) -> None:
-        """Discard the staged bytes; safe to call more than once."""
+        """Close without publishing; safe to call more than once.
+
+        Never removes an entry that ``close`` already published.
+        """
         ...
 
 
-class UploadStaging(Protocol):
-    """Starts resumable uploads for a backend."""
+class FileOpener(Protocol):
+    """Opens files for resumable uploads on a backend."""
 
-    async def begin(
+    async def open(
         self,
         parent_id: NodeId,
         name: str,
-        total_size: int,
+        size: int,
         *,
         mime_type: str | None,
         media_info: MediaInfo | None,
-    ) -> UploadStage:
-        """A new, empty stage for *name* under *parent_id*.
+    ) -> WritableFile:
+        """A new, empty file for *name* under *parent_id*, of *size* bytes when done.
 
         Releases anything it allocated if it fails or is cancelled.
         """
         ...
+
+
+def _idle_event() -> asyncio.Event:
+    event = asyncio.Event()
+    event.set()
+    return event
 
 
 class SessionState(Enum):
@@ -160,12 +184,15 @@ class UploadSession:
     total_size: int
     mime_type: str | None
     media_info: MediaInfo | None
-    stage: UploadStage
+    file: WritableFile
     received: int = 0
     state: SessionState = SessionState.IDLE
     # Set when the session is removed while writing; the writer then aborts.
     cancelled: bool = False
+    published: bool = False
     last_activity: float = 0.0
+    # Set while no request is using the file.
+    idle: asyncio.Event = field(default_factory=_idle_event)
 
 
 class UploadSessionStore:
@@ -226,11 +253,11 @@ class UploadService:
         *,
         store: UploadSessionStore,
         uploader: Uploader,
-        staging: UploadStaging,
+        files: FileOpener,
     ) -> None:
         self._store = store
         self._uploader = uploader
-        self._staging = staging
+        self._files = files
 
     async def create_session(
         self,
@@ -244,10 +271,10 @@ class UploadService:
         conflict = await self._uploader.find_conflict(parent_id, name)
         if conflict is not None:
             raise UploadConflictError(conflict)
-        stage = await self._staging.begin(
+        file = await self._files.open(
             parent_id, name, total_size, mime_type=mime_type, media_info=media_info
         )
-        # No await between begin and registration, so the stage cannot leak.
+        # No await between open and registration, so the file cannot leak.
         session = UploadSession(
             session_id=secrets.token_urlsafe(32),
             parent_id=parent_id,
@@ -255,7 +282,7 @@ class UploadService:
             total_size=total_size,
             mime_type=mime_type,
             media_info=media_info,
-            stage=stage,
+            file=file,
             last_activity=time.monotonic(),
         )
         self._store.add(session)
@@ -300,12 +327,18 @@ class UploadService:
                 _L.info("removed %d expired upload session(s)", removed)
 
     async def close(self) -> None:
-        """Abort every session; run before the backends close."""
+        """Abort every session and wait for active requests to leave its file.
+
+        Run before the backends close, once no new requests arrive.
+        """
         for session in self._store.pop_all():
-            if session.state is SessionState.IDLE:
-                await self._abort(session)
-            else:
+            writing = session.state is SessionState.WRITING
+            if writing:
+                # The writer aborts once it sees this.
                 session.cancelled = True
+            await session.idle.wait()
+            if not writing and not session.published:
+                await self._abort(session)
 
     async def upload_direct(
         self,
@@ -342,8 +375,11 @@ class UploadService:
             raise UploadOffsetMismatchError(session.received)
 
         session.state = SessionState.WRITING
+        session.idle.clear()
         session.last_activity = time.monotonic()
         try:
+            # A failed request may have left the position anywhere.
+            await session.file.seek(session.received)
             await self._receive(session, content)
             if session.cancelled:
                 raise UploadSessionNotFoundError()
@@ -355,8 +391,11 @@ class UploadService:
             return await self._finalize_session(session)
         finally:
             session.state = SessionState.IDLE
-            if session.cancelled:
-                await self._abort(session)
+            try:
+                if session.cancelled:
+                    await self._abort(session)
+            finally:
+                session.idle.set()
 
     async def _receive(
         self, session: UploadSession, content: AsyncIterable[bytes]
@@ -377,9 +416,13 @@ class UploadService:
     async def _write(self, session: UploadSession, data: bytes) -> None:
         # Immutable batches: a write still running after a cancellation can
         # never see the buffer change under it.
-        await session.stage.write_at(session.received, data)
-        session.received += len(data)
-        session.last_activity = time.monotonic()
+        while data:
+            kept = await session.file.write(data)
+            if not 0 < kept <= len(data):
+                raise UploadTransientError(f"Backend kept {kept} of {len(data)} bytes")
+            session.received += kept
+            session.last_activity = time.monotonic()
+            data = data[kept:]
 
     async def _finalize_session(self, session: UploadSession) -> UploadCreatedNode:
         _L.debug(
@@ -389,7 +432,7 @@ class UploadService:
             session.parent_id,
         )
         try:
-            record = await session.stage.commit()
+            record = await session.file.close()
         except UploadConflictError:
             _L.debug(
                 "upload session conflicted during finalisation session_id=%r name=%r parent_id=%r",
@@ -420,6 +463,7 @@ class UploadService:
                 e,
             )
             raise
+        session.published = True
         self._store.pop(session.session_id)
 
         _L.debug(
@@ -433,7 +477,7 @@ class UploadService:
 
     async def _abort(self, session: UploadSession) -> None:
         try:
-            await session.stage.abort()
+            await session.file.abort()
         except Exception:
             _L.warning(
                 "failed to discard upload session session_id=%r name=%r",

@@ -31,7 +31,7 @@ from .services.mirror import MirrorStore
 from .services.off_main import OffMainService
 from .services.operations import NodeOperations
 from .services.sync import NodeSyncService
-from .services.upload import Uploader, UploadStaging
+from .services.upload import FileOpener, Uploader
 
 
 BACKEND_ROUTE_PREFIX = "/api/v1/backends"
@@ -93,7 +93,7 @@ class BackendContext:
 class Backend(Protocol):
     """One entered backend instance.
 
-    ``operations``, ``uploader``, ``staging``, ``run_until_ready``, and ``run``
+    ``operations``, ``uploader``, ``files``, ``run_until_ready``, and ``run``
     are used only when serving; ``command`` only offline.
     """
 
@@ -108,10 +108,11 @@ class Backend(Protocol):
     def uploader(self) -> Uploader: ...
 
     @property
-    def staging(self) -> UploadStaging | None:
-        """Native staging for resumable uploads.
+    def files(self) -> FileOpener:
+        """Opens the random-access files that resumable uploads write.
 
-        ``None`` spools them locally and sends each through ``uploader``.
+        A backend that takes a file only whole can use ``SpooledFiles`` from
+        ``services.spool``.
         """
         ...
 

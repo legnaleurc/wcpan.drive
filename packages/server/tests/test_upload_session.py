@@ -46,21 +46,35 @@ def _record(name: str) -> NodeRecord:
     )
 
 
-class _FakeStage:
+class _FakeFile:
     def __init__(self, name: str) -> None:
         self.name = name
         self.data = bytearray()
+        self.position = 0
+        self.seeks: list[int] = []
         self.writes: list[tuple[int, bytes]] = []
+        # How many bytes each write keeps, at most.
+        self.keep: int | None = None
         self.commits = 0
         self.aborts = 0
         self.commit_error: Exception | None = None
         self.commit_gate: asyncio.Event | None = None
 
-    async def write_at(self, offset: int, data: bytes) -> None:
-        self.writes.append((offset, data))
-        self.data[offset : offset + len(data)] = data
+    async def seek(self, offset: int) -> None:
+        self.seeks.append(offset)
+        self.position = offset
 
-    async def commit(self) -> NodeRecord:
+    async def write(self, data: bytes) -> int:
+        kept = data if self.keep is None else data[: self.keep]
+        self.writes.append((self.position, kept))
+        self.data[self.position : self.position + len(kept)] = kept
+        self.position += len(kept)
+        return len(kept)
+
+    async def flush(self) -> None:
+        pass
+
+    async def close(self) -> NodeRecord:
         self.commits += 1
         if self.commit_gate is not None:
             await self.commit_gate.wait()
@@ -73,11 +87,11 @@ class _FakeStage:
 
 
 class _FakeBackend:
-    """Uploader and UploadStaging over in-memory stages."""
+    """Uploader and FileOpener over in-memory files."""
 
     def __init__(self) -> None:
         self.conflict: NodeRecord | None = None
-        self.stages: list[_FakeStage] = []
+        self.files: list[_FakeFile] = []
         self.begun: list[tuple[NodeId, str, int, str | None, MediaInfo | None]] = []
 
     async def find_conflict(self, parent_id: NodeId, name: str) -> NodeRecord | None:
@@ -86,19 +100,19 @@ class _FakeBackend:
     async def upload(self, *args: object, **kwargs: object) -> NodeRecord:
         raise AssertionError("direct upload is not used here")
 
-    async def begin(
+    async def open(
         self,
         parent_id: NodeId,
         name: str,
-        total_size: int,
+        size: int,
         *,
         mime_type: str | None,
         media_info: MediaInfo | None,
-    ) -> _FakeStage:
-        self.begun.append((parent_id, name, total_size, mime_type, media_info))
-        stage = _FakeStage(name)
-        self.stages.append(stage)
-        return stage
+    ) -> _FakeFile:
+        self.begun.append((parent_id, name, size, mime_type, media_info))
+        file = _FakeFile(name)
+        self.files.append(file)
+        return file
 
 
 async def _content(*chunks: bytes) -> AsyncIterator[bytes]:
@@ -111,7 +125,7 @@ class _ServiceTestCase(IsolatedAsyncioTestCase):
         self.backend = _FakeBackend()
         self.store = UploadSessionStore()
         self.service = UploadService(
-            store=self.store, uploader=self.backend, staging=self.backend
+            store=self.store, uploader=self.backend, files=self.backend
         )
 
     async def create(self, total: int, name: str = "f.bin") -> str:
@@ -120,12 +134,12 @@ class _ServiceTestCase(IsolatedAsyncioTestCase):
         )
         return created.session_id
 
-    def stage(self) -> _FakeStage:
-        return self.backend.stages[-1]
+    def file(self) -> _FakeFile:
+        return self.backend.files[-1]
 
 
 class TestCreateSession(_ServiceTestCase):
-    async def test_begins_a_stage_with_normalized_name(self) -> None:
+    async def test_opens_a_file_with_normalized_name(self) -> None:
         # given
         media = MediaInfo(
             width=100, height=0, ms_duration=0, is_image=True, is_video=False
@@ -141,16 +155,16 @@ class TestCreateSession(_ServiceTestCase):
         session = self.store.get(created.session_id)
         assert session is not None
         self.assertEqual(session.received, 0)
-        self.assertIs(session.stage, self.stage())
+        self.assertIs(session.file, self.file())
 
-    async def test_conflict_begins_nothing(self) -> None:
+    async def test_conflict_opens_nothing(self) -> None:
         # given
         self.backend.conflict = _record("f.bin")
         # when / then
         with self.assertRaises(UploadConflictError):
             await self.create(10)
         # then
-        self.assertEqual(self.backend.stages, [])
+        self.assertEqual(self.backend.files, [])
 
     async def test_session_ids_are_unique(self) -> None:
         # when
@@ -168,7 +182,7 @@ class TestAppendChunk(_ServiceTestCase):
         result = await self.service.append_chunk(session_id, 3, _content(b"de"))
         # then
         self.assertEqual(result, UploadAccepted(offset=5))
-        self.assertEqual(self.stage().writes, [(0, b"abc"), (3, b"de")])
+        self.assertEqual(self.file().writes, [(0, b"abc"), (3, b"de")])
 
     async def test_writes_are_batched(self) -> None:
         # given
@@ -177,7 +191,46 @@ class TestAppendChunk(_ServiceTestCase):
         with patch("wcpan.drive.server.services.upload.FILE_CHUNK_SIZE", 4):
             await self.service.append_chunk(session_id, 0, _content(b"abc", b"def"))
         # then
-        self.assertEqual(self.stage().writes, [(0, b"abcd"), (4, b"ef")])
+        self.assertEqual(self.file().writes, [(0, b"abcd"), (4, b"ef")])
+
+    async def test_short_writes_are_continued(self) -> None:
+        # given
+        session_id = await self.create(10)
+        self.file().keep = 2
+        # when
+        result = await self.service.append_chunk(session_id, 0, _content(b"abcde"))
+        # then
+        self.assertEqual(result, UploadAccepted(offset=5))
+        self.assertEqual(self.file().writes, [(0, b"ab"), (2, b"cd"), (4, b"e")])
+
+    async def test_nothing_kept_is_transient(self) -> None:
+        # given
+        session_id = await self.create(10)
+        self.file().keep = 0
+        # when / then
+        with self.assertRaises(UploadTransientError):
+            await self.service.append_chunk(session_id, 0, _content(b"abc"))
+        # then
+        status = self.service.get_session_status(session_id)
+        assert status is not None
+        self.assertEqual(status.received, 0)
+
+    async def test_each_request_seeks_to_the_saved_offset(self) -> None:
+        # given
+        session_id = await self.create(10)
+
+        async def broken() -> AsyncIterator[bytes]:
+            yield b"abcdef"
+            raise ConnectionResetError()
+
+        with patch("wcpan.drive.server.services.upload.FILE_CHUNK_SIZE", 4):
+            with self.assertRaises(ConnectionResetError):
+                await self.service.append_chunk(session_id, 0, broken())
+        # when
+        await self.service.append_chunk(session_id, 4, _content(b"ef"))
+        # then
+        self.assertEqual(self.file().seeks, [0, 4])
+        self.assertEqual(bytes(self.file().data), b"abcdef")
 
     async def test_wrong_offset_reports_received(self) -> None:
         # given
@@ -224,31 +277,31 @@ class TestAppendChunk(_ServiceTestCase):
         # then
         self.assertEqual(result, UploadCreatedNode(record=_record("f.bin")))
         self.assertIsNone(self.store.get(session_id))
-        self.assertEqual(self.stage().aborts, 0)
+        self.assertEqual(self.file().aborts, 0)
 
     async def test_failed_commit_keeps_the_session_for_a_retry(self) -> None:
         # given
         session_id = await self.create(3)
-        self.stage().commit_error = UploadTransientError("try later")
+        self.file().commit_error = UploadTransientError("try later")
         with self.assertRaises(UploadTransientError):
             await self.service.append_chunk(session_id, 0, _content(b"abc"))
-        self.stage().commit_error = None
+        self.file().commit_error = None
         # when
         result = await self.service.append_chunk(session_id, 3, _content())
         # then
         self.assertIsInstance(result, UploadCreatedNode)
-        self.assertEqual(self.stage().commits, 2)
+        self.assertEqual(self.file().commits, 2)
 
     async def test_conflict_on_commit_discards_the_session(self) -> None:
         # given
         session_id = await self.create(3)
-        self.stage().commit_error = UploadConflictError(_record("f.bin"))
+        self.file().commit_error = UploadConflictError(_record("f.bin"))
         # when / then
         with self.assertRaises(UploadConflictError):
             await self.service.append_chunk(session_id, 0, _content(b"abc"))
         # then
         self.assertIsNone(self.store.get(session_id))
-        self.assertEqual(self.stage().aborts, 1)
+        self.assertEqual(self.file().aborts, 1)
 
 
 class TestDeleteSession(_ServiceTestCase):
@@ -260,7 +313,7 @@ class TestDeleteSession(_ServiceTestCase):
         # then
         self.assertTrue(deleted)
         self.assertIsNone(self.store.get(session_id))
-        self.assertEqual(self.stage().aborts, 1)
+        self.assertEqual(self.file().aborts, 1)
 
     async def test_unknown_session(self) -> None:
         # when / then
@@ -291,19 +344,19 @@ class TestDeleteSession(_ServiceTestCase):
                 await writer
         self.assertTrue(deleted)
         self.assertIsNone(self.store.get(session_id))
-        self.assertEqual(self.stage().writes, [(0, b"abc")])
-        self.assertEqual(self.stage().commits, 0)
-        self.assertEqual(self.stage().aborts, 1)
+        self.assertEqual(self.file().writes, [(0, b"abc")])
+        self.assertEqual(self.file().commits, 0)
+        self.assertEqual(self.file().aborts, 1)
 
     async def test_committing_session_cannot_be_deleted(self) -> None:
         # given
         session_id = await self.create(3)
         gate = asyncio.Event()
-        self.stage().commit_gate = gate
+        self.file().commit_gate = gate
         writer = asyncio.create_task(
             self.service.append_chunk(session_id, 0, _content(b"abc"))
         )
-        while self.stage().commits == 0:
+        while self.file().commits == 0:
             await asyncio.sleep(0)
         # when / then
         with self.assertRaises(UploadBusyError):
@@ -311,7 +364,7 @@ class TestDeleteSession(_ServiceTestCase):
         # then
         gate.set()
         self.assertIsInstance(await writer, UploadCreatedNode)
-        self.assertEqual(self.stage().aborts, 0)
+        self.assertEqual(self.file().aborts, 0)
 
 
 class TestExpiry(_ServiceTestCase):
@@ -326,7 +379,7 @@ class TestExpiry(_ServiceTestCase):
         # then
         self.assertEqual(removed, 1)
         self.assertIsNone(self.store.get(session_id))
-        self.assertEqual(self.stage().aborts, 1)
+        self.assertEqual(self.file().aborts, 1)
 
     async def test_writing_sessions_are_kept(self) -> None:
         # given
@@ -344,7 +397,7 @@ class TestExpiry(_ServiceTestCase):
     async def test_close_aborts_idle_and_cancels_writing_sessions(self) -> None:
         # given
         idle_id = await self.create(10, "idle")
-        idle = self.stage()
+        idle = self.file()
         writing_id = await self.create(10, "writing")
         writing = self.store.get(writing_id)
         assert writing is not None
@@ -356,3 +409,71 @@ class TestExpiry(_ServiceTestCase):
         self.assertIsNone(self.store.get(writing_id))
         self.assertEqual(idle.aborts, 1)
         self.assertTrue(writing.cancelled)
+
+    async def test_close_waits_for_the_writer_to_abort(self) -> None:
+        # given
+        session_id = await self.create(10)
+        sent = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def slow() -> AsyncIterator[bytes]:
+            yield b"abc"
+            sent.set()
+            await resume.wait()
+            yield b"def"
+
+        with patch("wcpan.drive.server.services.upload.FILE_CHUNK_SIZE", 3):
+            writer = asyncio.create_task(
+                self.service.append_chunk(session_id, 0, slow())
+            )
+            await sent.wait()
+            # when
+            closing = asyncio.create_task(self.service.close())
+            await asyncio.sleep(0)
+            self.assertFalse(closing.done())
+            resume.set()
+            await closing
+        # then
+        with self.assertRaises(UploadSessionNotFoundError):
+            await writer
+        self.assertEqual(self.file().aborts, 1)
+
+    async def test_close_aborts_a_session_whose_commit_failed(self) -> None:
+        # given
+        session_id = await self.create(3)
+        gate = asyncio.Event()
+        self.file().commit_gate = gate
+        self.file().commit_error = UploadTransientError("later")
+        writer = asyncio.create_task(
+            self.service.append_chunk(session_id, 0, _content(b"abc"))
+        )
+        while self.file().commits == 0:
+            await asyncio.sleep(0)
+        # when
+        closing = asyncio.create_task(self.service.close())
+        await asyncio.sleep(0)
+        gate.set()
+        await closing
+        # then
+        with self.assertRaises(UploadTransientError):
+            await writer
+        self.assertEqual(self.file().aborts, 1)
+
+    async def test_close_keeps_a_published_upload(self) -> None:
+        # given
+        session_id = await self.create(3)
+        gate = asyncio.Event()
+        self.file().commit_gate = gate
+        writer = asyncio.create_task(
+            self.service.append_chunk(session_id, 0, _content(b"abc"))
+        )
+        while self.file().commits == 0:
+            await asyncio.sleep(0)
+        # when
+        closing = asyncio.create_task(self.service.close())
+        await asyncio.sleep(0)
+        gate.set()
+        await closing
+        # then
+        self.assertIsInstance(await writer, UploadCreatedNode)
+        self.assertEqual(self.file().aborts, 0)
