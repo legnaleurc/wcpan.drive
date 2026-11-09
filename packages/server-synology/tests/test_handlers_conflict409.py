@@ -24,6 +24,11 @@ from wcpan.drive.server.keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
+from wcpan.drive.server.services.spool import (
+    SpoolArea,
+    SpoolStaging,
+    create_spool_area,
+)
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     UploadService,
@@ -139,7 +144,7 @@ def _make_dir(node_id: str) -> NodeRecord:
 
 def _make_app(
     mirror: _FakeMirror,
-    session_store: UploadSessionStore,
+    spool: SpoolArea,
     *,
     drive_api: SynologyClient,
 ) -> web.Application:
@@ -168,13 +173,15 @@ def _make_app(
         syno_paths=syno_paths,
         node_sync=node_sync,
     )
+    uploader = SynologyUploader(
+        drive_api=drive_api,
+        syno_paths=syno_paths,
+        node_sync=node_sync,
+    )
     app[UPLOAD_SERVICE_KEY] = UploadService(
-        store=session_store,
-        uploader=SynologyUploader(
-            drive_api=drive_api,
-            syno_paths=syno_paths,
-            node_sync=node_sync,
-        ),
+        store=UploadSessionStore(),
+        uploader=uploader,
+        staging=SpoolStaging(uploader=uploader, area=spool),
     )
 
     app.router.add_post("/api/v1/nodes", create_node)
@@ -194,15 +201,14 @@ class _ConflictTestCase(DecoyTestCase):
     def setUp(self) -> None:
         super().setUp()
         self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
+        spool = self.enterContext(create_spool_area(tmp_dir=Path(self._tmp.name)))
         self.drive_api = self.decoy.mock(cls=SynologyClient)
-        self.app = _make_app(_FakeMirror(), self._store, drive_api=self.drive_api)
+        self.app = _make_app(_FakeMirror(), spool, drive_api=self.drive_api)
         enrich = patch(_ENRICH, new_callable=AsyncMock, side_effect=_passthrough_enrich)
         enrich.start()
         self.addCleanup(enrich.stop)
 
     def tearDown(self) -> None:
-        self._store.close_all()
         self._tmp.cleanup()
 
     async def _rehearse_get_child(self, name: str):

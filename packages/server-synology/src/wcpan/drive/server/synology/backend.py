@@ -128,6 +128,11 @@ class SynologyBackend:
     def uploader(self) -> SynologyUploader:
         return self._require_serving().uploader
 
+    @property
+    def staging(self) -> None:
+        # The Drive API takes a file in one request, so the core spools it.
+        return None
+
     async def run_until_ready(self) -> None:
         """Startup scan, then the webhooks that arrived meanwhile."""
         await self._require_serving().startup_scan.run_until_ready(self._scan_done)

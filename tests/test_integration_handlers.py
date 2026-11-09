@@ -36,6 +36,11 @@ from wcpan.drive.server.keys import (
     WRITE_QUEUE_KEY,
 )
 from wcpan.drive.server.services.paths import SERVER_ROOT_ID
+from wcpan.drive.server.services.spool import (
+    SpoolArea,
+    SpoolStaging,
+    create_spool_area,
+)
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     UploadService,
@@ -110,7 +115,7 @@ class _FakeMirror:
 
 def _make_app(
     mirror: _FakeMirror,
-    session_store: UploadSessionStore,
+    spool: SpoolArea,
 ) -> web.Application:
     app = web.Application()
     off_main = _FakeOffMain()
@@ -157,13 +162,15 @@ def _make_app(
     app[SYNOLOGY_PATH_KEY] = syno_paths
     app[CHANGE_SERVICE_KEY] = node_sync
     app[SYNOLOGY_DRIVE_API_KEY] = drive_api
+    uploader = SynologyUploader(
+        drive_api=drive_api,
+        syno_paths=syno_paths,
+        node_sync=node_sync,
+    )
     app[UPLOAD_SERVICE_KEY] = UploadService(
-        store=session_store,
-        uploader=SynologyUploader(
-            drive_api=drive_api,
-            syno_paths=syno_paths,
-            node_sync=node_sync,
-        ),
+        store=UploadSessionStore(),
+        uploader=uploader,
+        staging=SpoolStaging(uploader=uploader, area=spool),
     )
 
     app.router.add_get("/api/v1/root", get_root)
@@ -181,17 +188,16 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._session_store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
+        self._spool = self.enterContext(create_spool_area(tmp_dir=Path(self._tmp.name)))
 
     def tearDown(self) -> None:
-        self._session_store.close_all()
         self._tmp.cleanup()
 
     async def test_upload_session_carries_media_info(self) -> None:
         """MediaInfo dimensions and flags survive the upload-session protocol."""
         # given
         mirror = _FakeMirror()
-        app = _make_app(mirror, self._session_store)
+        app = _make_app(mirror, self._spool)
 
         media = MediaInfo(
             is_image=True,
@@ -239,7 +245,7 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
         """MediaInfo is applied when using the direct (non-session) upload endpoint."""
         # given
         mirror = _FakeMirror()
-        app = _make_app(mirror, self._session_store)
+        app = _make_app(mirror, self._spool)
 
         media = MediaInfo(
             is_image=True,
@@ -276,7 +282,7 @@ class TestMediaInfoContract(IsolatedAsyncioTestCase):
         # given
         mirror = _FakeMirror()
         syno_info = {**_FAKE_SYNO_INFO, "content_type": "video", "name": "clip.mp4"}
-        app = _make_app(mirror, self._session_store)
+        app = _make_app(mirror, self._spool)
 
         media = MediaInfo(
             is_image=False,
@@ -325,10 +331,9 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._session_store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
+        self._spool = self.enterContext(create_spool_area(tmp_dir=Path(self._tmp.name)))
 
     def tearDown(self) -> None:
-        self._session_store.close_all()
         self._tmp.cleanup()
 
     async def test_get_root_timestamps_preserved(self) -> None:
@@ -354,7 +359,7 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
             ms_duration=0,
         )
         mirror._nodes[SERVER_ROOT_ID] = root
-        app = _make_app(mirror, self._session_store)
+        app = _make_app(mirror, self._spool)
 
         async with TestClient(TestServer(app)) as client:
             # when
@@ -371,16 +376,15 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
 class TestNullUploadSink(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._session_store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
+        self._spool = self.enterContext(create_spool_area(tmp_dir=Path(self._tmp.name)))
 
     def tearDown(self) -> None:
-        self._session_store.close_all()
         self._tmp.cleanup()
 
     async def test_put_null_returns_upload_stats(self) -> None:
         # given
         mirror = _FakeMirror()
-        app = _make_app(mirror, self._session_store)
+        app = _make_app(mirror, self._spool)
         payload = b"x" * 8192
 
         async with TestClient(TestServer(app)) as client:
@@ -401,17 +405,16 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._session_store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
+        self._spool = self.enterContext(create_spool_area(tmp_dir=Path(self._tmp.name)))
 
     def tearDown(self) -> None:
-        self._session_store.close_all()
         self._tmp.cleanup()
 
     async def test_upload_returns_node_record(self) -> None:
         """PATCH with full file data returns 201 with a parseable NodeRecord."""
         # given
         mirror = _FakeMirror()
-        app = _make_app(mirror, self._session_store)
+        app = _make_app(mirror, self._spool)
 
         with patch.object(
             app[SYNOLOGY_DRIVE_API_KEY],
@@ -446,7 +449,7 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
         """PATCH with partial data returns 204 with updated Upload-Offset."""
         # given
         mirror = _FakeMirror()
-        app = _make_app(mirror, self._session_store)
+        app = _make_app(mirror, self._spool)
 
         async with TestClient(TestServer(app)) as client:
             # when
@@ -471,7 +474,7 @@ class TestUploadSessionProtocol(IsolatedAsyncioTestCase):
     async def test_session_not_found_returns_404(self) -> None:
         # given
         mirror = _FakeMirror()
-        app = _make_app(mirror, self._session_store)
+        app = _make_app(mirror, self._spool)
 
         async with TestClient(TestServer(app)) as client:
             # when

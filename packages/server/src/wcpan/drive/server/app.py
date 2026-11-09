@@ -61,8 +61,9 @@ from .services.off_main import OffMainService
 from .services.operations import OperationInvalidError, OperationNotSupportedError
 from .services.paths import MountSource
 from .services.routing import BackendRouter
+from .services.spool import SpoolStaging, create_spool_area
 from .services.sync import NodeSyncService
-from .services.upload import create_upload_service
+from .services.upload import UploadService, UploadSessionStore
 from .types import MetadataQueue, ServerConfig, WriteQueue
 from .workers import (
     METADATA_WORKER_COUNT,
@@ -224,17 +225,24 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             backends = await stack.enter_async_context(
                 entered_backends(config, core, offline=False, routes=routes)
             )
+            tmp_dir = Path(config.upload_tmp_dir) if config.upload_tmp_dir else None
+            spool = stack.enter_context(create_spool_area(tmp_dir=tmp_dir))
             router = BackendRouter(
                 mirror=core.mirror,
                 mount_backends={n: m.backend for n, m in config.mounts.items()},
                 operations={n: b.operations for n, b in backends.items()},
                 uploaders={n: b.uploader for n, b in backends.items()},
+                stagings={
+                    n: b.staging or SpoolStaging(uploader=b.uploader, area=spool)
+                    for n, b in backends.items()
+                },
             )
             app[NODE_OPERATIONS_KEY] = router
-            tmp_dir = Path(config.upload_tmp_dir) if config.upload_tmp_dir else None
-            upload_service = stack.enter_context(
-                create_upload_service(tmp_dir=tmp_dir, uploader=router)
+            upload_service = UploadService(
+                store=UploadSessionStore(), uploader=router, staging=router
             )
+            # Unwinds before the spool area and the backends close.
+            stack.push_async_callback(upload_service.close)
             app[UPLOAD_SERVICE_KEY] = upload_service
 
             async def _flip_ready() -> None:

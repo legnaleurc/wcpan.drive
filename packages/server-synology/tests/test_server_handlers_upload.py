@@ -5,7 +5,8 @@ import json
 import tempfile
 import unicodedata
 from pathlib import Path
-from unittest.mock import Mock, patch
+from typing import cast
+from unittest.mock import patch
 
 from aiohttp import web
 from aiohttp.base_protocol import BaseProtocol
@@ -28,11 +29,18 @@ from wcpan.drive.server.keys import (
     WRITE_QUEUE_KEY,
 )
 from wcpan.drive.server.services.mirror import MirrorStore
+from wcpan.drive.server.services.spool import _L as _SPOOL_L
+from wcpan.drive.server.services.spool import (
+    SpoolStage,
+    SpoolStaging,
+    create_spool_area,
+)
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     _L,
     SessionState,
     UploadService,
+    UploadSession,
     UploadSessionStore,
 )
 from wcpan.drive.server.synology.convert import SynologyLocator
@@ -70,11 +78,12 @@ class _UploadTestCase(DecoyTestCase):
     def setUp(self) -> None:
         super().setUp()
         self._tmp = tempfile.TemporaryDirectory(prefix="wcpan_test_")
-        self._store = UploadSessionStore(tmp_dir=Path(self._tmp.name))
+        self._spool = self.enterContext(create_spool_area(tmp_dir=Path(self._tmp.name)))
+        self._store = UploadSessionStore()
+        self._app: web.Application | None = None
         self.drive_api = self.decoy.mock(cls=SynologyClient)
 
     def tearDown(self) -> None:
-        self._store.close_all()
         self._tmp.cleanup()
 
     async def asyncSetUp(self) -> None:
@@ -85,6 +94,8 @@ class _UploadTestCase(DecoyTestCase):
         ).then_return(([], 0))
 
     async def _make_app(self) -> web.Application:
+        if self._app is not None:
+            return self._app
         app = web.Application()
         off_main = _MockOffMain()
         wq: asyncio.Queue = asyncio.Queue()
@@ -112,15 +123,36 @@ class _UploadTestCase(DecoyTestCase):
         app[MIRROR_KEY] = mirror
         app[WRITE_QUEUE_KEY] = wq
         app[CHANGE_SERVICE_KEY] = node_sync
-        app[UPLOAD_SERVICE_KEY] = UploadService(
-            store=self._store,
-            uploader=SynologyUploader(
-                drive_api=self.drive_api,
-                syno_paths=syno_paths,
-                node_sync=node_sync,
-            ),
+        uploader = SynologyUploader(
+            drive_api=self.drive_api,
+            syno_paths=syno_paths,
+            node_sync=node_sync,
         )
+        self._staging = SpoolStaging(uploader=uploader, area=self._spool)
+        self._service = UploadService(
+            store=self._store, uploader=uploader, staging=self._staging
+        )
+        app[UPLOAD_SERVICE_KEY] = self._service
+        self._app = app
         return app
+
+    async def _session(self, total: int, name: str = "f.bin") -> UploadSession:
+        """A registered session spooling to a real temporary file."""
+        await self._make_app()
+        stage = await self._staging.begin(
+            NodeId("p1"), name, total, mime_type=None, media_info=None
+        )
+        session = UploadSession(
+            session_id=f"session-{name}",
+            parent_id=NodeId("p1"),
+            name=name,
+            total_size=total,
+            mime_type=None,
+            media_info=None,
+            stage=stage,
+        )
+        self._store.add(session)
+        return session
 
     async def _rehearse_upload(self, name: str = matchers.Anything()):
         return await self.drive_api.upload(
@@ -292,7 +324,7 @@ class TestCreateUploadSession(_UploadTestCase):
 class TestHeadUploadSession(_UploadTestCase):
     async def test_returns_200_with_upload_offset_and_length(self):
         # given
-        session = self._store.create("p", "f.bin", 2048, None, None)
+        session = await self._session(2048)
         session.received = 512
 
         req = make_request(
@@ -308,7 +340,7 @@ class TestHeadUploadSession(_UploadTestCase):
 
     async def test_nothing_received_returns_200_with_zero_offset(self):
         # given
-        session = self._store.create("p", "f.bin", 2048, None, None)
+        session = await self._session(2048)
 
         req = make_request(
             app=await self._make_app(),
@@ -333,7 +365,7 @@ class TestHeadUploadSession(_UploadTestCase):
 
     async def test_head_refreshes_session_activity(self):
         # given
-        session = self._store.create("p", "f.bin", 2048, None, None)
+        session = await self._session(2048)
         session.last_activity = 10.0
         req = make_request(
             app=await self._make_app(),
@@ -352,12 +384,12 @@ class TestHeadUploadSession(_UploadTestCase):
 
     async def test_expired_session_is_removed_with_temp_file(self):
         # given
-        session = self._store.create("p", "f.bin", 2048, None, None)
-        path = session.temp_path
+        session = await self._session(2048)
+        path = cast(SpoolStage, session.stage).path
         session.last_activity = 10.0
 
         # when
-        removed = self._store.remove_expired(now=3610.0, ttl=3600.0)
+        removed = await self._service.remove_expired(now=3610.0, ttl=3600.0)
 
         # then
         self.assertEqual(removed, 1)
@@ -366,12 +398,12 @@ class TestHeadUploadSession(_UploadTestCase):
 
     async def test_active_session_is_not_expired(self):
         # given
-        session = self._store.create("p", "f.bin", 2048, None, None)
+        session = await self._session(2048)
         session.last_activity = 10.0
         session.state = SessionState.WRITING
 
         # when
-        removed = self._store.remove_expired(now=10_000.0, ttl=3600.0)
+        removed = await self._service.remove_expired(now=10_000.0, ttl=3600.0)
 
         # then
         self.assertEqual(removed, 0)
@@ -384,7 +416,7 @@ class TestHeadUploadSession(_UploadTestCase):
 class TestDeleteUploadSession(_UploadTestCase):
     async def test_returns_204_and_removes_session(self):
         # given
-        session = self._store.create("p", "f.bin", 100, None, {})
+        session = await self._session(100)
         session_id = session.session_id
 
         req = make_request(
@@ -412,12 +444,12 @@ class TestDeleteUploadSession(_UploadTestCase):
 
 
 class TestPatchUploadChunk(_UploadTestCase):
-    def _make_session(self, total: int = 100):
-        return self._store.create("p1", "f.bin", total, None, None)
+    async def _make_session(self, total: int = 100) -> UploadSession:
+        return await self._session(total)
 
     async def test_partial_upload_returns_204_with_upload_offset(self):
         # given
-        session = self._make_session(total=200)
+        session = await self._make_session(total=200)
         chunk = b"x" * 100  # only half the file
 
         req = make_request(
@@ -434,7 +466,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_wrong_offset_returns_409_with_upload_offset(self):
         # given
-        session = self._make_session(total=200)
+        session = await self._make_session(total=200)
         session.received = 50  # server has 50 bytes
 
         req = make_request(
@@ -451,7 +483,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_missing_upload_offset_raises_400(self):
         # given
-        session = self._make_session()
+        session = await self._make_session()
         req = make_request(
             app=await self._make_app(),
             match_info={"session_id": session.session_id},
@@ -464,7 +496,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_non_integer_upload_offset_raises_400(self):
         # given
-        session = self._make_session()
+        session = await self._make_session()
         req = make_request(
             app=await self._make_app(),
             match_info={"session_id": session.session_id},
@@ -477,7 +509,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_negative_upload_offset_raises_400(self):
         # given
-        session = self._make_session()
+        session = await self._make_session()
         req = make_request(
             app=await self._make_app(),
             match_info={"session_id": session.session_id},
@@ -490,7 +522,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_body_exceeding_total_size_raises_400(self):
         # given
-        session = self._make_session(total=50)
+        session = await self._make_session(total=50)
         req = make_request(
             app=await self._make_app(),
             match_info={"session_id": session.session_id},
@@ -515,7 +547,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_final_chunk_triggers_synology_upload(self):
         # given
-        session = self._make_session(total=50)
+        session = await self._make_session(total=50)
         chunk = b"y" * 50
 
         app = await self._make_app()
@@ -559,7 +591,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_finalise_failure_logs_warning_and_keeps_session(self):
         # given
-        session = self._make_session(total=50)
+        session = await self._make_session(total=50)
         app = await self._make_app()
 
         self.decoy.when(await self._rehearse_upload()).then_raise(
@@ -586,7 +618,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_name_too_long_returns_typed_422(self):
         # given
-        session = self._make_session(total=50)
+        session = await self._make_session(total=50)
         app = await self._make_app()
         self.decoy.when(await self._rehearse_upload()).then_raise(
             SynologyNameTooLongError("File name is too long", file_name="f.bin")
@@ -607,7 +639,7 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_finalise_network_failure_logs_warning_and_keeps_session(self):
         # given
-        session = self._make_session(total=50)
+        session = await self._make_session(total=50)
         app = await self._make_app()
 
         self.decoy.when(await self._rehearse_upload()).then_raise(
@@ -634,12 +666,12 @@ class TestPatchUploadChunk(_UploadTestCase):
 
     async def test_finalise_size_mismatch_logs_warning_and_keeps_session(self):
         # given
-        session = self._make_session(total=50)
+        session = await self._make_session(total=50)
         app = await self._make_app()
 
         with (
-            patch("pathlib.Path.stat", return_value=Mock(st_size=49)),
-            patch.object(_L, "warning") as warning_log,
+            patch("wcpan.drive.server.services.spool._flushed_size", return_value=49),
+            patch.object(_SPOOL_L, "warning") as warning_log,
         ):
             req = make_request(
                 app=app,
@@ -657,5 +689,5 @@ class TestPatchUploadChunk(_UploadTestCase):
         warning_log.assert_called_once()
         self.assertEqual(
             warning_log.call_args.args[0],
-            "upload session size mismatch before finalisation session_id=%r name=%r parent_id=%r received=%d file_size=%d total_size=%d",
+            "upload spool size mismatch before finalisation name=%r parent_id=%r file_size=%d total_size=%d",
         )

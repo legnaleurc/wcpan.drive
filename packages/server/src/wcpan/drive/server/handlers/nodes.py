@@ -13,6 +13,7 @@ from ..services.paths import SERVER_ROOT_ID, is_virtual
 from ..services.upload import (
     UploadConflictError,
     UploadNameTooLongError,
+    UploadParentGoneError,
     UploadPermanentError,
     UploadService,
     UploadTransientError,
@@ -183,6 +184,8 @@ async def upload_node(request: web.Request) -> web.Response:
             {"error": "name_too_long", "message": str(e), "name": e.name},
             status=422,
         )
+    except UploadParentGoneError as e:
+        raise web.HTTPGone(reason=str(e))
     except UploadPermanentError as e:
         raise web.HTTPInsufficientStorage(reason=str(e))
 

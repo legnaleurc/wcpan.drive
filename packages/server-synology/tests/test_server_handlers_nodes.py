@@ -29,6 +29,11 @@ from wcpan.drive.server.keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
+from wcpan.drive.server.services.spool import (
+    SpoolArea,
+    SpoolStaging,
+    create_spool_area,
+)
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     UploadService,
@@ -211,7 +216,7 @@ class _NodesTestCase(DecoyTestCase):
         off_main = _FakeOffMain()
         wq = create_write_queue()
         tmp = tempfile.mkdtemp(prefix="wcpan_test_")
-        store = UploadSessionStore(tmp_dir=Path(tmp))
+        spool = self.enterContext(create_spool_area(tmp_dir=Path(tmp)))
         mirror._nodes.setdefault("p1", _make_dir("p1"))
         mirror._nodes.setdefault("new-parent", _make_dir("new-parent"))
         mirror._nodes.setdefault("bad", _make_dir("bad"))
@@ -236,13 +241,15 @@ class _NodesTestCase(DecoyTestCase):
             syno_paths=syno_paths,
             node_sync=node_sync,
         )
+        uploader = SynologyUploader(
+            drive_api=self.drive_api,
+            syno_paths=syno_paths,
+            node_sync=node_sync,
+        )
         app[UPLOAD_SERVICE_KEY] = UploadService(
-            store=store,
-            uploader=SynologyUploader(
-                drive_api=self.drive_api,
-                syno_paths=syno_paths,
-                node_sync=node_sync,
-            ),
+            store=UploadSessionStore(),
+            uploader=uploader,
+            staging=SpoolStaging(uploader=uploader, area=spool),
         )
 
         app.router.add_get("/api/v1/nodes/{id}", get_node)

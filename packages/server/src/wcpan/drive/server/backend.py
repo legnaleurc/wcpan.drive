@@ -31,7 +31,7 @@ from .services.mirror import MirrorStore
 from .services.off_main import OffMainService
 from .services.operations import NodeOperations
 from .services.sync import NodeSyncService
-from .services.upload import Uploader
+from .services.upload import Uploader, UploadStaging
 
 
 BACKEND_ROUTE_PREFIX = "/api/v1/backends"
@@ -93,8 +93,8 @@ class BackendContext:
 class Backend(Protocol):
     """One entered backend instance.
 
-    ``operations``, ``uploader``, ``run_until_ready``, and ``run`` are used only
-    when serving; ``command`` only offline.
+    ``operations``, ``uploader``, ``staging``, ``run_until_ready``, and ``run``
+    are used only when serving; ``command`` only offline.
     """
 
     def local_path(self, source_path: str) -> Path | None:
@@ -106,6 +106,14 @@ class Backend(Protocol):
 
     @property
     def uploader(self) -> Uploader: ...
+
+    @property
+    def staging(self) -> UploadStaging | None:
+        """Native staging for resumable uploads.
+
+        ``None`` spools them locally and sends each through ``uploader``.
+        """
+        ...
 
     async def run_until_ready(self) -> None:
         """Initial discovery; return once its mounts are current enough to serve."""

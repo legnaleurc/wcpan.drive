@@ -1,19 +1,19 @@
-"""Upload workflow service plus in-memory resumable session store."""
+"""Upload workflow service plus in-memory resumable session store.
+
+A resumable session writes into an ``UploadStage`` that its backend owns: native
+staging where the backend has it, otherwise a local spool (``spool.py``). The
+core owns the request stream, so it always knows exactly how many bytes the
+stage accepted.
+"""
 
 import asyncio
-import os
 import secrets
-import tempfile
 import time
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Generator
-from concurrent.futures import Executor, ThreadPoolExecutor
-from contextlib import contextmanager
+from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from enum import Enum, auto
-from functools import partial
 from logging import getLogger
-from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import Protocol
 
 from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 
@@ -22,127 +22,21 @@ from ..lib.names import normalize_name
 
 _L = getLogger(__name__)
 
-FILE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB for both reads and writes to temp file
+FILE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB per stage write
 UPLOAD_SESSION_TTL = 60 * 60
 UPLOAD_CLEANUP_INTERVAL = 5 * 60
-
-
-class SessionState(Enum):
-    IDLE = auto()
-    WRITING = auto()
-    COMMITTING = auto()
-
-
-@dataclass
-class UploadSession:
-    session_id: str
-    parent_id: NodeId
-    name: str
-    total_size: int
-    mime_type: str | None
-    media_info: MediaInfo | None
-    temp_path: Path
-    received: int = 0
-    state: SessionState = SessionState.IDLE
-    # Set when the session is removed while writing; the writer then discards it.
-    cancelled: bool = False
-    last_activity: float = 0.0
-
-
-class UploadSessionStore:
-    def __init__(self, *, tmp_dir: Path) -> None:
-        self._sessions: dict[str, UploadSession] = {}
-        self._tmp_dir = tmp_dir
-
-    def create(
-        self,
-        parent_id: NodeId,
-        name: str,
-        total_size: int,
-        mime_type: str | None,
-        media_info: MediaInfo | None,
-    ) -> UploadSession:
-        session_id = secrets.token_urlsafe(32)
-        fd, tmp_str = tempfile.mkstemp(
-            prefix="wcpan_upload_",
-            suffix=".tmp",
-            dir=self._tmp_dir,
-        )
-        os.close(fd)
-        session = UploadSession(
-            session_id=session_id,
-            parent_id=parent_id,
-            name=name,
-            total_size=total_size,
-            mime_type=mime_type,
-            media_info=media_info,
-            temp_path=Path(tmp_str),
-            last_activity=time.monotonic(),
-        )
-        self._sessions[session_id] = session
-        return session
-
-    def get(self, session_id: str) -> UploadSession | None:
-        return self._sessions.get(session_id)
-
-    def remove(self, session_id: str) -> UploadSession | None:
-        """Forget *session_id*; its file is deleted unless it is being written."""
-        session = self._sessions.pop(session_id, None)
-        if session is None:
-            return None
-        if session.state is SessionState.IDLE:
-            _discard(session)
-        else:
-            session.cancelled = True
-        return session
-
-    def remove_expired(self, now: float, ttl: float) -> int:
-        expired = [
-            session_id
-            for session_id, session in self._sessions.items()
-            if session.state is SessionState.IDLE and now - session.last_activity >= ttl
-        ]
-        for session_id in expired:
-            self.remove(session_id)
-        return len(expired)
-
-    def close_all(self) -> None:
-        for session_id in list(self._sessions):
-            self.remove(session_id)
-
-
-@dataclass
-class SessionStatus:
-    received: int
-    total_size: int
-
-
-@dataclass
-class UploadCreated:
-    session_id: str
-    total_size: int
-
-
-@dataclass
-class UploadAccepted:
-    offset: int
-
-
-@dataclass
-class UploadCreatedNode:
-    record: NodeRecord
 
 
 class UploadSessionNotFoundError(Exception):
     pass
 
 
-class UploadBusyError(Exception):
-    """The session is publishing its upload and can no longer be cancelled."""
-
-
 class UploadInvalidChunkError(Exception):
     pass
+
+
+class UploadBusyError(Exception):
+    """The session is publishing its upload and can no longer be cancelled."""
 
 
 class UploadTransientError(Exception):
@@ -157,6 +51,10 @@ class UploadNameTooLongError(UploadPermanentError):
     def __init__(self, name: str) -> None:
         super().__init__(f"File name is too long for the backend: {name!r}")
         self.name = name
+
+
+class UploadParentGoneError(UploadPermanentError):
+    """The parent folder given when the upload began no longer exists."""
 
 
 class UploadConflictError(Exception):
@@ -195,34 +93,144 @@ class Uploader(Protocol):
         ...
 
 
+class UploadStage(Protocol):
+    """Storage for one resumable upload, published by ``commit``.
+
+    The core calls one method at a time, and nothing after a successful
+    ``commit`` or any ``abort``.
+    """
+
+    async def write_at(self, offset: int, data: bytes) -> None:
+        """Store all of *data* at *offset*, or raise.
+
+        After a failure or cancellation the core retries from the last offset
+        it saw accepted, so a range may be written again with the same bytes.
+        Raises ``UploadTransientError`` or ``UploadPermanentError``.
+        """
+        ...
+
+    async def commit(self) -> NodeRecord:
+        """Publish the staged bytes under the parent and name given to ``begin``.
+
+        Never replaces an existing entry, and never publishes under a different
+        folder than that parent. After any error but a conflict the stage is
+        still usable, so the core may commit again or abort.
+
+        Raises ``UploadConflictError``, ``UploadTransientError``,
+        ``UploadNameTooLongError``, ``UploadParentGoneError``, or
+        ``UploadPermanentError``.
+        """
+        ...
+
+    async def abort(self) -> None:
+        """Discard the staged bytes; safe to call more than once."""
+        ...
+
+
+class UploadStaging(Protocol):
+    """Starts resumable uploads for a backend."""
+
+    async def begin(
+        self,
+        parent_id: NodeId,
+        name: str,
+        total_size: int,
+        *,
+        mime_type: str | None,
+        media_info: MediaInfo | None,
+    ) -> UploadStage:
+        """A new, empty stage for *name* under *parent_id*.
+
+        Releases anything it allocated if it fails or is cancelled.
+        """
+        ...
+
+
+class SessionState(Enum):
+    IDLE = auto()
+    WRITING = auto()
+    COMMITTING = auto()
+
+
+@dataclass
+class UploadSession:
+    session_id: str
+    parent_id: NodeId
+    name: str
+    total_size: int
+    mime_type: str | None
+    media_info: MediaInfo | None
+    stage: UploadStage
+    received: int = 0
+    state: SessionState = SessionState.IDLE
+    # Set when the session is removed while writing; the writer then aborts.
+    cancelled: bool = False
+    last_activity: float = 0.0
+
+
+class UploadSessionStore:
+    def __init__(self) -> None:
+        self._sessions: dict[str, UploadSession] = {}
+
+    def add(self, session: UploadSession) -> None:
+        self._sessions[session.session_id] = session
+
+    def get(self, session_id: str) -> UploadSession | None:
+        return self._sessions.get(session_id)
+
+    def pop(self, session_id: str) -> UploadSession | None:
+        return self._sessions.pop(session_id, None)
+
+    def pop_expired(self, now: float, ttl: float) -> list[UploadSession]:
+        """Remove idle sessions without activity for *ttl* seconds."""
+        expired = [
+            session
+            for session in self._sessions.values()
+            if session.state is SessionState.IDLE and now - session.last_activity >= ttl
+        ]
+        for session in expired:
+            del self._sessions[session.session_id]
+        return expired
+
+    def pop_all(self) -> list[UploadSession]:
+        sessions = list(self._sessions.values())
+        self._sessions.clear()
+        return sessions
+
+
+@dataclass
+class SessionStatus:
+    received: int
+    total_size: int
+
+
+@dataclass
+class UploadCreated:
+    session_id: str
+    total_size: int
+
+
+@dataclass
+class UploadAccepted:
+    offset: int
+
+
+@dataclass
+class UploadCreatedNode:
+    record: NodeRecord
+
+
 class UploadService:
     def __init__(
         self,
         *,
         store: UploadSessionStore,
         uploader: Uploader,
-        executor: Executor | None = None,
+        staging: UploadStaging,
     ) -> None:
         self._store = store
         self._uploader = uploader
-        self._executor = executor
-
-    async def _off_main[**A, R](
-        self, fn: Callable[A, R], /, *args: A.args, **kwargs: A.kwargs
-    ) -> R:
-        if self._executor is None:
-            future = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
-        else:
-            future = asyncio.get_running_loop().run_in_executor(
-                self._executor, partial(fn, *args, **kwargs)
-            )
-        try:
-            return await asyncio.shield(future)
-        except asyncio.CancelledError:
-            # A running executor call cannot be cancelled. Keep the file and
-            # its buffer alive until it finishes, then propagate cancellation.
-            await future
-            raise
+        self._staging = staging
 
     async def create_session(
         self,
@@ -236,7 +244,21 @@ class UploadService:
         conflict = await self._uploader.find_conflict(parent_id, name)
         if conflict is not None:
             raise UploadConflictError(conflict)
-        session = self._store.create(parent_id, name, total_size, mime_type, media_info)
+        stage = await self._staging.begin(
+            parent_id, name, total_size, mime_type=mime_type, media_info=media_info
+        )
+        # No await between begin and registration, so the stage cannot leak.
+        session = UploadSession(
+            session_id=secrets.token_urlsafe(32),
+            parent_id=parent_id,
+            name=name,
+            total_size=total_size,
+            mime_type=mime_type,
+            media_info=media_info,
+            stage=stage,
+            last_activity=time.monotonic(),
+        )
+        self._store.add(session)
         return UploadCreated(session_id=session.session_id, total_size=total_size)
 
     def get_session_status(self, session_id: str) -> SessionStatus | None:
@@ -246,26 +268,44 @@ class UploadService:
         session.last_activity = time.monotonic()
         return SessionStatus(received=session.received, total_size=session.total_size)
 
-    def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str) -> bool:
         """Cancel *session_id*; ``False`` if there is no such session.
 
-        A session being written is cancelled before its next write, and is
-        never published. Raises ``UploadBusyError`` once publishing started.
+        Raises ``UploadBusyError`` once the upload is being published.
         """
         session = self._store.get(session_id)
         if session is None:
             return False
         if session.state is SessionState.COMMITTING:
             raise UploadBusyError()
-        self._store.remove(session_id)
+        self._store.pop(session_id)
+        if session.state is SessionState.WRITING:
+            # The writer checks this before every write and before committing.
+            session.cancelled = True
+        else:
+            await self._abort(session)
         return True
+
+    async def remove_expired(self, now: float, ttl: float) -> int:
+        expired = self._store.pop_expired(now, ttl)
+        for session in expired:
+            await self._abort(session)
+        return len(expired)
 
     async def cleanup_expired_sessions(self) -> None:
         while True:
             await asyncio.sleep(UPLOAD_CLEANUP_INTERVAL)
-            removed = self._store.remove_expired(time.monotonic(), UPLOAD_SESSION_TTL)
+            removed = await self.remove_expired(time.monotonic(), UPLOAD_SESSION_TTL)
             if removed:
                 _L.info("removed %d expired upload session(s)", removed)
+
+    async def close(self) -> None:
+        """Abort every session; run before the backends close."""
+        for session in self._store.pop_all():
+            if session.state is SessionState.IDLE:
+                await self._abort(session)
+            else:
+                session.cancelled = True
 
     async def upload_direct(
         self,
@@ -304,34 +344,7 @@ class UploadService:
         session.state = SessionState.WRITING
         session.last_activity = time.monotonic()
         try:
-            with session.temp_path.open("r+b") as f:
-                f.seek(session.received)
-                buffer = bytearray(FILE_CHUNK_SIZE)
-                buffered = 0
-                async for chunk in content:
-                    if session.cancelled:
-                        raise UploadSessionNotFoundError()
-                    if session.received + buffered + len(chunk) > session.total_size:
-                        raise UploadInvalidChunkError(
-                            "Upload-Offset exceeds Upload-Length"
-                        )
-                    position = 0
-                    while position < len(chunk):
-                        copied = min(FILE_CHUNK_SIZE - buffered, len(chunk) - position)
-                        buffer[buffered : buffered + copied] = chunk[
-                            position : position + copied
-                        ]
-                        buffered += copied
-                        position += copied
-                        if buffered == FILE_CHUNK_SIZE:
-                            await self._write_batch(f, buffer, buffered)
-                            session.received += buffered
-                            session.last_activity = time.monotonic()
-                            buffered = 0
-                if buffered and not session.cancelled:
-                    await self._write_batch(f, buffer, buffered)
-                    session.received += buffered
-                    session.last_activity = time.monotonic()
+            await self._receive(session, content)
             if session.cancelled:
                 raise UploadSessionNotFoundError()
             if session.received != session.total_size:
@@ -339,70 +352,58 @@ class UploadService:
             # Checked and set without an await in between, so a DELETE either
             # cancelled the writes above or finds the session committing.
             session.state = SessionState.COMMITTING
-            return await self._finalize_session(session_id)
-        except OSError as e:
-            raise UploadPermanentError(f"Temporary upload storage failed: {e}") from e
+            return await self._finalize_session(session)
         finally:
             session.state = SessionState.IDLE
             if session.cancelled:
-                _discard(session)
+                await self._abort(session)
 
-    async def _write_batch(self, f: BinaryIO, buffer: bytearray, size: int) -> None:
-        data = memoryview(buffer)[:size]
-        written = await self._off_main(f.write, data)
-        if written != size:
-            raise OSError(f"Partial write: expected {size} bytes, wrote {written}")
+    async def _receive(
+        self, session: UploadSession, content: AsyncIterable[bytes]
+    ) -> None:
+        buffer = bytearray()
+        async for chunk in content:
+            if session.cancelled:
+                raise UploadSessionNotFoundError()
+            if session.received + len(buffer) + len(chunk) > session.total_size:
+                raise UploadInvalidChunkError("Upload-Offset exceeds Upload-Length")
+            buffer += chunk
+            while len(buffer) >= FILE_CHUNK_SIZE:
+                await self._write(session, bytes(buffer[:FILE_CHUNK_SIZE]))
+                del buffer[:FILE_CHUNK_SIZE]
+        if buffer and not session.cancelled:
+            await self._write(session, bytes(buffer))
 
-    async def _finalize_session(
-        self,
-        session_id: str,
-    ) -> UploadCreatedNode:
-        session = self._store.get(session_id)
-        if session is None:
-            raise UploadSessionNotFoundError()
+    async def _write(self, session: UploadSession, data: bytes) -> None:
+        # Immutable batches: a write still running after a cancellation can
+        # never see the buffer change under it.
+        await session.stage.write_at(session.received, data)
+        session.received += len(data)
+        session.last_activity = time.monotonic()
 
+    async def _finalize_session(self, session: UploadSession) -> UploadCreatedNode:
         _L.debug(
             "begin finalising upload session session_id=%r name=%r parent_id=%r",
-            session_id,
+            session.session_id,
             session.name,
             session.parent_id,
         )
-
-        current_size = session.temp_path.stat().st_size
-        if current_size != session.received or current_size != session.total_size:
-            _L.warning(
-                "upload session size mismatch before finalisation session_id=%r name=%r parent_id=%r received=%d file_size=%d total_size=%d",
-                session_id,
-                session.name,
-                session.parent_id,
-                session.received,
-                current_size,
-                session.total_size,
-            )
-            raise UploadPermanentError("Upload session size mismatch")
-
         try:
-            with session.temp_path.open("rb") as f:
-                record = await self._uploader.upload(
-                    session.parent_id,
-                    session.name,
-                    self._iter_file(f),
-                    mime_type=session.mime_type,
-                    media_info=session.media_info,
-                )
+            record = await session.stage.commit()
         except UploadConflictError:
             _L.debug(
                 "upload session conflicted during finalisation session_id=%r name=%r parent_id=%r",
-                session_id,
+                session.session_id,
                 session.name,
                 session.parent_id,
             )
-            self._cleanup_session(session_id)
+            self._store.pop(session.session_id)
+            await self._abort(session)
             raise
         except UploadTransientError as e:
             _L.warning(
                 "upload session failed during finalisation session_id=%r name=%r parent_id=%r error=%s",
-                session_id,
+                session.session_id,
                 session.name,
                 session.parent_id,
                 e,
@@ -413,60 +414,30 @@ class UploadService:
         except UploadPermanentError as e:
             _L.warning(
                 "upload session permanently failed during finalisation session_id=%r name=%r parent_id=%r error=%s",
-                session_id,
+                session.session_id,
                 session.name,
                 session.parent_id,
                 e,
             )
             raise
-        self._cleanup_session(session_id)
+        self._store.pop(session.session_id)
 
         _L.debug(
             "finalised upload session session_id=%r name=%r parent_id=%r id=%r",
-            session_id,
+            session.session_id,
             session.name,
             session.parent_id,
             record.id,
         )
         return UploadCreatedNode(record=record)
 
-    async def _iter_file(self, f: BinaryIO) -> AsyncIterator[bytes]:
-        while chunk := await self._off_main(f.read, FILE_CHUNK_SIZE):
-            yield chunk
-
-    def _cleanup_session(self, session_id: str) -> None:
-        self._store.remove(session_id)
-
-
-def _discard(session: UploadSession) -> None:
-    try:
-        session.temp_path.unlink(missing_ok=True)
-    except OSError as e:
-        _L.warning(
-            "failed to discard upload session session_id=%r name=%r error=%s",
-            session.session_id,
-            session.name,
-            e,
-        )
-
-
-@contextmanager
-def create_upload_service(
-    *,
-    tmp_dir: Path | None,
-    uploader: Uploader,
-) -> Generator[UploadService, None, None]:
-    with tempfile.TemporaryDirectory(
-        prefix="wcpan_upload_",
-        dir=tmp_dir,
-    ) as td:
-        store = UploadSessionStore(tmp_dir=Path(td))
-        with ThreadPoolExecutor(thread_name_prefix="wcpan-upload") as executor:
-            try:
-                yield UploadService(
-                    store=store,
-                    uploader=uploader,
-                    executor=executor,
-                )
-            finally:
-                store.close_all()
+    async def _abort(self, session: UploadSession) -> None:
+        try:
+            await session.stage.abort()
+        except Exception:
+            _L.warning(
+                "failed to discard upload session session_id=%r name=%r",
+                session.session_id,
+                session.name,
+                exc_info=True,
+            )

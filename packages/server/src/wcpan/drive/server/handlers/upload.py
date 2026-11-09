@@ -13,6 +13,7 @@ from ..services.upload import (
     UploadInvalidChunkError,
     UploadNameTooLongError,
     UploadOffsetMismatchError,
+    UploadParentGoneError,
     UploadPermanentError,
     UploadService,
     UploadSessionNotFoundError,
@@ -125,6 +126,8 @@ async def patch_upload_chunk(request: web.Request) -> web.Response:
             {"error": "name_too_long", "message": str(e), "name": e.name},
             status=422,
         )
+    except UploadParentGoneError as e:
+        raise web.HTTPGone(reason=str(e))
     except UploadPermanentError as e:
         raise web.HTTPInsufficientStorage(reason=str(e))
 
@@ -158,7 +161,7 @@ async def delete_upload_session(request: web.Request) -> web.Response:
     upload_service: UploadService = request.app[UPLOAD_SERVICE_KEY]
     session_id = request.match_info["session_id"]
     try:
-        deleted = upload_service.delete_session(session_id)
+        deleted = await upload_service.delete_session(session_id)
     except UploadBusyError:
         # Publishing has started; the client finds the result by looking up
         # the node instead.
