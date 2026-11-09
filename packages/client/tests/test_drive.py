@@ -15,7 +15,7 @@ from decoy import Decoy, matchers
 from wcpan.drive.client._cache._service import SqliteCache, create_cache
 from wcpan.drive.client._drive import (
     _VIRTUAL_ROOT_ID,
-    _SourceState,
+    _Source,
     compose_service,
     create_drive,
     create_multi_drive,
@@ -133,6 +133,26 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
             self.assertEqual(root.id, _VIRTUAL_ROOT_ID)
             self.assertIsNone(root.parent_id)
             self.assertTrue(root.is_directory)
+
+    async def testOneNamedSourceIsNotScoped(self) -> None:
+        # given
+        cache = create_cache_mock(self.decoy)
+        self.enterContext(patch_create_cache(self.decoy, {"google.sqlite": cache}))
+        node = make_node(node_id="abc", parent_id="root", name="a")
+        self.decoy.when(await cache.get_node_by_id("abc")).then_return(node)
+        async with create_multi_drive(
+            sources=[
+                SourceConfig(
+                    name="google",
+                    backend=as_factory(create_backend_mock(self.decoy)),
+                    cache_path="google.sqlite",
+                ),
+            ]
+        ) as drive:
+            # when
+            rv = await drive.get_node_by_id("abc")
+        # then
+        self.assertEqual(rv, node)
 
     async def testMultiModeRejectsDuplicateNames(self) -> None:
         # given
@@ -747,7 +767,7 @@ class SyncTestCase(_DriveTestCase):
         self.decoy.verify(await self._ss.apply_changes([(True, "123")], "789"), times=1)
 
 
-# --- Multi-source (_MultiDrive) tests ---
+# --- Multi-source tests ---
 
 
 class _MultiDriveTestCase(IsolatedAsyncioTestCase):
@@ -1413,9 +1433,9 @@ async def to_async_iterable[T](rv: Iterable[T]) -> AsyncIterator[T]:
 @asynccontextmanager
 async def create_mocked_multi_drive(
     source_names: list[str], *, decoy: Decoy
-) -> AsyncGenerator[tuple[Any, dict[str, _SourceState]]]:
+) -> AsyncGenerator[tuple[Any, dict[str, _Source]]]:
     source_configs: list[SourceConfig] = []
-    source_states: dict[str, _SourceState] = {}
+    source_states: dict[str, _Source] = {}
     caches: dict[str, SqliteCache] = {}
 
     for name in source_names:
@@ -1432,7 +1452,9 @@ async def create_mocked_multi_drive(
             )
         )
         caches[f"{name}.sqlite"] = ss
-        source_states[name] = _SourceState(backend=fs, cache=ss)
+        source_states[name] = _Source(
+            name=name, backend=fs, cache=ss, scoped=len(source_names) > 1
+        )
 
     with patch_create_cache(decoy, caches):
         async with create_multi_drive(sources=source_configs) as drive:
