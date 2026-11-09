@@ -9,6 +9,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Callable, Generator
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum, auto
 from functools import partial
 from logging import getLogger
 from pathlib import Path
@@ -26,6 +27,12 @@ UPLOAD_SESSION_TTL = 60 * 60
 UPLOAD_CLEANUP_INTERVAL = 5 * 60
 
 
+class SessionState(Enum):
+    IDLE = auto()
+    WRITING = auto()
+    COMMITTING = auto()
+
+
 @dataclass
 class UploadSession:
     session_id: str
@@ -36,7 +43,9 @@ class UploadSession:
     media_info: MediaInfo | None
     temp_path: Path
     received: int = 0
-    uploading: bool = False
+    state: SessionState = SessionState.IDLE
+    # Set when the session is removed while writing; the writer then discards it.
+    cancelled: bool = False
     last_activity: float = 0.0
 
 
@@ -77,16 +86,21 @@ class UploadSessionStore:
         return self._sessions.get(session_id)
 
     def remove(self, session_id: str) -> UploadSession | None:
+        """Forget *session_id*; its file is deleted unless it is being written."""
         session = self._sessions.pop(session_id, None)
-        if session is not None:
-            session.temp_path.unlink(missing_ok=True)
+        if session is None:
+            return None
+        if session.state is SessionState.IDLE:
+            _discard(session)
+        else:
+            session.cancelled = True
         return session
 
     def remove_expired(self, now: float, ttl: float) -> int:
         expired = [
             session_id
             for session_id, session in self._sessions.items()
-            if not session.uploading and now - session.last_activity >= ttl
+            if session.state is SessionState.IDLE and now - session.last_activity >= ttl
         ]
         for session_id in expired:
             self.remove(session_id)
@@ -121,6 +135,10 @@ class UploadCreatedNode:
 
 class UploadSessionNotFoundError(Exception):
     pass
+
+
+class UploadBusyError(Exception):
+    """The session is publishing its upload and can no longer be cancelled."""
 
 
 class UploadInvalidChunkError(Exception):
@@ -229,8 +247,17 @@ class UploadService:
         return SessionStatus(received=session.received, total_size=session.total_size)
 
     def delete_session(self, session_id: str) -> bool:
-        if self._store.remove(session_id) is None:
+        """Cancel *session_id*; ``False`` if there is no such session.
+
+        A session being written is cancelled before its next write, and is
+        never published. Raises ``UploadBusyError`` once publishing started.
+        """
+        session = self._store.get(session_id)
+        if session is None:
             return False
+        if session.state is SessionState.COMMITTING:
+            raise UploadBusyError()
+        self._store.remove(session_id)
         return True
 
     async def cleanup_expired_sessions(self) -> None:
@@ -271,10 +298,10 @@ class UploadService:
         if session is None:
             raise UploadSessionNotFoundError()
 
-        if session.uploading or start != session.received:
+        if session.state is not SessionState.IDLE or start != session.received:
             raise UploadOffsetMismatchError(session.received)
 
-        session.uploading = True
+        session.state = SessionState.WRITING
         session.last_activity = time.monotonic()
         try:
             with session.temp_path.open("r+b") as f:
@@ -282,6 +309,8 @@ class UploadService:
                 buffer = bytearray(FILE_CHUNK_SIZE)
                 buffered = 0
                 async for chunk in content:
+                    if session.cancelled:
+                        raise UploadSessionNotFoundError()
                     if session.received + buffered + len(chunk) > session.total_size:
                         raise UploadInvalidChunkError(
                             "Upload-Offset exceeds Upload-Length"
@@ -299,17 +328,24 @@ class UploadService:
                             session.received += buffered
                             session.last_activity = time.monotonic()
                             buffered = 0
-                if buffered:
+                if buffered and not session.cancelled:
                     await self._write_batch(f, buffer, buffered)
                     session.received += buffered
                     session.last_activity = time.monotonic()
+            if session.cancelled:
+                raise UploadSessionNotFoundError()
             if session.received != session.total_size:
                 return UploadAccepted(offset=session.received)
+            # Checked and set without an await in between, so a DELETE either
+            # cancelled the writes above or finds the session committing.
+            session.state = SessionState.COMMITTING
             return await self._finalize_session(session_id)
         except OSError as e:
             raise UploadPermanentError(f"Temporary upload storage failed: {e}") from e
         finally:
-            session.uploading = False
+            session.state = SessionState.IDLE
+            if session.cancelled:
+                _discard(session)
 
     async def _write_batch(self, f: BinaryIO, buffer: bytearray, size: int) -> None:
         data = memoryview(buffer)[:size]
@@ -400,6 +436,18 @@ class UploadService:
 
     def _cleanup_session(self, session_id: str) -> None:
         self._store.remove(session_id)
+
+
+def _discard(session: UploadSession) -> None:
+    try:
+        session.temp_path.unlink(missing_ok=True)
+    except OSError as e:
+        _L.warning(
+            "failed to discard upload session session_id=%r name=%r error=%s",
+            session.session_id,
+            session.name,
+            e,
+        )
 
 
 @contextmanager

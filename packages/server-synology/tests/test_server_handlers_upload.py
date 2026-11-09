@@ -31,6 +31,7 @@ from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.services.upload import (
     _L,
+    SessionState,
     UploadService,
     UploadSessionStore,
 )
@@ -367,7 +368,7 @@ class TestHeadUploadSession(_UploadTestCase):
         # given
         session = self._store.create("p", "f.bin", 2048, None, None)
         session.last_activity = 10.0
-        session.uploading = True
+        session.state = SessionState.WRITING
 
         # when
         removed = self._store.remove_expired(now=10_000.0, ttl=3600.0)

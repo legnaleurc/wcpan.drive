@@ -7,6 +7,7 @@ from ..keys import READY_KEY, UPLOAD_SERVICE_KEY
 from ..services.paths import SERVER_ROOT_ID
 from ..services.upload import (
     UploadAccepted,
+    UploadBusyError,
     UploadConflictError,
     UploadCreatedNode,
     UploadInvalidChunkError,
@@ -156,6 +157,12 @@ async def delete_upload_session(request: web.Request) -> web.Response:
     """DELETE /api/v1/uploads/{session_id}"""
     upload_service: UploadService = request.app[UPLOAD_SERVICE_KEY]
     session_id = request.match_info["session_id"]
-    if not upload_service.delete_session(session_id):
+    try:
+        deleted = upload_service.delete_session(session_id)
+    except UploadBusyError:
+        # Publishing has started; the client finds the result by looking up
+        # the node instead.
+        raise web.HTTPConflict(reason="Upload is being published")
+    if not deleted:
         raise web.HTTPNotFound()
     return web.Response(status=204)

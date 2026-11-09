@@ -1,11 +1,23 @@
 """Tests for server._services.upload session store."""
 
+import asyncio
 import tempfile
+from collections.abc import AsyncIterable, AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest import TestCase
+from unittest import IsolatedAsyncioTestCase, TestCase
 
-from wcpan.drive.protocol.types import MediaInfo
-from wcpan.drive.server.services.upload import UploadSessionStore
+from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
+from wcpan.drive.server.services.upload import (
+    UploadBusyError,
+    UploadCreatedNode,
+    UploadService,
+    UploadSessionNotFoundError,
+    UploadSessionStore,
+)
+
+
+_EPOCH = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 class TestUploadSessionStore(TestCase):
@@ -98,3 +110,101 @@ class TestUploadSessionStore(TestCase):
             # then
             ids = {s.session_id for s in sessions}
             self.assertEqual(len(ids), 10)
+
+
+class _GatedUploader:
+    """One-shot uploader that waits for ``gate`` before finishing."""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+        self.started = asyncio.Event()
+        self.uploads: list[bytes] = []
+
+    async def find_conflict(self, parent_id: NodeId, name: str) -> NodeRecord | None:
+        return None
+
+    async def upload(
+        self,
+        parent_id: NodeId,
+        name: str,
+        content: AsyncIterable[bytes],
+        *,
+        mime_type: str | None,
+        media_info: MediaInfo | None,
+    ) -> NodeRecord:
+        self.started.set()
+        self.uploads.append(b"".join([chunk async for chunk in content]))
+        await self.gate.wait()
+        return NodeRecord(
+            id=NodeId("new"),
+            parent_id=parent_id,
+            name=name,
+            is_directory=False,
+            created_time=_EPOCH,
+            modified_time=_EPOCH,
+            changed_time=_EPOCH,
+            mime_type="",
+            hash="",
+            hash_algorithm="",
+            size=0,
+            is_image=False,
+            is_video=False,
+            width=0,
+            height=0,
+            ms_duration=0,
+        )
+
+
+class TestDeleteDuringUpload(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        td = self.enterContext(tempfile.TemporaryDirectory())
+        self.store = UploadSessionStore(tmp_dir=Path(td))
+        self.uploader = _GatedUploader()
+        self.service = UploadService(store=self.store, uploader=self.uploader)
+
+    async def test_delete_while_writing_cancels_before_publishing(self) -> None:
+        # given
+        session = self.store.create("p", "f.bin", 6, None, None)
+        sent = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def slow() -> AsyncIterator[bytes]:
+            yield b"abc"
+            sent.set()
+            await resume.wait()
+            yield b"def"
+
+        writer = asyncio.create_task(
+            self.service.append_chunk(session.session_id, 0, slow())
+        )
+        await sent.wait()
+        # when
+        deleted = self.service.delete_session(session.session_id)
+        resume.set()
+        # then
+        with self.assertRaises(UploadSessionNotFoundError):
+            await writer
+        self.assertTrue(deleted)
+        self.assertIsNone(self.store.get(session.session_id))
+        self.assertEqual(self.uploader.uploads, [])
+        self.assertFalse(session.temp_path.exists())
+
+    async def test_delete_while_publishing_is_refused(self) -> None:
+        # given
+        session = self.store.create("p", "f.bin", 3, None, None)
+
+        async def body() -> AsyncIterator[bytes]:
+            yield b"abc"
+
+        writer = asyncio.create_task(
+            self.service.append_chunk(session.session_id, 0, body())
+        )
+        await self.uploader.started.wait()
+        # when / then
+        with self.assertRaises(UploadBusyError):
+            self.service.delete_session(session.session_id)
+        # then
+        self.uploader.gate.set()
+        self.assertIsInstance(await writer, UploadCreatedNode)
+        self.assertEqual(self.uploader.uploads, [b"abc"])
+        self.assertFalse(session.temp_path.exists())
