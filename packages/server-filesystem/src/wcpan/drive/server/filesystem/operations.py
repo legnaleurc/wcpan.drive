@@ -8,7 +8,7 @@ while its path still names the object the mirror knows.
 
 import errno
 import os
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from logging import getLogger
@@ -124,11 +124,42 @@ class _Writes:
         children = await self._mirror.get_children(parent_id)
         return next((c for c in children if c.name == name), None)
 
-    async def _record(self, observation: NodeObservation, read: ReadSeq) -> NodeRecord:
+    async def _record(
+        self,
+        observation: NodeObservation,
+        read: ReadSeq,
+        *,
+        folders: Iterable[NodeId | None],
+    ) -> NodeRecord:
         record = await self._node_sync.upsert(observation, read=read)
+        await self._refresh_folders(folders, read)
         # Recorded before passes resume, so they match it instead of minting an ID.
         await self._node_sync.flush()
         return record
+
+    async def _refresh_folders(
+        self, folder_ids: Iterable[NodeId | None], read: ReadSeq
+    ) -> None:
+        """Record the times of folders whose entries a write just changed.
+
+        Adding, removing, or renaming an entry updates its folder's modification
+        time; recording it now leaves nothing for the next pass to find. Mount
+        roots have no record of their own, and a folder that changed on disk
+        meanwhile is left to that pass.
+        """
+        observations: list[NodeObservation] = []
+        for folder_id in dict.fromkeys(f for f in folder_ids if f is not None):
+            current = await self._scanner.current(folder_id)
+            if current is None:
+                continue
+            entry, previous = current
+            parent_id = previous.record.parent_id
+            if not entry.is_directory or parent_id is None:
+                continue
+            observations.append(
+                FilesystemScanner.observation(entry, folder_id, parent_id, "")
+            )
+        await self._node_sync.upsert_batch(observations, read=read)
 
 
 class FilesystemOperations(_Writes):
@@ -171,7 +202,7 @@ class FilesystemOperations(_Writes):
                     observation = FilesystemScanner.observation(
                         entry, new_node_id(), parent_id, ""
                     )
-                    return await self._record(observation, read)
+                    return await self._record(observation, read, folders=[parent_id])
         raise OperationConflictError(
             f"{name!r} already exists in this folder",
             record=await self._mirrored_child(parent_id, name),
@@ -216,7 +247,9 @@ class FilesystemOperations(_Writes):
                 observation = FilesystemScanner.observation(
                     moved, record.id, target, hash_ or previous.record.hash
                 )
-                return await self._record(observation, read)
+                return await self._record(
+                    observation, read, folders=[previous.record.parent_id, target]
+                )
 
     async def delete(self, record: NodeRecord) -> None:
         """Delete permanently; a directory is removed with its contents."""
@@ -241,6 +274,7 @@ class FilesystemOperations(_Writes):
                         failure = e
                 if failure is None:
                     await self._node_sync.delete(record.id, read=read)
+                    await self._refresh_folders([record.parent_id], read)
                     await self._node_sync.flush()
                     return
         # Part of a directory may be gone; record what is left.
@@ -401,7 +435,9 @@ class FilesystemUploader(_Writes):
                                 ms_duration=media_info.ms_duration,
                             ),
                         )
-                    return await self._record(observation, read)
+                    return await self._record(
+                        observation, read, folders=[stage.parent_id]
+                    )
         existing = await self._mirrored_child(stage.parent_id, stage.name)
         if existing is None:
             raise UploadPermanentError(

@@ -429,6 +429,77 @@ class TestResumableUpload(_WriteTestCase):
         self.assertEqual(self.staging_files(), [])
 
 
+class TestFolderTimes(_WriteTestCase):
+    """A write records the new times of the folders it changed."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        # Far from now, so a stale record differs even in whole seconds.
+        for folder in ("a", "b"):
+            os.utime(self.source / folder, (1_000_000, 1_000_000))
+        await self.scan()
+
+    async def assert_folder_is_current(self, relative: str) -> None:
+        record = await self.node(relative)
+        assert record is not None
+        st = os.stat(self.source / relative)
+        self.assertEqual(record.modified_time, int(st.st_mtime))
+        self.assertEqual(record.changed_time, int(st.st_ctime))
+
+    async def test_create_folder(self) -> None:
+        # when
+        await self.operations.create_folder(await self.node_id("a"), "new")
+        # then
+        await self.assert_folder_is_current("a")
+        await self.assert_rescan_is_quiet()
+
+    async def test_upload(self) -> None:
+        # when
+        await self.uploader.upload(
+            await self.node_id("b"),
+            "new.bin",
+            _content(b"x"),
+            mime_type=None,
+            media_info=None,
+        )
+        # then
+        await self.assert_folder_is_current("b")
+        await self.assert_rescan_is_quiet()
+
+    async def test_rename(self) -> None:
+        # given
+        record = await self.node("a/f.txt")
+        assert record is not None
+        # when
+        await self.operations.update(record, name="g.txt", parent_id=None)
+        # then
+        await self.assert_folder_is_current("a")
+        await self.assert_rescan_is_quiet()
+
+    async def test_move_records_both_folders(self) -> None:
+        # given
+        record = await self.node("a/f.txt")
+        assert record is not None
+        # when
+        await self.operations.update(
+            record, name=None, parent_id=await self.node_id("b")
+        )
+        # then
+        await self.assert_folder_is_current("a")
+        await self.assert_folder_is_current("b")
+        await self.assert_rescan_is_quiet()
+
+    async def test_delete(self) -> None:
+        # given
+        record = await self.node("a/f.txt")
+        assert record is not None
+        # when
+        await self.operations.delete(record)
+        # then
+        await self.assert_folder_is_current("a")
+        await self.assert_rescan_is_quiet()
+
+
 class TestWritesWithWatcher(_WriteTestCase):
     watch = True
 
