@@ -21,3 +21,18 @@ class Blocking:
     ) -> R:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, partial(fn, *args, **kwargs))
+
+    async def to_completion[**A, R](
+        self, fn: Callable[A, R], /, *args: A.args, **kwargs: A.kwargs
+    ) -> R:
+        """Like calling, but a cancelled caller still waits for *fn* to finish.
+
+        For calls that use a file the caller closes afterwards.
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(self._executor, partial(fn, *args, **kwargs))
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            await future
+            raise

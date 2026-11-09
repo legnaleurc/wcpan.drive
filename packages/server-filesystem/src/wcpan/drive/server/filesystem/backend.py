@@ -171,8 +171,8 @@ class FilesystemBackend:
         return self._require_runtime().uploader
 
     @property
-    def staging(self) -> None:
-        return None
+    def staging(self) -> FilesystemUploader:
+        return self._require_runtime().uploader
 
     async def run_until_ready(self) -> None:
         await self._require_runtime().run_until_ready()

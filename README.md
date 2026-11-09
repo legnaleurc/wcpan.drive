@@ -288,7 +288,10 @@ Settings, all optional:
   scan. Moves across filesystems are not supported.
 - Uploads are written to a hidden `.wcpan-upload-*` file in the destination
   folder and renamed into place when complete; interrupted uploads are removed,
-  and these files are never mirrored.
+  and these files are never mirrored. Resumable upload sessions write there
+  directly, so they do not use `upload_tmp_dir`. If the folder moves during a
+  session, finishing it returns 503 until a scan has seen the move; if the
+  folder is deleted, it returns 410.
 - With `read_only: true`, every change returns 403.
 - Images and videos are probed from the mount sources unless `local_paths` maps
   them elsewhere.
