@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import shutil
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.server.backend import CoreServices
@@ -187,9 +188,9 @@ class TestRuntime(_WatchTestCase):
         real_list = scan_module.list_directory
         made = False
 
-        def list_then_change(path: str):  # noqa: ANN202
+        def list_then_change(path: str, **kwargs: Any):  # noqa: ANN202
             nonlocal made
-            entries = real_list(path)
+            entries = real_list(path, **kwargs)
             if not made and path == str(self.source):
                 made = True
                 (self.source / "racy.txt").write_bytes(b"x")

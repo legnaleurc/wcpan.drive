@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import os
 import shutil
+import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -511,6 +513,82 @@ class TestResumableUpload(_WriteTestCase):
 
         # then
         self.assertEqual(self.staging_files(), [])
+
+
+class TestStagingSweep(_WriteTestCase):
+    sweep_staging_after = 3600.0
+
+    def leftover(self, relative: str, *, age: float) -> Path:
+        path = self.write(relative, b"x")
+        then = time.time() - age
+        os.utime(path, (then, then))
+        return path
+
+    async def test_full_scan_removes_abandoned_files(self) -> None:
+        # given
+        top = self.leftover(f"b/{STAGING_PREFIX}old", age=7200)
+        nested = self.leftover(f"a/c/{STAGING_PREFIX}old", age=7200)
+        # when
+        await self.scan()
+        # then
+        self.assertFalse(top.exists())
+        self.assertFalse(nested.exists())
+
+    async def test_recent_files_are_kept(self) -> None:
+        # given
+        path = self.leftover(f"b/{STAGING_PREFIX}recent", age=60)
+        # when
+        await self.scan()
+        # then
+        self.assertTrue(path.exists())
+
+    async def test_files_of_live_uploads_are_kept(self) -> None:
+        # given
+        file = await self.uploader.open(
+            await self.node_id("b"), "new.bin", 4, mime_type=None, media_info=None
+        )
+        self.addAsyncCleanup(file.abort)
+        await file.write(0, b"data")
+        [path] = [self.source / "b" / name for name in self.staging_files()]
+        os.utime(path, (time.time() - 7200, time.time() - 7200))
+        # when
+        await self.scan()
+        # then
+        self.assertTrue(path.exists())
+        record = await file.close()
+        self.assertEqual(await self.node_id("b/new.bin"), record.id)
+
+    async def test_finished_uploads_are_no_longer_held(self) -> None:
+        # given
+        file = await self.uploader.open(
+            await self.node_id("b"), "new.bin", 4, mime_type=None, media_info=None
+        )
+        name = file.staging_name
+        await file.abort()
+        path = self.leftover(f"b/{name}", age=7200)
+        # when
+        await self.scan()
+        # then
+        self.assertFalse(path.exists())
+
+    async def test_folder_scans_do_not_sweep(self) -> None:
+        # given
+        path = self.leftover(f"b/{STAGING_PREFIX}old", age=7200)
+        # when
+        await self.scanner.scan_folders([await self.node_id("b")])
+        # then
+        self.assertTrue(path.exists())
+
+
+class TestStagingSweepDisabled(_WriteTestCase):
+    async def test_abandoned_files_are_kept(self) -> None:
+        # given
+        path = self.write(f"b/{STAGING_PREFIX}old", b"x")
+        os.utime(path, (time.time() - 7200, time.time() - 7200))
+        # when
+        await self.scan()
+        # then
+        self.assertTrue(path.exists())
 
 
 class TestFolderTimes(_WriteTestCase):

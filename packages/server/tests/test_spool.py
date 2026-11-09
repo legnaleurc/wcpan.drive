@@ -1,6 +1,9 @@
 """Tests for spooling resumable uploads in front of a one-shot uploader."""
 
+import fcntl
+import os
 import tempfile
+import time
 from collections.abc import AsyncIterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +14,7 @@ from wcpan.drive.server.services.spool import (
     SpooledFile,
     SpooledFiles,
     create_spool_area,
+    sweep_spool_areas,
 )
 from wcpan.drive.server.services.upload import (
     UploadPermanentError,
@@ -160,3 +164,74 @@ class TestSpooledFiles(IsolatedAsyncioTestCase):
         self.assertFalse(file.path.exists())
         with self.assertRaises(UploadPermanentError):
             await file.write(0, b"abc")
+
+
+class TestSpoolAreas(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def area_dir(self, name: str, *, locked_file: bool = True) -> Path:
+        path = self.tmp / name
+        path.mkdir()
+        (path / "wcpan_upload_1.tmp").write_bytes(b"x")
+        if locked_file:
+            (path / ".lock").touch()
+        return path
+
+    def test_area_is_removed_on_exit(self) -> None:
+        # given
+        with create_spool_area(tmp_dir=self.tmp) as area:
+            self.assertTrue(area.directory.is_dir())
+        # then
+        self.assertFalse(area.directory.exists())
+
+    def test_abandoned_area_is_removed(self) -> None:
+        # given
+        orphan = self.area_dir("wcpan_upload_orphan")
+        # when
+        with create_spool_area(tmp_dir=self.tmp) as area:
+            # then
+            self.assertFalse(orphan.exists())
+            self.assertTrue(area.directory.exists())
+
+    def test_live_area_is_kept(self) -> None:
+        # given
+        with create_spool_area(tmp_dir=self.tmp) as live:
+            # when
+            with create_spool_area(tmp_dir=self.tmp):
+                # then
+                self.assertTrue(live.directory.exists())
+
+    def test_area_locked_elsewhere_is_kept(self) -> None:
+        # given
+        held = self.area_dir("wcpan_upload_held")
+        fd = os.open(held / ".lock", os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        # when
+        sweep_spool_areas(self.tmp)
+        # then
+        self.assertTrue(held.exists())
+
+    def test_unlocked_area_is_removed_only_when_old(self) -> None:
+        # given
+        young = self.area_dir("wcpan_upload_young", locked_file=False)
+        old = self.area_dir("wcpan_upload_old", locked_file=False)
+        then = time.time() - 2 * 3600
+        os.utime(old, (then, then))
+        # when
+        sweep_spool_areas(self.tmp)
+        # then
+        self.assertTrue(young.exists())
+        self.assertFalse(old.exists())
+
+    def test_other_entries_are_untouched(self) -> None:
+        # given
+        other = self.area_dir("other")
+        stray = self.tmp / "wcpan_upload_file"
+        stray.write_bytes(b"x")
+        # when
+        sweep_spool_areas(self.tmp)
+        # then
+        self.assertTrue(other.exists())
+        self.assertTrue(stray.exists())

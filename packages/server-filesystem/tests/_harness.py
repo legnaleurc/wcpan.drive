@@ -41,6 +41,7 @@ logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
 class ScanTestCase(IsolatedAsyncioTestCase):
     watch = False
     read_only = False
+    sweep_staging_after: float | None = None
 
     async def asyncSetUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="wcpan_fs_"))
@@ -85,6 +86,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             paths=self.paths,
             blocking=blocking,
             watcher=self.watcher,
+            sweep_staging_after=self.sweep_staging_after,
         )
         self.operations = FilesystemOperations(
             scanner=self.scanner,

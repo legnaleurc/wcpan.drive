@@ -3,10 +3,17 @@
 A backend that cannot write in place opts into ``SpooledFiles``: each file is a
 local temporary file, and ``close`` streams it through the backend's one-shot
 ``Uploader``.
+
+Each spool area is a private directory locked for as long as it is in use. A
+new area first removes the areas under the same parent that no process holds,
+which a crash left behind.
 """
 
+import fcntl
 import os
+import shutil
 import tempfile
+import time
 from collections.abc import AsyncIterator, Callable, Generator
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager
@@ -23,6 +30,12 @@ from .upload import FILE_CHUNK_SIZE, Uploader, UploadPermanentError
 
 
 _L = getLogger(__name__)
+
+_AREA_PREFIX = "wcpan_upload_"
+_LOCK_NAME = ".lock"
+# An area without a lock file is still being created, or predates the lock;
+# remove it only once it is this many seconds old.
+_UNLOCKED_GRACE = 60 * 60
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -51,10 +64,62 @@ class SpoolArea:
 
 @contextmanager
 def create_spool_area(*, tmp_dir: Path | None) -> Generator[SpoolArea, None, None]:
-    """A private spool directory under *tmp_dir*, removed with its files on exit."""
-    with tempfile.TemporaryDirectory(prefix="wcpan_upload_", dir=tmp_dir) as td:
+    """A private spool directory under *tmp_dir*, removed with its files on exit.
+
+    Abandoned areas under *tmp_dir* are removed first.
+    """
+    sweep_spool_areas(tmp_dir or Path(tempfile.gettempdir()))
+    directory = Path(tempfile.mkdtemp(prefix=_AREA_PREFIX, dir=tmp_dir))
+    try:
+        lock = os.open(
+            directory / _LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600
+        )
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    try:
+        # Held until the directory is gone, so no sweep removes it while in use.
+        fcntl.flock(lock, fcntl.LOCK_EX)
         with ThreadPoolExecutor(thread_name_prefix="wcpan-upload") as executor:
-            yield SpoolArea(directory=Path(td), executor=executor)
+            yield SpoolArea(directory=directory, executor=executor)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+        os.close(lock)
+
+
+def sweep_spool_areas(parent: Path) -> None:
+    """Remove the spool areas under *parent* that no process holds."""
+    try:
+        children = list(parent.iterdir())
+    except OSError as e:
+        _L.warning("cannot look for abandoned upload spools in %s: %s", parent, e)
+        return
+    for child in children:
+        if child.name.startswith(_AREA_PREFIX) and _abandoned_area(child):
+            shutil.rmtree(child, ignore_errors=True)
+            _L.info("removed abandoned upload spool %s", child)
+
+
+def _abandoned_area(path: Path) -> bool:
+    try:
+        if not path.is_dir(follow_symlinks=False):
+            return False
+        lock = os.open(path / _LOCK_NAME, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        try:
+            return time.time() - path.lstat().st_mtime > _UNLOCKED_GRACE
+        except OSError:
+            return False
+    except OSError:
+        return False  # Another user's, or unreadable.
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False  # Held by a live process.
+    finally:
+        # Closing drops the lock; a live owner never unlocks before removing.
+        os.close(lock)
+    return True
 
 
 def _storage_error(e: OSError) -> UploadPermanentError:

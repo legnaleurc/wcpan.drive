@@ -97,7 +97,9 @@ class WritableFile(Protocol):
     """A file opened for one resumable upload, with random access.
 
     The core calls one method at a time, and nothing after a successful
-    ``close`` or any ``abort``.
+    ``close`` or any ``abort``. It aborts a file left idle for
+    ``UPLOAD_SESSION_TTL``. Files whose process died before either call are
+    the backend's to find and remove.
     """
 
     async def write(self, offset: int, data: bytes) -> int:

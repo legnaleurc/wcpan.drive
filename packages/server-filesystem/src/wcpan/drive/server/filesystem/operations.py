@@ -361,6 +361,7 @@ class FilesystemUploader(_Writes):
             )
         except OSError as e:
             raise _upload_error(e, name) from e
+        self._scanner.hold_staging(os.path.basename(path))
         return FilesystemFile(
             uploader=self,
             blocking=self._blocking,
@@ -395,6 +396,10 @@ class FilesystemUploader(_Writes):
             return await file.close()
         finally:
             await file.abort()
+
+    def release(self, file: "FilesystemFile") -> None:
+        """*file* is published or discarded; scans may sweep its name again."""
+        self._scanner.release_staging(file.staging_name)
 
     async def staged_folder(self, file: "FilesystemFile") -> str:
         """The parent folder's current path; raises if it is gone."""
@@ -531,11 +536,14 @@ class FilesystemFile:
             await self._blocking.to_completion(self.staged.discard, paths)
         except OSError as e:
             _L.warning("cannot discard staging file %r: %s", self.staging_name, e)
+        finally:
+            self._uploader.release(self)
 
     def published(self) -> None:
         """The file is in place and recorded; close it without deleting it."""
         self._open = False
         self.staged.file.close()
+        self._uploader.release(self)
 
     def _require_open(self) -> None:
         if not self._open:

@@ -10,6 +10,7 @@ from typing import Annotated
 
 from wcpan.drive.server.backend import BackendContext, CoreServices
 from wcpan.drive.server.services.paths import map_by_prefix
+from wcpan.drive.server.services.upload import UPLOAD_SESSION_TTL
 
 from .blocking import Blocking
 from .commands import command_parser, rebind_mount
@@ -27,6 +28,11 @@ _L = getLogger(__name__)
 _IO_WORKERS = 4
 # Seconds to wait after a change event before re-reading.
 _SETTLE_DELAY = 1.0
+# Seconds after its last write that a full scan deletes an upload staging file
+# no upload of this process holds. Twice the session TTL, since the core aborts
+# a session left idle that long, and another server sharing the folder may
+# still be using one written up to a TTL ago.
+STAGING_SWEEP_AFTER = 2 * UPLOAD_SESSION_TTL
 
 
 class FilesystemRuntime:
@@ -206,6 +212,9 @@ class FilesystemBackend:
                 paths=paths,
                 blocking=blocking,
                 watcher=watcher,
+                sweep_staging_after=(
+                    None if self._config.read_only else STAGING_SWEEP_AFTER
+                ),
             )
             read_only = self._config.read_only
             self._runtime = FilesystemRuntime(

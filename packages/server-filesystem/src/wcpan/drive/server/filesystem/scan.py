@@ -16,6 +16,7 @@ object that is still in place gets its own node.
 import asyncio
 import os
 import stat
+import time
 import uuid
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
@@ -35,6 +36,7 @@ from wcpan.drive.server.types import NodeObservation
 
 from .blocking import Blocking
 from .handles import filesystem_id
+from .mutation import remove_stale_staging
 from .paths import NodePaths
 from .reading import (
     HASH_ALGORITHM,
@@ -131,7 +133,11 @@ class FilesystemScanner:
         paths: NodePaths,
         blocking: Blocking,
         watcher: DirectoryWatcher | None = None,
+        sweep_staging_after: float | None = None,
     ) -> None:
+        """*sweep_staging_after*: seconds after its last write that a full pass
+        deletes an upload staging file no live upload of this process holds;
+        ``None`` keeps them."""
         self._mirror = mirror
         self._store = store
         self._node_sync = node_sync
@@ -139,6 +145,15 @@ class FilesystemScanner:
         self._blocking = blocking
         self._watcher = watcher
         self._pass_lock = asyncio.Lock()
+        self._sweep_staging_after = sweep_staging_after
+        self._live_staging = set[str]()
+
+    def hold_staging(self, name: str) -> None:
+        """Keep the staging file *name* from being swept while an upload uses it."""
+        self._live_staging.add(name)
+
+    def release_staging(self, name: str) -> None:
+        self._live_staging.discard(name)
 
     async def scan(self) -> None:
         """One full pass over every mount."""
@@ -214,6 +229,28 @@ class FilesystemScanner:
                     ),
                 )
                 await session.commit_removals()
+
+    async def _sweep_staging(self, paths: list[str]) -> None:
+        """Delete staging files left by uploads that were never finished or aborted.
+
+        Uploads of this process are skipped by name; an upload of another
+        process sharing the folder writes at least once per session lifetime,
+        so a file idle for longer is abandoned.
+        """
+        assert self._sweep_staging_after is not None
+        candidates = [p for p in paths if os.path.basename(p) not in self._live_staging]
+        if not candidates:
+            return
+        before = time.time() - self._sweep_staging_after
+        try:
+            removed = await self._blocking(
+                remove_stale_staging, candidates, before=before
+            )
+        except OSError as e:
+            _L.warning("Cannot remove abandoned upload files: %s", e)
+            return
+        for path in removed:
+            _L.info("Removed abandoned upload file %s", path)
 
     @asynccontextmanager
     async def exclusive(self) -> AsyncGenerator[None, None]:
@@ -350,13 +387,19 @@ class FilesystemScanner:
         if self._watcher is not None:
             # Watch before listing, so no change after the listing goes unseen.
             self._watcher.watch(folder_id, folder_path)
+        sweep = scoped is None and self._sweep_staging_after is not None
+        staging: list[str] = []
         async with self._node_sync.observe() as read:
             try:
-                entries = await self._blocking(list_directory, folder_path)
+                entries = await self._blocking(
+                    list_directory, folder_path, staging=staging if sweep else None
+                )
             except OSError as e:
                 _L.warning("Cannot list %s; keeping its mirror: %s", folder_path, e)
                 session.preserve(folder_id)
                 return []
+            if staging:
+                await self._sweep_staging(staging)
 
             existing = await self._mirror.get_children(folder_id)
             states = await self._store.get_entries([r.id for r in existing])

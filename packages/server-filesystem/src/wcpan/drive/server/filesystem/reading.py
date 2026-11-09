@@ -72,16 +72,19 @@ def stat_entry(path: str) -> Entry | None:
     )
 
 
-def list_directory(path: str) -> list[Entry]:
+def list_directory(path: str, *, staging: list[str] | None = None) -> list[Entry]:
     """Regular files and directories directly under *path*.
 
-    Entries that vanish while listing are skipped; failing to list *path* itself
-    raises ``OSError``.
+    Upload staging files are left out, and their paths appended to *staging*
+    if given. Entries that vanish while listing are skipped; failing to list
+    *path* itself raises ``OSError``.
     """
     entries: list[Entry] = []
     with os.scandir(path) as it:
         for dirent in it:
             if dirent.name.startswith(STAGING_PREFIX):
+                if staging is not None:
+                    staging.append(dirent.path)
                 continue
             try:
                 entry = stat_entry(dirent.path)

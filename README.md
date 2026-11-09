@@ -249,7 +249,8 @@ converted. Each instance:
 - spools resumable uploads to a temporary file under `upload_tmp_dir`
   (default: the system temporary directory), since Synology Drive takes a file
   in one request; the file is uploaded when the last chunk arrives. Direct
-  uploads stream straight through. If Synology Drive accepted the file but the
+  uploads stream straight through. Each server start removes spool
+  directories that no running server holds, such as those left by a crash. If Synology Drive accepted the file but the
   server failed before recording it, finishing the session again reports the
   upload as a conflict with that file
 
@@ -298,6 +299,9 @@ Settings, all optional:
   and these files are never mirrored. Resumable upload sessions write there
   directly. If the folder moves during a session, finishing it returns 503
   until a scan has seen the move; if the folder is deleted, it returns 410.
+  Full scans delete staging files that no upload of this server holds and that
+  have not been written for two hours, such as those left by a crash; with
+  `read_only: true` they are kept.
 - With `read_only: true`, every change returns 403.
 - Images and videos are probed from the mount sources unless `local_paths` maps
   them elsewhere.

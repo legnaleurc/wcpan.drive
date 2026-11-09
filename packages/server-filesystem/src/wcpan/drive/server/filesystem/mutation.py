@@ -5,6 +5,7 @@ import ctypes.util
 import errno
 import os
 import shutil
+import stat
 import uuid
 from collections.abc import Callable, Sequence
 from typing import Any, BinaryIO
@@ -75,6 +76,24 @@ def create_staging(directory: str) -> tuple[str, BinaryIO]:
     path = os.path.join(directory, f"{STAGING_PREFIX}{uuid.uuid4().hex}")
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     return path, os.fdopen(os.open(path, flags, 0o666), "r+b")
+
+
+def remove_stale_staging(paths: Sequence[str], *, before: float) -> list[str]:
+    """Delete the regular files among *paths* last modified before *before*.
+
+    Returns the paths removed; ones that changed or vanished are skipped.
+    """
+    removed: list[str] = []
+    for path in paths:
+        try:
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode) or st.st_mtime >= before:
+                continue
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        removed.append(path)
+    return removed
 
 
 def discard_new_staging(staging: tuple[str, BinaryIO]) -> None:
