@@ -23,7 +23,7 @@ def _source(name: str = "google") -> dict[str, Any]:
             {"name": "pkg.backend.create_backend", "kwargs": {"token": "t"}},
             {"name": "pkg.crypt.create_middleware"},
         ],
-        "cache": [{"name": "pkg.cache.create_cache", "args": ["dsn"]}],
+        "cache": f"/cache/{name}.sqlite",
     }
 
 
@@ -63,7 +63,6 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
         for name, fn in (
             ("pkg.backend", "create_backend"),
             ("pkg.crypt", "create_middleware"),
-            ("pkg.cache", "create_cache"),
         ):
             module = ModuleType(name)
             setattr(module, fn, self.decoy.mock(name=f"{name}.{fn}"))
@@ -73,7 +72,7 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
         self.decoy.when(self._create_multi_drive(sources=sources)).then_enter_with(
             drive
         )
-        self._write({"version": 4, "sources": [_source("google"), _source("local")]})
+        self._write({"version": 5, "sources": [_source("google"), _source("local")]})
 
         # when
         async with create_drive_from_config(self._path) as rv:
@@ -82,10 +81,14 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
 
         captured: list[SourceConfig] = sources.value
         self.assertEqual([_.name for _ in captured], ["google", "local"])
+        self.assertEqual(
+            [_.cache_path for _ in captured],
+            ["/cache/google.sqlite", "/cache/local.sqlite"],
+        )
 
     async def testWrongVersion(self) -> None:
         # when / then
-        await self._assert_invalid({"version": 3, "sources": [_source()]})
+        await self._assert_invalid({"version": 4, "sources": [_source()]})
 
     async def testNotMapping(self) -> None:
         # when / then
@@ -93,50 +96,59 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
 
     async def testEmptySources(self) -> None:
         # when / then
-        await self._assert_invalid({"version": 4, "sources": []})
+        await self._assert_invalid({"version": 5, "sources": []})
 
     async def testDuplicateNames(self) -> None:
         # when / then
-        await self._assert_invalid({"version": 4, "sources": [_source(), _source()]})
+        await self._assert_invalid({"version": 5, "sources": [_source(), _source()]})
 
     async def testMissingName(self) -> None:
         # given
         source = _source()
         del source["name"]
         # when / then
-        await self._assert_invalid({"version": 4, "sources": [source]})
+        await self._assert_invalid({"version": 5, "sources": [source]})
 
     async def testEmptyChain(self) -> None:
         # given
         source = _source()
-        source["cache"] = []
+        source["backend"] = []
         # when / then
-        await self._assert_invalid({"version": 4, "sources": [source]})
+        await self._assert_invalid({"version": 5, "sources": [source]})
 
     async def testMissingChain(self) -> None:
         # given
         source = _source()
         del source["backend"]
         # when / then
-        await self._assert_invalid({"version": 4, "sources": [source]})
+        await self._assert_invalid({"version": 5, "sources": [source]})
 
     async def testUndottedFunctionName(self) -> None:
         # given
         source = _source()
         source["backend"][0]["name"] = "create_backend"
         # when / then
-        await self._assert_invalid({"version": 4, "sources": [source]})
+        await self._assert_invalid({"version": 5, "sources": [source]})
 
     async def testInvalidArgs(self) -> None:
         # given
         source = _source()
-        source["cache"][0]["args"] = "dsn"
+        source["backend"][0]["args"] = "token"
         # when / then
-        await self._assert_invalid({"version": 4, "sources": [source]})
+        await self._assert_invalid({"version": 5, "sources": [source]})
+
+    async def testInvalidCachePath(self) -> None:
+        for cache in (None, "", [{"name": "pkg.cache.create_cache"}]):
+            with self.subTest(cache=cache):
+                # given
+                source = _source()
+                source["cache"] = cache
+                # when / then
+                await self._assert_invalid({"version": 5, "sources": [source]})
 
     async def testInvalidKwargs(self) -> None:
         # given
         source = _source()
         source["backend"][0]["kwargs"] = ["token"]
         # when / then
-        await self._assert_invalid({"version": 4, "sources": [source]})
+        await self._assert_invalid({"version": 5, "sources": [source]})

@@ -1,11 +1,9 @@
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import PurePath
-from typing import Annotated
 
-from wcpan.drive.client.exceptions import NodeNotFoundError
-from wcpan.drive.client.types import Cache, ChangeAction, Node, NodeQuery, NodeSummary
-
+from ..exceptions import NodeNotFoundError
+from ..types import ChangeAction, Node, NodeQuery, NodeSummary
 from ._lib import OffMainProcess
 from ._outer import (
     apply_changes,
@@ -25,20 +23,21 @@ from ._outer import (
 
 
 @asynccontextmanager
-async def create_cache(*, dsn: Annotated[str, "Path to the SQLite cache file."]):
+async def create_cache(path: str, /):
+    """Open the SQLite metadata cache stored at *path*."""
+    if not path:
+        raise ValueError("cache path is empty")
     with ProcessPoolExecutor() as pool:
-        bg = OffMainProcess(dsn=dsn, pool=pool)
+        bg = OffMainProcess(dsn=path, pool=pool)
         await bg(initialize)
         yield SqliteCache(bg)
 
 
-class SqliteCache(Cache):
+class SqliteCache:
+    """Local mirror of one source's metadata, kept in a SQLite file."""
+
     def __init__(self, bg: OffMainProcess) -> None:
         self._bg = bg
-
-    @property
-    def api_version(self) -> int:
-        return 7
 
     async def get_current_cursor(self) -> str:
         cursor = await self._bg(get_current_cursor)

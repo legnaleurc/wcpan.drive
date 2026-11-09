@@ -6,6 +6,7 @@ exceptions inherit from DriveError, which inherits from the standard Exception.
 Exception Hierarchy:
     DriveError (base exception)
     ├── InvalidServiceError
+    ├── CacheError
     ├── NodeExistsError
     ├── NodeNotFoundError
     ├── NodeIsADirectoryError
@@ -27,6 +28,7 @@ from .types import Node
 __all__ = (
     "DriveError",
     "InvalidServiceError",
+    "CacheError",
     "NodeExistsError",
     "NodeNotFoundError",
     "NodeIsADirectoryError",
@@ -56,19 +58,29 @@ class DriveError(Exception):
 class InvalidServiceError(DriveError):
     """Raised when service API version does not match requirements.
 
-    This exception occurs during drive creation when the Backend or
-    Cache implementation reports an API version that differs
-    from the expected version. This typically indicates incompatible
-    service implementations or middleware.
+    This exception occurs during drive creation when a Backend or
+    backend middleware reports an API version that differs from the
+    expected version. This typically indicates incompatible service
+    implementations or middleware.
 
     Example:
         Handling version mismatches::
 
             >>> try:
-            ...     async with create_drive(backend=my_service, cache=my_cache) as drive:
+            ...     async with create_drive(backend=my_service, cache_path=path) as drive:
             ...         pass
             ... except InvalidServiceError as e:
             ...     print(f"Service version mismatch: {e}")
+    """
+
+    pass
+
+
+class CacheError(DriveError):
+    """Raised when the local metadata cache cannot be used.
+
+    The usual cause is a cache file written with an older schema; delete
+    the file and sync again to rebuild it.
     """
 
     pass

@@ -1,9 +1,15 @@
 from unittest import TestCase
 
-from wcpan.drive.client.sqlite._inner import inner_get_node_by_id, inner_insert_node
-from wcpan.drive.client.sqlite._lib import read_only, read_write
+from wcpan.drive.client._cache._inner import inner_get_node_by_id, inner_insert_node
+from wcpan.drive.client._cache._lib import read_only, read_write
 
-from ._lib import create_sandbox, random_dir, random_file, random_image, random_video
+from ._cache_lib import (
+    create_sandbox,
+    random_dir,
+    random_file,
+    random_image,
+    random_video,
+)
 
 
 class SerializationTest(TestCase):

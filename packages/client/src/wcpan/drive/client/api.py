@@ -10,7 +10,7 @@ Key Features:
     - Resumable file uploads and downloads
     - Change synchronization with cursor-based tracking
     - Type-safe async/await API
-    - Extensible through service implementations
+    - Extensible through backend implementations
 
 Architecture:
     The library follows a three-layer architecture:
@@ -23,8 +23,8 @@ Architecture:
 
     2. **Services (Backend)**: Implementation layer
        - Backend: Cloud storage API operations
-       - Cache: Local metadata caching
-       - Middleware: Cross-cutting concerns (logging, caching, etc.)
+       - Middleware: Cross-cutting concerns (encryption, logging, etc.)
+       - A SQLite cache per source mirrors node metadata locally
 
     3. **Types**: Core data structures
        - Node: Immutable file/directory representation
@@ -34,13 +34,13 @@ Architecture:
 Quick Start:
     Basic usage pattern::
 
-        >>> from wcpan.drive.client.api import create_single_drive
+        >>> from wcpan.drive.client.api import create_drive
         >>> from pathlib import Path, PurePath
         >>>
-        >>> # Create drive with your service implementations
-        >>> async with create_single_drive(
+        >>> # Create drive with your backend implementation
+        >>> async with create_drive(
         ...     backend=create_my_backend,
-        ...     cache=create_my_cache,
+        ...     cache_path="/path/to/cache.sqlite",
         ... ) as drive:
         ...     # Authenticate
         ...     await drive.authenticate()
@@ -73,9 +73,9 @@ Quick Start:
 
 Implementing Services:
     To use wcpan.drive.client with a specific cloud provider, implement
-    Backend and Cache::
+    Backend::
 
-        >>> from wcpan.drive.client.types import Backend, Cache
+        >>> from wcpan.drive.client.types import Backend
         >>> from contextlib import asynccontextmanager
         >>>
         >>> class MyCloudBackend(Backend):

@@ -584,11 +584,11 @@ class TestInit(IsolatedAsyncioTestCase):
         )
 
         # when
-        rv = await amain(["init", "-p", "google", "--plugin", "sqlite"])
+        rv = await amain(["init", "-p", "google", "--plugin", "crypt"])
         # then
         self.assertEqual(rv, 0)
 
-        scaffold.assert_called_once_with(["google", "sqlite"])
+        scaffold.assert_called_once_with(["google", "crypt"])
         self.assertEqual(stdout.getvalue(), "version: 4\n")
         self._factory.assert_not_called()
 

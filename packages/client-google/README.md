@@ -32,7 +32,7 @@ async def main():
 
     async with create_drive(
         backend=create_google_backend,
-        cache=...,
+        cache_path="/path/to/cache.sqlite",
     ) as drive:
         ...
 ```

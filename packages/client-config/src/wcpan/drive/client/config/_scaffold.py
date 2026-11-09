@@ -8,8 +8,7 @@ from ._cfg import VERSION
 
 
 BACKEND_GROUP = "wcpan.drive.client.backend"
-CACHE_GROUP = "wcpan.drive.client.cache"
-PLUGIN_GROUPS = (BACKEND_GROUP, CACHE_GROUP)
+PLUGIN_GROUPS = (BACKEND_GROUP,)
 
 
 type _Plugin = tuple[EntryPoint, Callable[..., object]]
@@ -20,19 +19,18 @@ def create_config_scaffold(plugins: Sequence[str]) -> str:
 
     Each of *plugins* names an installed plugin by entry point name, module, or
     factory path. A factory that takes a positional argument is middleware; it
-    follows the one backend or cache it wraps, in the given order. Required
-    settings are left empty to fill in.
+    follows the one backend it wraps, in the given order. Required settings
+    and the cache path are left empty to fill in.
 
     Raises:
-        ValueError: If a plugin is not installed or ambiguous, or the backend or
-            cache is not given exactly once.
+        ValueError: If a plugin is not installed or ambiguous, or the backend is
+            not given exactly once.
     """
     chains: dict[str, list[_Plugin]] = {_: [] for _ in PLUGIN_GROUPS}
     for selector in plugins:
         ep = find_plugin(PLUGIN_GROUPS, selector)
         chains[ep.group].append((ep, ep.load()))
     backend = _chain(chains[BACKEND_GROUP], "backend")
-    cache = _chain(chains[CACHE_GROUP], "cache")
 
     lines = [
         f"version: {VERSION}",
@@ -40,8 +38,8 @@ def create_config_scaffold(plugins: Sequence[str]) -> str:
         f"  - name: {backend[0][0].name}",
         "    backend:",
         *_render_chain(backend),
-        "    cache:",
-        *_render_chain(cache),
+        "    # Path to the SQLite metadata cache file.",
+        "    cache:  # required",
     ]
     return "\n".join(lines) + "\n"
 

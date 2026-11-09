@@ -20,7 +20,7 @@ async def main():
 Example config file:
 
 ```yaml
-version: 4
+version: 5
 sources:
   # In multi-source mode (2+ sources), each name becomes a path prefix.
   - name: google
@@ -32,10 +32,9 @@ sources:
           client_secret: /path/to/client_secret.json
           oauth_token: /path/to/oauth_token.json
       - name: wcpan.drive.client.crypt.create_middleware
-    cache:
-      - name: wcpan.drive.client.sqlite.create_cache
-        kwargs:
-          dsn: /path/to/google.sqlite
+    # SQLite file that caches this source's metadata. Relative paths
+    # resolve against the working directory.
+    cache: /path/to/google.sqlite
 ```
 
 Generate a starting config from installed plugins with
@@ -43,16 +42,18 @@ Generate a starting config from installed plugins with
 
 ```sh
 wcpan.drive.client.cli init --list
-wcpan.drive.client.cli init -p google -p crypt -p sqlite > config.yaml
+wcpan.drive.client.cli init -p google -p crypt > config.yaml
 ```
 
-Plugins register factories under the `wcpan.drive.client.backend` and
-`wcpan.drive.client.cache` entry point groups; a factory that takes a
-positional argument is middleware for the backend or cache it wraps. Settings
-marked required are left empty to fill in.
+Plugins register factories under the `wcpan.drive.client.backend` entry point
+group; a factory that takes a positional argument is middleware for the backend
+it wraps. Settings marked required, and the cache path, are left empty to fill
+in.
 
+Version 5 replaced the `cache` factory chain with the path of the SQLite cache
+file (the old `dsn` value); the cache is built into `wcpan-drive-client`.
 Version 4 renamed the source keys `file` and `snapshot` to `backend` and
-`cache`; version 3 files are rejected.
+`cache`. Older versions are rejected.
 
 The whole file is validated before any factory is imported. Factory names are
 imported and called as written, so a config file is trusted executable wiring;

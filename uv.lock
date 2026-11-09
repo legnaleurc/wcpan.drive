@@ -11,7 +11,6 @@ members = [
     "wcpan-drive-client-feed",
     "wcpan-drive-client-google",
     "wcpan-drive-client-media",
-    "wcpan-drive-client-sqlite",
     "wcpan-drive-plugin",
     "wcpan-drive-protocol",
     "wcpan-drive-server",
@@ -868,17 +867,6 @@ requires-dist = [
     { name = "python-magic", specifier = ">=0.4.27,<0.5.0" },
     { name = "wcpan-drive-client", editable = "packages/client" },
 ]
-
-[[package]]
-name = "wcpan-drive-client-sqlite"
-version = "0.1.0"
-source = { editable = "packages/client-sqlite" }
-dependencies = [
-    { name = "wcpan-drive-client" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "wcpan-drive-client", editable = "packages/client" }]
 
 [[package]]
 name = "wcpan-drive-plugin"

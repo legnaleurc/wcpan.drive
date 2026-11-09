@@ -2,8 +2,8 @@
 
 Asynchronous generic cloud drive library.
 
-This package provides the core abstractions only. It requires a
-`Cache` and `Backend` implementation to work.
+This package provides the core abstractions and a SQLite metadata cache. It
+requires a `Backend` implementation to work.
 
 ## Documentation
 
@@ -17,7 +17,7 @@ from wcpan.drive.client.lib import download_file_to_local, upload_file_from_loca
 
 async with create_drive(
     backend=create_my_backend,
-    cache=create_my_cache,
+    cache_path="/path/to/cache.sqlite",
 ) as drive:
     if not await drive.is_authenticated():
         await drive.authenticate()

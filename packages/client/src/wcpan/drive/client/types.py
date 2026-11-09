@@ -8,12 +8,12 @@ Key Concepts:
     - Node: Immutable representation of files and directories
     - Drive: High-level interface for drive operations
     - Backend: Cloud storage API operations
-    - Cache: Local cache for node metadata
+    - Drive also keeps a local SQLite cache of node metadata per source
     - MediaInfo: Metadata for image and video files
 
 The module follows a layered architecture:
     1. Drive (public API) - User-facing operations
-    2. Backend + Cache - Pluggable implementations
+    2. Backend - Pluggable implementations
     3. Node + MediaInfo - Data representations
 
 Thread Safety:
@@ -23,7 +23,7 @@ Thread Safety:
 Example:
     Basic usage pattern::
 
-        >>> async with create_drive(backend=my_backend, cache=my_cache) as drive:
+        >>> async with create_drive(backend=my_backend, cache_path="drive.sqlite") as drive:
         ...     root = await drive.get_root()
         ...     files = await drive.get_children(root)
 """
@@ -46,9 +46,6 @@ __all__ = (
     "Backend",
     "BackendFactory",
     "BackendMiddleware",
-    "Cache",
-    "CacheFactory",
-    "CacheMiddleware",
     "ChangeAction",
     "Hasher",
     "MediaInfo",
@@ -153,7 +150,7 @@ class Node:
 
 @dataclass(frozen=True, kw_only=True)
 class NodeQuery:
-    """Filters for node queries and summaries on Drive and Cache.
+    """Filters for node queries and summaries on Drive.
 
     All conditions are combined with AND; None means "no condition". Build
     one with Drive.find_nodes() instead of constructing it directly.
@@ -903,12 +900,12 @@ class WritableFile(metaclass=ABCMeta):
 class Service(metaclass=ABCMeta):
     """Base interface for all service implementations.
 
-    Defines the minimal contract for Backend and Cache
-    implementations. All services must declare their API version for
+    Defines the minimal contract for Backend implementations and
+    middleware. All services must declare their API version for
     compatibility checking.
 
     Implementations:
-        Subclass this to create Backend or Cache implementations.
+        Subclass Backend rather than this class directly.
     """
 
     @property
@@ -943,7 +940,7 @@ A callable that returns an async context manager yielding a Service
 instance. Used for dependency injection during drive creation.
 
 Type Parameters:
-    T: The specific Service subclass (Backend or Cache).
+    T: The specific Service subclass (Backend).
 
 Example:
     Implementing a service factory::
@@ -999,7 +996,7 @@ class Backend(Service, metaclass=ABCMeta):
         - Raise appropriate exceptions on errors
 
     Used With:
-        Paired with a Cache and passed to create_drive().
+        Passed to create_drive() together with a cache path.
 
     Thread Safety:
         Implementations should handle concurrent operations safely.
@@ -1030,7 +1027,7 @@ class Backend(Service, metaclass=ABCMeta):
             >>>
             >>> async with create_drive(
             ...     backend=create_my_service,
-            ...     cache=create_cache,
+            ...     cache_path="/path/to/cache.sqlite",
             ... ) as drive:
             ...     await drive.sync()
     """
@@ -1061,8 +1058,8 @@ class Backend(Service, metaclass=ABCMeta):
         """Fetch the root directory node from the cloud storage.
 
         Retrieves the root directory's metadata from the cloud API and
-        returns it as a Node instance. This is typically cached by the
-        Cache after the first call.
+        returns it as a Node instance. Drive stores it in its local cache
+        after the first sync.
 
         Returns:
             Node representing the root directory.
@@ -1426,364 +1423,11 @@ See CreateServiceMiddleware for details.
 """
 
 
-class Cache(Service, metaclass=ABCMeta):
-    """Local cache interface for node metadata and change tracking.
-
-    Cache defines the contract for maintaining a local cache of
-    the cloud drive's directory structure and file metadata. This enables:
-    - Fast path lookups without API calls
-    - Efficient change synchronization
-    - Offline access to metadata
-
-    Implementations typically use:
-        - SQLite database for persistence
-        - In-memory structures for performance
-        - Transaction support for atomic updates
-
-    Used With:
-        Paired with a Backend and passed to create_drive().
-
-    Thread Safety:
-        Implementations should handle concurrent access safely.
-
-    Example:
-        Basic implementation structure::
-
-            >>> class SQLiteCache(Cache):
-            ...     @property
-            ...     def api_version(self) -> int:
-            ...         return 7
-            ...
-            ...     async def get_root(self) -> Node:
-            ...         # Query from database
-            ...         pass
-            ...
-            ...     async def apply_changes(
-            ...         self,
-            ...         changes: list[ChangeAction],
-            ...         cursor: str,
-            ...     ) -> None:
-            ...         # Update database in transaction
-            ...         pass
-            ...
-            ...     # ... implement other abstract methods ...
-    """
-
-    @abstractmethod
-    async def get_root(self) -> Node:
-        """Get the root directory node from the cache.
-
-        Retrieves the cached root node. This should be fast and not
-        involve I/O to the cloud service.
-
-        Returns:
-            Cached Node representing the root directory.
-
-        Raises:
-            NodeNotFoundError: If root not yet cached (need to sync first).
-
-        Example:
-            Implementation pattern::
-
-                >>> async def get_root(self) -> Node:
-                ...     row = await self.db.fetch_one("SELECT * FROM nodes WHERE parent_id IS NULL")
-                ...     if not row:
-                ...         raise NodeNotFoundError("root")
-                ...     return self._row_to_node(row)
-        """
-
-    @abstractmethod
-    async def set_root(self, node: Node) -> None:
-        """Store the root directory node in the cache.
-
-        Called during the first sync to initialize the cache with the root
-        node metadata.
-
-        Args:
-            node: The root Node to cache.
-
-        Example:
-            Implementation pattern::
-
-                >>> async def set_root(self, node: Node) -> None:
-                ...     await self.db.execute(
-                ...         "INSERT OR REPLACE INTO nodes VALUES (...)",
-                ...         self._node_to_values(node),
-                ...     )
-        """
-
-    @abstractmethod
-    async def get_current_cursor(self) -> str:
-        """Get the current synchronization cursor.
-
-        Returns the cursor from the most recent sync operation. If no sync
-        has occurred yet (first run), returns an empty string.
-
-        Returns:
-            Current cursor string, or empty string if never synced.
-
-        Example:
-            Implementation pattern::
-
-                >>> async def get_current_cursor(self) -> str:
-                ...     row = await self.db.fetch_one("SELECT cursor FROM metadata")
-                ...     return row["cursor"] if row else ""
-        """
-
-    @abstractmethod
-    async def get_node_by_id(self, node_id: str) -> Node:
-        """Retrieve a cached node by its ID.
-
-        Fast lookup of node metadata from the local cache using the
-        node's unique identifier.
-
-        Args:
-            node_id: The node's unique ID.
-
-        Returns:
-            The cached Node.
-
-        Raises:
-            NodeNotFoundError: If node not found in cache.
-
-        Example:
-            Implementation pattern::
-
-                >>> async def get_node_by_id(self, node_id: str) -> Node:
-                ...     row = await self.db.fetch_one(
-                ...         "SELECT * FROM nodes WHERE id = ?",
-                ...         node_id,
-                ...     )
-                ...     if not row:
-                ...         raise NodeNotFoundError(node_id)
-                ...     return self._row_to_node(row)
-        """
-
-    @abstractmethod
-    async def get_node_by_path(self, path: PurePath) -> Node:
-        """Resolve a node by its absolute path.
-
-        Traverses the cached directory structure to find the node at the
-        given path.
-
-        Args:
-            path: Absolute path to the node.
-
-        Returns:
-            The Node at the given path.
-
-        Raises:
-            NodeNotFoundError: If path does not exist in cache.
-
-        Example:
-            Implementation pattern::
-
-                >>> async def get_node_by_path(self, path: PurePath) -> Node:
-                ...     node = await self.get_root()
-                ...     for part in path.parts[1:]:  # Skip root "/"
-                ...         node = await self.get_child_by_name(part, node.id)
-                ...     return node
-        """
-
-    @abstractmethod
-    async def resolve_path_by_id(self, node_id: str) -> PurePath:
-        """Resolve the absolute path for a node ID.
-
-        Walks up the parent chain to construct the full path for the
-        given node.
-
-        Args:
-            node_id: The node's unique ID.
-
-        Returns:
-            Absolute PurePath to the node.
-
-        Raises:
-            NodeNotFoundError: If node not found in cache.
-
-        Example:
-            Implementation pattern::
-
-                >>> async def resolve_path_by_id(self, node_id: str) -> PurePath:
-                ...     parts = []
-                ...     node = await self.get_node_by_id(node_id)
-                ...     while node.parent_id:
-                ...         parts.insert(0, node.name)
-                ...         node = await self.get_node_by_id(node.parent_id)
-                ...     return PurePath("/", *parts)
-        """
-
-    @abstractmethod
-    async def get_child_by_name(self, name: str, parent_id: str) -> Node:
-        """Find a child node by name under a parent.
-
-        Searches for a direct child with the given name under the specified
-        parent node.
-
-        Args:
-            name: The child's name.
-            parent_id: The parent node's ID.
-
-        Returns:
-            The child Node.
-
-        Raises:
-            NodeNotFoundError: If child not found.
-
-        Example:
-            Implementation pattern::
-
-                >>> async def get_child_by_name(self, name: str, parent_id: str) -> Node:
-                ...     row = await self.db.fetch_one(
-                ...         "SELECT * FROM nodes WHERE parent_id = ? AND name = ?",
-                ...         parent_id,
-                ...         name,
-                ...     )
-                ...     if not row:
-                ...         raise NodeNotFoundError(name)
-                ...     return self._row_to_node(row)
-        """
-
-    @abstractmethod
-    async def get_children_by_id(self, parent_id: str) -> list[Node]:
-        """Get all direct children of a parent node.
-
-        Retrieves the list of immediate children (both files and directories)
-        under the specified parent.
-
-        Args:
-            parent_id: The parent node's ID.
-
-        Returns:
-            List of child Nodes (may be empty).
-
-        Example:
-            Implementation pattern::
-
-                >>> async def get_children_by_id(self, parent_id: str) -> list[Node]:
-                ...     rows = await self.db.fetch_all(
-                ...         "SELECT * FROM nodes WHERE parent_id = ? ORDER BY name",
-                ...         parent_id,
-                ...     )
-                ...     return [self._row_to_node(row) for row in rows]
-        """
-
-    @abstractmethod
-    async def get_trashed_nodes(self) -> list[Node]:
-        """Get all nodes currently in the trash.
-
-        Retrieves all nodes marked as trashed from the cache.
-
-        Returns:
-            List of trashed Nodes (may be empty).
-
-        Example:
-            Implementation pattern::
-
-                >>> async def get_trashed_nodes(self) -> list[Node]:
-                ...     rows = await self.db.fetch_all(
-                ...         "SELECT * FROM nodes WHERE is_trashed = 1"
-                ...     )
-                ...     return [self._row_to_node(row) for row in rows]
-        """
-
-    @abstractmethod
-    async def apply_changes(
-        self,
-        changes: list[ChangeAction],
-        cursor: str,
-    ) -> None:
-        """Apply change actions to the cache and update cursor.
-
-        Processes a list of changes (additions, updates, removals) and
-        updates the cache accordingly. Should be atomic - either all
-        changes apply successfully or none do.
-
-        Args:
-            changes: List of ChangeAction to apply.
-            cursor: New cursor value to store after applying changes.
-
-        Example:
-            Implementation pattern::
-
-                >>> async def apply_changes(
-                ...     self,
-                ...     changes: list[ChangeAction],
-                ...     cursor: str,
-                ... ) -> None:
-                ...     async with self.db.transaction():
-                ...         for change in changes:
-                ...             if change[0]:  # RemoveAction
-                ...                 await self.db.execute(
-                ...                     "DELETE FROM nodes WHERE id = ?",
-                ...                     change[1],
-                ...                 )
-                ...             else:  # UpdateAction
-                ...                 node = change[1]
-                ...                 await self.db.execute(
-                ...                     "INSERT OR REPLACE INTO nodes VALUES (...)",
-                ...                     self._node_to_values(node),
-                ...                 )
-                ...         await self.db.execute(
-                ...             "UPDATE metadata SET cursor = ?",
-                ...             cursor,
-                ...         )
-        """
-
-    @abstractmethod
-    async def query_nodes(self, query: NodeQuery) -> list[Node]:
-        """Find nodes matching all conditions in a query.
-
-        Node IDs in the query and in the result are this cache's own IDs.
-        See NodeQuery for the meaning of each condition.
-
-        Args:
-            query: Search conditions.
-
-        Returns:
-            List of matching Nodes in no particular order (may be empty).
-
-        Example:
-            Implementation pattern::
-
-                >>> async def query_nodes(self, query: NodeQuery) -> list[Node]:
-                ...     sql, params = self._compile(query)
-                ...     rows = await self.db.fetch_all(sql, params)
-                ...     return [self._row_to_node(row) for row in rows]
-        """
-
-    @abstractmethod
-    async def summarize_nodes(self, query: NodeQuery) -> NodeSummary:
-        """Count matching nodes and sum matching file sizes.
-
-        Directories contribute to count but add no size. Empty matches return
-        zero for both fields. Uses the same filters as query_nodes().
-
-        Raises:
-            ValueError: If query.limit is set.
-            NodeNotFoundError: If query.ancestor_id is not a known node.
-        """
-
-
-type CacheFactory = CreateService[Cache]
-"""Factory type for creating Cache instances.
-
-See CreateService for details.
-"""
-
-
-type CacheMiddleware = CreateServiceMiddleware[Cache]
-"""Middleware factory type for wrapping Cache instances.
-
-See CreateServiceMiddleware for details.
-"""
-
-
 class Drive(metaclass=ABCMeta):
     """High-level interface for cloud drive operations.
 
     Drive is the main user-facing API for interacting with cloud storage.
-    It combines Backend (cloud API) and Cache (local metadata)
+    It combines a Backend (cloud API) with a local metadata cache
     to provide efficient, feature-rich operations.
 
     Key Features:
@@ -1811,7 +1455,7 @@ class Drive(metaclass=ABCMeta):
 
             >>> async with create_drive(
             ...     backend=create_backend,
-            ...     cache=create_cache,
+            ...     cache_path="/path/to/cache.sqlite",
             ... ) as drive:
             ...     # Check authentication
             ...     if not await drive.is_authenticated():
@@ -2410,9 +2054,10 @@ class SourceConfig:
     Attributes:
         name: Source name used as path prefix in multi-source mode.
         backend: Factory function returning a Backend context manager.
-        cache: Factory function returning a Cache context manager.
+        cache_path: Path to the SQLite file that caches this source's
+            metadata. Relative paths resolve against the working directory.
     """
 
     name: str
     backend: BackendFactory
-    cache: CacheFactory
+    cache_path: str

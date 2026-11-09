@@ -5,6 +5,7 @@ from typing import cast
 from wcpan.drive.client.lib import dispatch_change
 from wcpan.drive.client.types import ChangeAction, Node, NodeQuery, NodeSummary
 
+from ..exceptions import CacheError
 from ._inner import (
     inner_delete_node_by_id,
     inner_get_metadata,
@@ -14,7 +15,6 @@ from ._inner import (
     node_from_query,
 )
 from ._lib import read_only, read_write, sqlite3_regexp
-from .exceptions import SqliteCacheError
 
 
 KEY_ROOT_ID = "root_id"
@@ -29,11 +29,11 @@ def initialize(dsn: str, /):
         query.execute("PRAGMA user_version;")
         rv = query.fetchone()
         if not rv:
-            raise SqliteCacheError("no user_version")
+            raise CacheError("no user_version")
         version = int(rv[0])
 
         if version != 0 and version != CURRENT_SCHEMA_VERSION:
-            raise SqliteCacheError("schema has been changed, please rebuild the cache")
+            raise CacheError("schema has been changed, please rebuild the cache")
 
         # initialize table
         for sql in SQL_CREATE_TABLES:
@@ -198,26 +198,3 @@ def set_root(dsn: str, root: Node, /) -> None:
 def get_node_by_id(dsn: str, node_id: str, /) -> Node | None:
     with read_only(dsn) as query:
         return inner_get_node_by_id(query, node_id)
-
-
-def find_orphan_nodes(dsn: str) -> list[Node]:
-    from ._sql import SQL_SELECT_ORPHAN_NODES
-
-    with read_only(dsn) as query:
-        query.execute(SQL_SELECT_ORPHAN_NODES)
-        nodes = [node_from_query(_) for _ in query]
-    return nodes
-
-
-def find_multiple_parents_nodes(dsn: str) -> list[Node]:
-    with read_only(dsn) as query:
-        query.execute(
-            "SELECT id, COUNT(id) AS parent_count "
-            "FROM parents "
-            "GROUP BY id "
-            "HAVING parent_count > 1;"
-        )
-        rv = query.fetchall()
-        raw_query = (inner_get_node_by_id(query, _["id"]) for _ in rv)
-        nodes = [_ for _ in raw_query if _]
-    return nodes

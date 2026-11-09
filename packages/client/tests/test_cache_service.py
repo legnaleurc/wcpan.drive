@@ -6,16 +6,15 @@ from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
-from wcpan.drive.client.exceptions import NodeNotFoundError
-from wcpan.drive.client.sqlite._lib import read_only, read_write
-from wcpan.drive.client.sqlite._outer import (
+from wcpan.drive.client._cache._lib import read_only, read_write
+from wcpan.drive.client._cache._outer import (
     KEY_CURSOR,
     inner_get_node_by_id,
     inner_insert_node,
     inner_set_metadata,
 )
-from wcpan.drive.client.sqlite._service import create_cache
-from wcpan.drive.client.sqlite.exceptions import SqliteCacheError
+from wcpan.drive.client._cache._service import create_cache
+from wcpan.drive.client.exceptions import CacheError, NodeNotFoundError
 from wcpan.drive.client.types import ChangeAction, Node, NodeQuery, NodeSummary
 
 
@@ -23,7 +22,7 @@ class GetCurrentCursorTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp = self.enterContext(NamedTemporaryFile())
         self._dsn = tmp.name
-        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+        self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
     async def testWithoutInitialize(self):
         # when
@@ -46,7 +45,7 @@ class RootTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp = self.enterContext(NamedTemporaryFile())
         self._dsn = tmp.name
-        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+        self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
     async def testGetWithoutInitialize(self):
         # when / then
@@ -82,7 +81,7 @@ class GetNodeTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp = self.enterContext(NamedTemporaryFile())
         self._dsn = tmp.name
-        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+        self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
     async def testIdNotFound(self):
         # when / then
@@ -139,7 +138,7 @@ class ResolvePathTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp = self.enterContext(NamedTemporaryFile())
         self._dsn = tmp.name
-        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+        self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
     async def testGoodId(self):
         # given
@@ -185,7 +184,7 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp = self.enterContext(NamedTemporaryFile())
         self._dsn = tmp.name
-        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+        self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
     async def testGetChild(self):
         # given
@@ -274,7 +273,7 @@ class SearchNodesTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp = self.enterContext(NamedTemporaryFile())
         self._dsn = tmp.name
-        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+        self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
     async def testGetTrashedNode(self):
         # given
@@ -329,7 +328,7 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp = self.enterContext(NamedTemporaryFile())
         self._dsn = tmp.name
-        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+        self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
         await self._ss.set_root(_make_root("1"))
         with read_write(self._dsn) as query:
@@ -505,10 +504,10 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
 
     async def testSummaryDoesNotConstructNodes(self):
         # given
-        from wcpan.drive.client.sqlite._outer import summarize_nodes
+        from wcpan.drive.client._cache._outer import summarize_nodes
 
         with patch(
-            "wcpan.drive.client.sqlite._outer.node_from_query",
+            "wcpan.drive.client._cache._outer.node_from_query",
             side_effect=AssertionError,
         ):
             # when / then
@@ -532,7 +531,7 @@ class ApplyChangesTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         tmp = self.enterContext(NamedTemporaryFile())
         self._dsn = tmp.name
-        self._ss = await self.enterAsyncContext(create_cache(dsn=self._dsn))
+        self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
     async def testPatches(self):
         # given
@@ -562,7 +561,7 @@ class HashAlgorithmTestCase(IsolatedAsyncioTestCase):
 
     async def testAlgorithmPersists(self):
         # given
-        async with create_cache(dsn=self._dsn) as ss:
+        async with create_cache(self._dsn) as ss:
             await ss.set_root(_make_root("1"))
             await ss.apply_changes(
                 [
@@ -572,7 +571,7 @@ class HashAlgorithmTestCase(IsolatedAsyncioTestCase):
                 "1",
             )
         # when
-        async with create_cache(dsn=self._dsn) as ss:
+        async with create_cache(self._dsn) as ss:
             a = await ss.get_node_by_id("2")
             b = await ss.get_node_by_id("3")
 
@@ -584,7 +583,7 @@ class HashAlgorithmTestCase(IsolatedAsyncioTestCase):
         # given
         pending = replace(_make_file("2", "1", "a"), hash="", hash_algorithm="")
         # when
-        async with create_cache(dsn=self._dsn) as ss:
+        async with create_cache(self._dsn) as ss:
             await ss.set_root(_make_root("1"))
             await ss.apply_changes([(False, pending)], "1")
             rv = await ss.get_node_by_id("2")
@@ -594,13 +593,19 @@ class HashAlgorithmTestCase(IsolatedAsyncioTestCase):
         self.assertEqual(rv.hash, "")
         self.assertEqual(rv.hash_algorithm, "")
 
+    async def testEmptyPathIsRejected(self):
+        # when / then
+        with self.assertRaises(ValueError):
+            async with create_cache(""):
+                pass
+
     async def testVersion6RequiresRebuild(self):
         # given
         self._create_version_6()
 
         # when / then
-        with self.assertRaises(SqliteCacheError):
-            async with create_cache(dsn=self._dsn):
+        with self.assertRaises(CacheError):
+            async with create_cache(self._dsn):
                 pass
 
     def _create_version_6(self) -> None:

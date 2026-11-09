@@ -1,5 +1,10 @@
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    asynccontextmanager,
+    nullcontext,
+)
 from datetime import datetime, timezone
 from pathlib import PurePath
 from typing import Any, cast
@@ -7,6 +12,7 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
 from decoy import Decoy, matchers
+from wcpan.drive.client._cache._service import SqliteCache, create_cache
 from wcpan.drive.client._drive import (
     _VIRTUAL_ROOT_ID,
     _SourceState,
@@ -22,7 +28,6 @@ from wcpan.drive.client.exceptions import (
 from wcpan.drive.client.lib import dispatch_change
 from wcpan.drive.client.types import (
     Backend,
-    Cache,
     ChangeAction,
     Hasher,
     Node,
@@ -84,12 +89,7 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
         self.decoy.when(create_backend_middleware_1(backend)).then_enter_with(backend)
         self.decoy.when(create_backend_middleware_2(backend)).then_enter_with(backend)
 
-        create_cache = self.decoy.mock(name="create_cache")
-        create_cache_middleware_1 = self.decoy.mock(name="cache_middleware_1")
-        create_cache_middleware_2 = self.decoy.mock(name="cache_middleware_2")
-        self.decoy.when(create_cache()).then_enter_with(cache)
-        self.decoy.when(create_cache_middleware_1(cache)).then_enter_with(cache)
-        self.decoy.when(create_cache_middleware_2(cache)).then_enter_with(cache)
+        self.enterContext(patch_create_cache(self.decoy, {"cache.sqlite": cache}))
 
         # when / then
         async with create_drive(
@@ -98,27 +98,32 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
                 create_backend_middleware_1,
                 create_backend_middleware_2,
             ),
-            cache=compose_service(
-                create_cache,
-                create_cache_middleware_1,
-                create_cache_middleware_2,
-            ),
+            cache_path="cache.sqlite",
         ):
             pass
 
     async def testMultiMode(self) -> None:
         # given
+        self.enterContext(
+            patch_create_cache(
+                self.decoy,
+                {
+                    "google.sqlite": create_cache_mock(self.decoy),
+                    "local.sqlite": create_cache_mock(self.decoy),
+                },
+            )
+        )
         async with create_multi_drive(
             sources=[
                 SourceConfig(
                     name="google",
                     backend=as_factory(create_backend_mock(self.decoy)),
-                    cache=as_factory(create_cache_mock(self.decoy)),
+                    cache_path="google.sqlite",
                 ),
                 SourceConfig(
                     name="local",
                     backend=as_factory(create_backend_mock(self.decoy)),
-                    cache=as_factory(create_cache_mock(self.decoy)),
+                    cache_path="local.sqlite",
                 ),
             ]
         ) as drive:
@@ -132,8 +137,10 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
     async def testMultiModeRejectsDuplicateNames(self) -> None:
         # given
         create_backend = self.decoy.mock(name="create_backend")
-        create_cache = self.decoy.mock(name="create_cache")
-        source = SourceConfig(name="google", backend=create_backend, cache=create_cache)
+        create_cache = self.enterContext(patch_create_cache(self.decoy, {}))
+        source = SourceConfig(
+            name="google", backend=create_backend, cache_path="google.sqlite"
+        )
 
         # when / then
         with self.assertRaises(ValueError):
@@ -141,7 +148,7 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
                 pass
         # then
         self.decoy.verify(create_backend(), times=0)
-        self.decoy.verify(create_cache(), times=0)
+        self.decoy.verify(create_cache(matchers.Anything()), times=0)
 
 
 class _DriveTestCase(IsolatedAsyncioTestCase):
@@ -151,8 +158,9 @@ class _DriveTestCase(IsolatedAsyncioTestCase):
         self._fs = create_backend_mock(self.decoy)
         self._ss = create_cache_mock(self.decoy)
         self.decoy.when(await self._fs.is_authenticated()).then_return(True)
+        self.enterContext(patch_create_cache(self.decoy, {"cache.sqlite": self._ss}))
         self._drive = await self.enterAsyncContext(
-            create_drive(backend=as_factory(self._fs), cache=as_factory(self._ss))
+            create_drive(backend=as_factory(self._fs), cache_path="cache.sqlite")
         )
 
 
@@ -1383,10 +1391,18 @@ def create_backend_mock(decoy: Decoy) -> Backend:
     return backend
 
 
-def create_cache_mock(decoy: Decoy) -> Cache:
-    cache = decoy.mock(cls=Cache)
-    decoy.when(cache.api_version).then_return(7)
-    return cache
+def create_cache_mock(decoy: Decoy) -> SqliteCache:
+    return decoy.mock(cls=SqliteCache)
+
+
+def patch_create_cache(
+    decoy: Decoy, caches: dict[str, SqliteCache]
+) -> AbstractContextManager[Any]:
+    """Make the drive open each mocked cache from its path."""
+    create = decoy.mock(func=create_cache)
+    for path, cache in caches.items():
+        decoy.when(create(path)).then_enter_with(cache)
+    return patch("wcpan.drive.client._drive.create_cache", create)
 
 
 async def to_async_iterable[T](rv: Iterable[T]) -> AsyncIterator[T]:
@@ -1400,6 +1416,7 @@ async def create_mocked_multi_drive(
 ) -> AsyncGenerator[tuple[Any, dict[str, _SourceState]]]:
     source_configs: list[SourceConfig] = []
     source_states: dict[str, _SourceState] = {}
+    caches: dict[str, SqliteCache] = {}
 
     for name in source_names:
         fs = create_backend_mock(decoy)
@@ -1411,10 +1428,12 @@ async def create_mocked_multi_drive(
             SourceConfig(
                 name=name,
                 backend=as_factory(fs),
-                cache=as_factory(ss),
+                cache_path=f"{name}.sqlite",
             )
         )
+        caches[f"{name}.sqlite"] = ss
         source_states[name] = _SourceState(backend=fs, cache=ss)
 
-    async with create_multi_drive(sources=source_configs) as drive:
-        yield drive, source_states
+    with patch_create_cache(decoy, caches):
+        async with create_multi_drive(sources=source_configs) as drive:
+            yield drive, source_states

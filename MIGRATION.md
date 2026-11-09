@@ -63,3 +63,15 @@ points are `wcpan.drive.client.google.create_backend`,
 version 4: rename each source's `file` key to `backend` and `snapshot` to
 `cache`, and update the function names above. `SqliteSnapshotError` is now
 `SqliteCacheError`. The protocol's `MirrorStableId` is now `NodeId`.
+
+## Built-in client cache
+
+The SQLite cache is now part of `wcpan-drive-client`, and
+`wcpan-drive-client-sqlite` is removed together with its
+`wcpan.drive.client.cache` entry point group. `Cache`, `CacheFactory`, and
+`CacheMiddleware` are gone: `create_drive()` takes `cache_path=` and
+`SourceConfig` takes `cache_path` (the old `dsn`) instead of a cache factory.
+`SqliteCacheError` is now `wcpan.drive.client.exceptions.CacheError`. The CLI
+configuration is now version 5: replace each source's `cache` list with the
+path of its SQLite file, for example `cache: /path/to/google.sqlite`. Existing
+cache files keep working; the schema is unchanged.

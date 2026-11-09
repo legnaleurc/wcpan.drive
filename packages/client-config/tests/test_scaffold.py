@@ -22,19 +22,12 @@ async def create_other_middleware(backend: object) -> None:
     pass
 
 
-async def create_cache(*, dsn: str) -> None:
-    pass
-
-
 _PLUGINS = {
     "wcpan.drive.client.backend": [
         EntryPoint("drive", "tests.test_scaffold:create_backend", "x"),
         EntryPoint("other", "tests.test_scaffold:create_backend", "x"),
         EntryPoint("mid", "tests.test_scaffold:create_middleware", "x"),
         EntryPoint("mid2", "tests.test_scaffold:create_other_middleware", "x"),
-    ],
-    "wcpan.drive.client.cache": [
-        EntryPoint("cache", "tests.test_scaffold:create_cache", "x"),
     ],
 }
 
@@ -51,12 +44,12 @@ class CreateConfigScaffoldTestCase(TestCase):
 
     def test_backend_comes_first_and_middleware_keeps_order(self) -> None:
         # when
-        text = create_config_scaffold(["mid2", "cache", "mid", "drive"])
+        text = create_config_scaffold(["mid2", "mid", "drive"])
         # then
         self.assertEqual(
             text,
             """\
-version: 4
+version: 5
 sources:
   - name: drive
     backend:
@@ -68,19 +61,20 @@ sources:
       - name: tests.test_scaffold.create_middleware
         # kwargs:
           # level: 1
-    cache:
-      - name: tests.test_scaffold.create_cache
-        kwargs:
-          dsn:  # required
+    # Path to the SQLite metadata cache file.
+    cache:  # required
 """,
         )
 
     def test_scaffold_parses_once_filled(self) -> None:
         # when
-        raw = yaml.safe_load(create_config_scaffold(["drive", "mid", "cache"]))
+        raw = yaml.safe_load(create_config_scaffold(["drive", "mid"]))
         # then
         self.assertEqual(raw["sources"][0]["backend"][0]["kwargs"], {"token": None})
         self.assertNotIn("kwargs", raw["sources"][0]["backend"][1])
+        self.assertIsNone(raw["sources"][0]["cache"])
+        # given
+        raw["sources"][0]["cache"] = "/cache/drive.sqlite"
         # when
         (source,) = _parse_main(raw)
         # then
@@ -92,14 +86,13 @@ sources:
             ],
         )
 
-    def test_backend_and_cache_are_required_once(self) -> None:
+    def test_backend_is_required_once(self) -> None:
         # given
         for plugins, pattern in (
-            (["cache"], "one backend plugin, got: none"),
-            (["mid", "cache"], "one backend plugin, got: none"),
-            (["drive", "other", "cache"], "one backend plugin, got: drive, other"),
-            (["drive"], "one cache plugin, got: none"),
-            (["drive", "cache", "missing"], "is its package installed"),
+            ([], "one backend plugin, got: none"),
+            (["mid"], "one backend plugin, got: none"),
+            (["drive", "other"], "one backend plugin, got: drive, other"),
+            (["drive", "missing"], "is its package installed"),
         ):
             with self.subTest(plugins=plugins):
                 # when / then

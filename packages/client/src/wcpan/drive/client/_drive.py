@@ -8,6 +8,7 @@ from itertools import tee
 from pathlib import PurePath
 from typing import override
 
+from ._cache._service import SqliteCache, create_cache
 from .exceptions import (
     AuthenticationError,
     InvalidServiceError,
@@ -22,8 +23,6 @@ from .lib import (
 from .types import (
     Backend,
     BackendFactory,
-    Cache,
-    CacheFactory,
     ChangeAction,
     CreateHasher,
     CreateService,
@@ -98,7 +97,7 @@ async def create_multi_drive(
     if len(sources) == 1:
         source = sources[0]
         async with (
-            _create_service(source.cache) as cache,
+            create_cache(source.cache_path) as cache,
             _create_service(source.backend) as backend,
         ):
             yield _SingleDrive(backend=backend, cache=cache)
@@ -106,9 +105,11 @@ async def create_multi_drive(
         async with AsyncExitStack() as stack:
             source_states: dict[str, _SourceState] = {}
             for source in sources:
-                ss = await stack.enter_async_context(_create_service(source.cache))
-                fs = await stack.enter_async_context(_create_service(source.backend))
-                source_states[source.name] = _SourceState(backend=fs, cache=ss)
+                cache = await stack.enter_async_context(create_cache(source.cache_path))
+                backend = await stack.enter_async_context(
+                    _create_service(source.backend)
+                )
+                source_states[source.name] = _SourceState(backend=backend, cache=cache)
             yield _MultiDrive(source_states)
 
 
@@ -116,15 +117,14 @@ async def create_multi_drive(
 async def create_drive(
     *,
     backend: BackendFactory,
-    cache: CacheFactory,
+    cache_path: str,
 ) -> AsyncGenerator[Drive]:
     """Create a configured Drive instance for single-source usage.
 
     Args:
         backend: Factory function returning a Backend context manager.
                  Also accepts the output of compose_service().
-        cache: Factory function returning a Cache context manager.
-               Also accepts the output of compose_service().
+        cache_path: Path to the SQLite file that caches node metadata.
 
     Yields:
         A fully configured Drive instance ready for operations.
@@ -133,7 +133,7 @@ async def create_drive(
         InvalidServiceError: If the service reports an incompatible API version.
     """
     async with create_multi_drive(
-        sources=[SourceConfig(name="", backend=backend, cache=cache)]
+        sources=[SourceConfig(name="", backend=backend, cache_path=cache_path)]
     ) as drive:
         yield drive
 
@@ -143,7 +143,7 @@ class _SingleDrive(Drive):
         self,
         *,
         backend: Backend,
-        cache: Cache,
+        cache: SqliteCache,
     ) -> None:
         self._sync_lock = Lock()
         self._backend = backend
@@ -404,7 +404,7 @@ class _SingleDrive(Drive):
 @dataclass
 class _SourceState:
     backend: Backend
-    cache: Cache
+    cache: SqliteCache
     lock: Lock = field(default_factory=Lock)
 
 
@@ -764,21 +764,21 @@ class _MultiDrive(Drive):
 
         async def sync_source(source_name: str, state: _SourceState) -> None:
             async with state.lock:
-                fs = state.backend
-                ss = state.cache
+                backend = state.backend
+                cache = state.cache
 
-                initial_cursor = await fs.get_initial_cursor()
+                initial_cursor = await backend.get_initial_cursor()
 
-                cursor = await ss.get_current_cursor()
+                cursor = await cache.get_current_cursor()
                 if not cursor:
                     cursor = initial_cursor
 
                 if cursor == initial_cursor:
-                    node = await fs.get_root()
-                    await ss.set_root(node)
+                    node = await backend.get_root()
+                    await cache.set_root(node)
 
-                async for changes, next_ in fs.get_changes(cursor):
-                    await ss.apply_changes(changes, next_)
+                async for changes, next_ in backend.get_changes(cursor):
+                    await cache.apply_changes(changes, next_)
 
                     for change in changes:
                         await queue.put(_scope_change(source_name, change))

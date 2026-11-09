@@ -19,7 +19,6 @@ namespace migration; the old package names and import paths are not aliases.
 | `packages/client-google` | `wcpan-drive-client-google` | `wcpan.drive.client.google` |
 | `packages/client-feed` | `wcpan-drive-client-feed` | `wcpan.drive.client.feed` |
 | `packages/client-crypt` | `wcpan-drive-client-crypt` | `wcpan.drive.client.crypt` |
-| `packages/client-sqlite` | `wcpan-drive-client-sqlite` | `wcpan.drive.client.sqlite` |
 | `packages/client-config` | `wcpan-drive-client-config` | `wcpan.drive.client.config` |
 | `packages/client-media` | `wcpan-drive-client-media` | `wcpan.drive.client.media` |
 | `packages/client-cli` | `wcpan-drive-client-cli` | `wcpan.drive.client.cli` |
@@ -36,8 +35,10 @@ the client framework; both the server and feed provider use the protocol package
 The client CLI command is `wcpan.drive.client.cli`; it has no library API.
 Load drive config files with `wcpan.drive.client.config` and probe local media
 with `wcpan.drive.client.media`. Update configured provider
-module paths from `wcpan.drive.google`, `.crypt`, and `.sqlite` to
-`wcpan.drive.client.google`, `.crypt`, and `.sqlite`, respectively.
+module paths from `wcpan.drive.google` and `.crypt` to
+`wcpan.drive.client.google` and `.crypt`, respectively. The SQLite metadata
+cache is built into `wcpan-drive-client`; a source names its cache file with
+`cache`.
 
 The generic server (`wcpan-drive-server`) holds the mirror, change feed, HTTP
 API, and reconciliation, and defines the contract a storage backend implements.

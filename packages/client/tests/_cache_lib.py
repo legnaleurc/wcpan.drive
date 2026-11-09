@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from wcpan.drive.client.sqlite._outer import initialize, set_root
+from wcpan.drive.client._cache._outer import initialize, set_root
 from wcpan.drive.client.types import Node
 
 

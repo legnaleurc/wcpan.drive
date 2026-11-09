@@ -55,9 +55,9 @@ class TestServerScaffold(IsolatedAsyncioTestCase):
 class TestClientScaffold(TestCase):
     def test_installed_plugins_make_a_valid_source(self) -> None:
         # given
-        raw = yaml.safe_load(
-            client_scaffold(["wcpan.drive.client.google", "crypt", "sqlite"])
-        )
+        raw = yaml.safe_load(client_scaffold(["wcpan.drive.client.google", "crypt"]))
+        self.assertIsNone(raw["sources"][0]["cache"])
+        raw["sources"][0]["cache"] = "/cache/google.sqlite"
         # when
         (source,) = _parse_main(raw)
         # then
@@ -72,4 +72,4 @@ class TestClientScaffold(TestCase):
         self.assertEqual(
             source.backend[0].kwargs, {"client_secret": None, "oauth_token": None}
         )
-        self.assertEqual(source.cache[0].kwargs, {"dsn": None})
+        self.assertEqual(source.cache, "/cache/google.sqlite")

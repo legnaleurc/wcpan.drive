@@ -6,7 +6,7 @@ from tempfile import NamedTemporaryFile
 from threading import Event
 from unittest import IsolatedAsyncioTestCase, skip
 
-from wcpan.drive.client.sqlite._lib import OffMainProcess, read_only, read_write
+from wcpan.drive.client._cache._lib import OffMainProcess, read_only, read_write
 
 
 class TransactionTestCase(IsolatedAsyncioTestCase):

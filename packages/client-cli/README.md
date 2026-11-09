@@ -14,7 +14,7 @@ The config file format is documented in `wcpan-drive-client-config`.
 Generate a starting config for installed plugins without `-c`:
 
 ```sh
-python3 -m wcpan.drive.client.cli init -p google -p sqlite > /path/to/config
+python3 -m wcpan.drive.client.cli init -p google > /path/to/config
 ```
 
 ## Command Line Usage

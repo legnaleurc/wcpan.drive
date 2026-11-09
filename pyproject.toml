@@ -9,7 +9,6 @@ wcpan-drive-client-crypt = { workspace = true }
 wcpan-drive-client-google = { workspace = true }
 wcpan-drive-client-media = { workspace = true }
 wcpan-drive-client-feed = { workspace = true }
-wcpan-drive-client-sqlite = { workspace = true }
 wcpan-drive-plugin = { workspace = true }
 wcpan-drive-protocol = { workspace = true }
 wcpan-drive-server = { workspace = true }

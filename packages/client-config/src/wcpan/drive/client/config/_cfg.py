@@ -11,7 +11,7 @@ from wcpan.drive.client.types import Drive, SourceConfig
 from yaml import safe_load
 
 
-VERSION = 4
+VERSION = 5
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -25,7 +25,7 @@ class _Function:
 class _Source:
     name: str
     backend: list[_Function]
-    cache: list[_Function]
+    cache: str
 
 
 @asynccontextmanager
@@ -71,7 +71,7 @@ def _parse_source(data: object, where: str) -> _Source:
     return _Source(
         name=name,
         backend=_parse_chain(source.get("backend"), f"{where}.backend"),
-        cache=_parse_chain(source.get("cache"), f"{where}.cache"),
+        cache=_parse_path(source.get("cache"), f"{where}.cache"),
     )
 
 
@@ -80,6 +80,12 @@ def _parse_chain(data: object, where: str) -> list[_Function]:
     if not chain:
         raise ValueError(f"{where} must not be empty")
     return [_parse_function(_, f"{where}[{i}]") for i, _ in enumerate(chain)]
+
+
+def _parse_path(data: object, where: str) -> str:
+    if not isinstance(data, str) or not data:
+        raise ValueError(f"{where} must be a non-empty path")
+    return data
 
 
 def _parse_function(data: object, where: str) -> _Function:
@@ -106,11 +112,10 @@ def _require_list(data: object, where: str) -> list[Any]:
 
 def _resolve_source(source: _Source) -> SourceConfig:
     backend_fns = [_resolve_function(_) for _ in source.backend]
-    cache_fns = [_resolve_function(_) for _ in source.cache]
     return SourceConfig(
         name=source.name,
         backend=compose_service(backend_fns[0], *backend_fns[1:]),
-        cache=compose_service(cache_fns[0], *cache_fns[1:]),
+        cache_path=source.cache,
     )
 
 
