@@ -5,15 +5,51 @@ when the mount is first seen and is opaque; renaming a mount in the config
 makes it a new mount.
 """
 
+import uuid
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
+from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE, utc_now
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from ..lib.mounts import SERVER_ROOT_ID, mount_id, new_mount_id, virtual_directory
+from ..lib.root import SERVER_ROOT_ID
 from ..types import NodeObservation
 from .mirror import MirrorStore
 from .sync import NodeSyncService
+
+
+def _new_mount_id() -> NodeId:
+    """An ID for a mount seen for the first time."""
+    return NodeId(uuid.uuid4().hex)
+
+
+def mount_id(name: str) -> NodeId:
+    """A fixed ID derived from *name*, for mounts built without the mirror."""
+    return NodeId(f"_{name}")
+
+
+def _virtual_directory(
+    node_id: NodeId, parent_id: NodeId | None, name: str
+) -> NodeRecord:
+    now = utc_now()
+    return NodeRecord(
+        id=node_id,
+        parent_id=parent_id,
+        name=name,
+        is_directory=True,
+        created_time=now,
+        modified_time=now,
+        changed_time=now,
+        mime_type=FOLDER_MIME_TYPE,
+        hash="",
+        hash_algorithm="",
+        size=0,
+        is_image=False,
+        is_video=False,
+        width=0,
+        height=0,
+        ms_duration=0,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -107,7 +143,7 @@ async def load_mounts(sources: Mapping[str, str], *, mirror: MirrorStore) -> Mou
             )
         existing[record.name] = record.id
     return Mounts(
-        Mount(name=name, id=existing.get(name) or new_mount_id(), source=source)
+        Mount(name=name, id=existing.get(name) or _new_mount_id(), source=source)
         for name, source in sources.items()
     )
 
@@ -121,8 +157,8 @@ async def ensure_mount_nodes(
     to the config appears in the feed. Waits until they are written, since
     backends add children under them.
     """
-    records = [virtual_directory(mounts.root_id, None, "")] + [
-        virtual_directory(m.id, mounts.root_id, m.name) for m in mounts.values()
+    records = [_virtual_directory(mounts.root_id, None, "")] + [
+        _virtual_directory(m.id, mounts.root_id, m.name) for m in mounts.values()
     ]
     existing = await mirror.get_nodes_by_ids([r.id for r in records])
     missing = [r for r in records if r.id not in existing]

@@ -6,8 +6,8 @@ from unittest import TestCase
 
 
 _SRC = Path(__file__).parents[1] / "src"
-# The core's node-ID grammar for the root and mounts.
-_FORBIDDEN = ("wcpan.drive.server.lib.mounts",)
+# The core's private knowledge of the root; backends use `Mounts.root_id`.
+_FORBIDDEN = ("wcpan.drive.server.lib.root",)
 
 
 def _imports(path: Path) -> list[str]:
@@ -22,7 +22,7 @@ def _imports(path: Path) -> list[str]:
 
 
 class TestBackendImports(TestCase):
-    def test_no_mount_grammar_imports(self) -> None:
+    def test_no_root_imports(self) -> None:
         # given
         modules = sorted(_SRC.rglob("*.py"))
         # then

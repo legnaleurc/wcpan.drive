@@ -11,9 +11,8 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.mirror import MirrorStore
-from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes
+from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes, mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import BackendLocator, NodeObservation

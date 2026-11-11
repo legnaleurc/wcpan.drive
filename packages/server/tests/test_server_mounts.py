@@ -11,7 +11,7 @@ from typing import cast
 from unittest import IsolatedAsyncioTestCase, TestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, is_structural
+from wcpan.drive.server.lib.root import SERVER_ROOT_ID, is_structural
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.mounts import (
     Mounts,

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from ..lib.mounts import SERVER_ROOT_ID
+from ..lib.root import SERVER_ROOT_ID
 from ..types import VirtualPath
 from .mirror import MirrorStore
 

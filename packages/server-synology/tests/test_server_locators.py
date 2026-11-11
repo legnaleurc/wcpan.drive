@@ -7,11 +7,12 @@ from dataclasses import replace
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, mount_id
+from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import (
     MirrorStore,
     cleanup_dangling_nodes,
 )
+from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.synology._convert import SynologyLocator
 from wcpan.drive.server.synology._store import SYNOLOGY_SCHEMA, SynologyStore

@@ -7,8 +7,8 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from wcpan.drive.protocol.types import NodeId
 
 from ..keys import MIRROR_KEY, NODE_OPERATIONS_KEY, UPLOAD_SERVICE_KEY
-from ..lib.mounts import SERVER_ROOT_ID, is_structural
 from ..lib.names import normalize_name
+from ..lib.root import SERVER_ROOT_ID, is_structural
 from ..services.operations import OperationConflictError, OperationUnavailableError
 from ..services.upload import (
     UploadConflictError,

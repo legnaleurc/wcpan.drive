@@ -19,7 +19,7 @@ from wcpan.drive.sqlite import (
     read_write as _read_write,
 )
 
-from ..lib.mounts import SERVER_ROOT_ID
+from ..lib.root import SERVER_ROOT_ID
 from ..types import BackendLocator, NodeObservation
 from ._schema import DDL, MIGRATE_3_TO_4, SCHEMA_VERSION
 from .off_main import OffMainService

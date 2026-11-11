@@ -30,7 +30,7 @@ from wcpan.drive.server.keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
-from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
+from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.spool import (
     SpoolArea,
     SpooledFiles,

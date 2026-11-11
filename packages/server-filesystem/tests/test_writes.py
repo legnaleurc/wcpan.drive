@@ -13,7 +13,7 @@ from unittest.mock import patch
 from wcpan.drive.protocol.types import MediaInfo, NodeRecord
 from wcpan.drive.server.filesystem._operations import FilesystemFile
 from wcpan.drive.server.filesystem._reading import STAGING_PREFIX
-from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
+from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.operations import (
     OperationConflictError,
     OperationInvalidError,

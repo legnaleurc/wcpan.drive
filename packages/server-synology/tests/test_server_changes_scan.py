@@ -12,11 +12,9 @@ from decoy import matchers
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.backend import Mounts
-from wcpan.drive.server.lib.mounts import (
-    SERVER_ROOT_ID,
-    mount_id,
-)
+from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import MirrorStore
+from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology._convert import SynologyLocator

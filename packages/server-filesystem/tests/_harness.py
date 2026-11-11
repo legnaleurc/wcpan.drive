@@ -19,9 +19,8 @@ from wcpan.drive.server.filesystem._paths import NodePaths
 from wcpan.drive.server.filesystem._scan import FilesystemScanner
 from wcpan.drive.server.filesystem._store import FILESYSTEM_SCHEMA, FilesystemStore
 from wcpan.drive.server.filesystem._watch import DirectoryWatcher
-from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.mirror import MirrorStore
-from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes
+from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes, mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.workers import (
