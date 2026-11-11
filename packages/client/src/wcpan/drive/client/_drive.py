@@ -14,6 +14,7 @@ from .exceptions import (
     InvalidServiceError,
     NodeExistsError,
     NodeNotFoundError,
+    StaleCursorError,
 )
 from .lib import (
     else_none,
@@ -86,13 +87,17 @@ async def create_multi_drive(
 
     Raises:
         InvalidServiceError: If any service reports an incompatible API version.
-        ValueError: If sources is empty or has duplicate names.
+        ValueError: If sources is empty, has duplicate names, or a name
+            contains ``:``.
     """
     if not sources:
         raise ValueError("at least one source is required")
     names = [source.name for source in sources]
     if len(set(names)) != len(names):
         raise ValueError(f"duplicate source names: {names}")
+    if any(":" in _ for _ in names):
+        # scoped node IDs are "<source>:<id>", split at the first colon
+        raise ValueError(f"source names must not contain ':': {names}")
 
     scoped = len(sources) > 1
     async with AsyncExitStack() as stack:
@@ -167,22 +172,48 @@ class _Source:
 
     async def sync(self) -> AsyncIterator[ChangeAction]:
         async with self.lock:
-            initial_cursor = await self.backend.get_initial_cursor()
+            try:
+                async for change in self._sync_once():
+                    yield change
+            except StaleCursorError:
+                # Retry once: a fresh replay starts from the initial cursor,
+                # which a backend never reports as stale.
+                async for change in self._reset():
+                    yield change
+                async for change in self._sync_once():
+                    yield change
 
-            cursor = await self.cache.get_current_cursor()
-            if not cursor:
-                cursor = initial_cursor
+    async def _sync_once(self) -> AsyncIterator[ChangeAction]:
+        initial_cursor = await self.backend.get_initial_cursor()
 
-            # no data before, get the root node and cache it
-            if cursor == initial_cursor:
-                node = await self.backend.get_root()
-                await self.cache.set_root(node)
+        cursor = await self.cache.get_current_cursor()
+        if not cursor:
+            cursor = initial_cursor
 
-            async for changes, next_ in self.backend.get_changes(cursor):
-                await self.cache.apply_changes(changes, next_)
+        # no data before, get the root node and cache it
+        if cursor == initial_cursor:
+            node = await self.backend.get_root()
+            await self.cache.set_root(node)
 
-                for change in changes:
-                    yield self.scope_change(change)
+        async for changes, next_ in self.backend.get_changes(cursor):
+            await self.cache.apply_changes(changes, next_)
+
+            for change in changes:
+                yield self.scope_change(change)
+
+    async def _reset(self) -> AsyncIterator[ChangeAction]:
+        """Announce every cached node as removed, then empty the cache.
+
+        Change actions have no reset event, so consumers learn of the reset as
+        removals followed by the full replay. The cache is emptied only after
+        the removals are delivered, so an interrupted reset is redone by the
+        next sync. The root is never announced by sync, so it is not removed.
+        """
+        root = await else_none(self.cache.get_root())
+        for node_id in await self.cache.get_node_ids():
+            if root is None or node_id != root.id:
+                yield self.scope_change((True, node_id))
+        await self.cache.reset()
 
 
 class _Drive(Drive):

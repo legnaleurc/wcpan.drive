@@ -7,6 +7,7 @@ Exception Hierarchy:
     DriveError (base exception)
     ├── InvalidServiceError
     ├── CacheError
+    ├── StaleCursorError
     ├── NodeExistsError
     ├── NodeNotFoundError
     ├── NodeIsADirectoryError
@@ -29,6 +30,7 @@ __all__ = (
     "DriveError",
     "InvalidServiceError",
     "CacheError",
+    "StaleCursorError",
     "NodeExistsError",
     "NodeNotFoundError",
     "NodeIsADirectoryError",
@@ -81,6 +83,18 @@ class CacheError(DriveError):
 
     The usual cause is a cache file written with an older schema; delete
     the file and sync again to rebuild it.
+    """
+
+    pass
+
+
+class StaleCursorError(DriveError):
+    """Raised by a backend when it can no longer continue from a cursor.
+
+    The source's change history was replaced (for example, compacted or
+    rebuilt), so changes since the cursor cannot be listed. Drive handles it
+    during sync by announcing every cached node of that source as removed,
+    clearing the source's cache, and replaying from the initial cursor.
     """
 
     pass

@@ -5,7 +5,11 @@ from contextlib import asynccontextmanager
 from typing import cast, override
 
 from aiohttp import ClientSession
-from wcpan.drive.client.exceptions import NodeExistsError, NodeNotFoundError
+from wcpan.drive.client.exceptions import (
+    NodeExistsError,
+    NodeNotFoundError,
+    StaleCursorError,
+)
 from wcpan.drive.client.types import (
     Backend,
     ChangeAction,
@@ -24,6 +28,7 @@ from ._lib import (
     UpsertChangeDict,
     node_from_record,
     node_record_from_dict,
+    node_url,
 )
 from .exceptions import SynologyAccessError, SynologyServerError
 from .hasher import get_hasher_factory
@@ -64,6 +69,9 @@ class FeedBackend(Backend):
                 f"{self._url}/api/v1/changes",
                 params={"cursor": cursor},
             ) as response:
+                if response.status == 410:
+                    # The server replaced its change history.
+                    raise StaleCursorError(f"stale cursor: {cursor}")
                 _check(response.status, "get_changes")
                 data = await response.json()
 
@@ -101,7 +109,7 @@ class FeedBackend(Backend):
             body["parent_id"] = new_parent.id
 
         async with self._session.patch(
-            f"{self._url}/api/v1/nodes/{node.id}",
+            node_url(self._url, node.id),
             json=body,
         ) as response:
             _check(response.status, "move")
@@ -111,9 +119,7 @@ class FeedBackend(Backend):
 
     @override
     async def delete(self, node: Node, *, permanent: bool = False) -> None:
-        async with self._session.delete(
-            f"{self._url}/api/v1/nodes/{node.id}"
-        ) as response:
+        async with self._session.delete(node_url(self._url, node.id)) as response:
             if response.status == 404:
                 raise NodeNotFoundError(node.id)
             _check(response.status, "delete")

@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from wcpan.drive.client.types import Node
 from wcpan.drive.protocol.lib import (
     FOLDER_MIME_TYPE,
@@ -15,6 +17,7 @@ from wcpan.drive.protocol.types import NodeRecord
 
 
 __all__ = (
+    "node_url",
     "node_from_record",
     "RemovedChangeDict",
     "UpsertChangeDict",
@@ -27,6 +30,11 @@ __all__ = (
     "utc_from_timestamp",
     "utc_now",
 )
+
+
+def node_url(server_url: str, node_id: str, *suffix: str) -> str:
+    """The URL of a node resource; node IDs may contain any character."""
+    return "/".join([f"{server_url}/api/v1/nodes", quote(node_id, safe=""), *suffix])
 
 
 def node_from_record(record: NodeRecord) -> Node:

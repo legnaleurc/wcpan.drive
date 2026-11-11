@@ -1,11 +1,16 @@
 """Tests for FeedBackend helpers."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from unittest import TestCase
 
 from aiohttp import ClientSession
-from wcpan.drive.client.exceptions import NodeExistsError, NodeNotFoundError
+from wcpan.drive.client.exceptions import (
+    NodeExistsError,
+    NodeNotFoundError,
+    StaleCursorError,
+)
 from wcpan.drive.client.feed.exceptions import (
     SynologyAccessError,
     SynologyServerError,
@@ -247,3 +252,35 @@ class TestGetChangesReplay(DecoyTestCase):
         self.assertEqual(seen[0][0][1], (True, "child"))
         self.assertFalse(seen[0][0][2][0])
         self.assertEqual(seen[0][0][2][1].parent_id, "parent")
+
+
+class TestGetChangesStaleCursor(DecoyTestCase):
+    async def test_410_raises_stale_cursor(self) -> None:
+        # given
+        session = self.decoy.mock(cls=ClientSession)
+        gone = await self.create_response(410)
+        self.when_enter(
+            session.get("http://srv/api/v1/changes", params={"cursor": "e1.5"}),
+            gone,
+        )
+        svc = FeedBackend(session=session, server_url="http://srv")
+
+        # when / then
+        with self.assertRaises(StaleCursorError):
+            async for _ in svc.get_changes("e1.5"):
+                pass
+
+
+class TestNodeUrl(DecoyTestCase):
+    async def test_node_id_is_percent_encoded(self) -> None:
+        # given
+        session = self.decoy.mock(cls=ClientSession)
+        deleted = await self.create_response(204)
+        self.when_enter(
+            session.delete("http://srv/api/v1/nodes/a%2Fb%3F%23%25c"),
+            deleted,
+        )
+        svc = FeedBackend(session=session, server_url="http://srv")
+
+        # when / then: only the encoded URL is stubbed, any other fails
+        await svc.delete(replace(_parent_node(), id="a/b?#%c", parent_id="p"))

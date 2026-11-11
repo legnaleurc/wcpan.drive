@@ -12,10 +12,12 @@ from ._outer import (
     get_current_cursor,
     get_node_by_id,
     get_node_by_path,
+    get_node_ids,
     get_root,
     get_trashed_nodes,
     initialize,
     query_nodes,
+    reset,
     resolve_path_by_id,
     set_root,
     summarize_nodes,
@@ -42,6 +44,14 @@ class SqliteCache:
     async def get_current_cursor(self) -> str:
         cursor = await self._bg(get_current_cursor)
         return "" if not cursor else cursor
+
+    async def get_node_ids(self) -> list[str]:
+        """IDs of every cached node, the root included."""
+        return await self._bg(get_node_ids)
+
+    async def reset(self) -> None:
+        """Forget every node, the root, and the cursor."""
+        await self._bg(reset)
 
     async def get_root(self) -> Node:
         root = await self._bg(get_root)

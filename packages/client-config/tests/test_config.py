@@ -109,6 +109,13 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
         # when / then
         await self._assert_invalid({"version": 4, "sources": [source]})
 
+    async def testNameWithColon(self) -> None:
+        # given
+        source = _source()
+        source["name"] = "a:b"
+        # when / then
+        await self._assert_invalid({"version": 4, "sources": [source]})
+
     async def testEmptyChain(self) -> None:
         # given
         source = _source()

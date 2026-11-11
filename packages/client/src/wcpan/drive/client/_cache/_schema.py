@@ -74,3 +74,14 @@ SQL_CREATE_TABLES = [
     """,
     f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION};",
 ]
+
+# Children before parents, so the foreign keys never dangle.
+SQL_RESET_TABLES = [
+    "DELETE FROM extras;",
+    "DELETE FROM audios;",
+    "DELETE FROM images;",
+    "DELETE FROM parents;",
+    "DELETE FROM files;",
+    "DELETE FROM nodes;",
+    "DELETE FROM metadata;",
+]

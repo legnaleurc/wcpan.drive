@@ -196,6 +196,12 @@ wcpan.drive.server --config server.yaml backend nas --help
 argument errors never connect to its source. `gc`, `squash`, and backend
 commands write the same database without coordinating with a running server.
 
+Change cursors are opaque strings bound to the database's change history. `"0"`
+starts from the beginning. `squash` replaces the history, so cursors issued
+before it, cursors from another database, cursors past the current end (a
+restored older copy), and integer cursors from earlier servers get
+`410 Gone`; `wcpan-drive-client` then rebuilds that source's cache from `"0"`.
+
 #### Config file
 
 ```yaml

@@ -68,6 +68,9 @@ def _parse_source(data: object, where: str) -> _Source:
     name = source.get("name")
     if not isinstance(name, str) or not name:
         raise ValueError(f"{where}.name must be a non-empty string")
+    if ":" in name:
+        # Drive scopes node IDs as "<source>:<id>".
+        raise ValueError(f"{where}.name must not contain ':'")
     return _Source(
         name=name,
         backend=_parse_chain(source.get("backend"), f"{where}.backend"),

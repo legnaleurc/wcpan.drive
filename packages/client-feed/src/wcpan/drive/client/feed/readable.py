@@ -7,6 +7,8 @@ from typing import Any, override
 from aiohttp import ClientResponse, ClientSession
 from wcpan.drive.client.types import Node, ReadableFile
 
+from ._lib import node_url
+
 
 class ClientReadableFile(ReadableFile):
     def __init__(
@@ -63,7 +65,7 @@ class ClientReadableFile(ReadableFile):
 
     @asynccontextmanager
     async def _download(self) -> AsyncGenerator[ClientResponse]:
-        url = f"{self._server_url}/api/v1/nodes/{self._node.id}/download"
+        url = node_url(self._server_url, self._node.id, "download")
         headers: dict[str, str] = {}
         if self._offset > 0:
             end = self._node.size - 1

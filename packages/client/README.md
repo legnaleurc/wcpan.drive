@@ -29,3 +29,8 @@ async with create_drive(
     node = await upload_file_from_local(drive, local_path, root)
     await download_file_to_local(drive, node, dest_dir)
 ```
+
+When a backend reports that its change cursor is stale (`StaleCursorError`, for
+example after the server's change history was squashed), `sync` rebuilds that
+source's cache: it yields a removal for every cached node of the source, then
+replays the source from its initial cursor. Other sources are not affected.

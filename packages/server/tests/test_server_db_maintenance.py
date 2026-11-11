@@ -252,3 +252,56 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 self.assertTrue(all(not c[1] for c in changes))
         finally:
             os.unlink(db_path)
+
+
+class TestEpoch(IsolatedAsyncioTestCase):
+    async def test_epoch_survives_reopen(self) -> None:
+        # given
+        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            with ThreadPoolExecutor() as pool:
+                first = _make_mirror(db_path, pool)
+                await first.ensure_schema()
+                # when
+                second = _make_mirror(db_path, pool)
+                await second.ensure_schema()
+                # then
+                self.assertTrue(first.epoch)
+                self.assertEqual(second.epoch, first.epoch)
+        finally:
+            os.unlink(db_path)
+
+    async def test_new_database_gets_new_epoch(self) -> None:
+        # given
+        epochs: list[str] = []
+        with ThreadPoolExecutor() as pool:
+            for _ in range(2):
+                fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+                os.close(fd)
+                try:
+                    mirror = _make_mirror(db_path, pool)
+                    # when
+                    await mirror.ensure_schema()
+                    epochs.append(mirror.epoch)
+                finally:
+                    os.unlink(db_path)
+        # then
+        self.assertNotEqual(epochs[0], epochs[1])
+
+    async def test_reset_change_history_replaces_epoch(self) -> None:
+        # given
+        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            with ThreadPoolExecutor() as pool:
+                before = _make_mirror(db_path, pool)
+                await before.ensure_schema()
+                # when
+                reset_change_history(db_path, schemas={})
+                # then
+                after = _make_mirror(db_path, pool)
+                await after.ensure_schema()
+                self.assertNotEqual(after.epoch, before.epoch)
+        finally:
+            os.unlink(db_path)

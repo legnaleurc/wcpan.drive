@@ -170,6 +170,20 @@ class CreateDriveTestCase(IsolatedAsyncioTestCase):
         self.decoy.verify(create_backend(), times=0)
         self.decoy.verify(create_cache(matchers.Anything()), times=0)
 
+    async def testMultiModeRejectsColonInNames(self) -> None:
+        # given
+        create_backend = self.decoy.mock(name="create_backend")
+        create_cache = self.enterContext(patch_create_cache(self.decoy, {}))
+        source = SourceConfig(name="a:b", backend=create_backend, cache_path="a.sqlite")
+
+        # when / then
+        with self.assertRaises(ValueError):
+            async with create_multi_drive(sources=[source]):
+                pass
+        # then
+        self.decoy.verify(create_backend(), times=0)
+        self.decoy.verify(create_cache(matchers.Anything()), times=0)
+
 
 class _DriveTestCase(IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

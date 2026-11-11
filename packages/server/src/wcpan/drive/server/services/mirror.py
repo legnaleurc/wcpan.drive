@@ -1,4 +1,5 @@
 import logging
+import secrets
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
@@ -170,7 +171,12 @@ def _schema_for(schemas: Schemas, backend: str | None) -> BackendSchema | None:
     return distinct[0] if len(distinct) == 1 else None
 
 
-def _ensure_schema(dsn: str, schemas: Schemas) -> None:
+def _new_epoch() -> str:
+    return secrets.token_hex(8)
+
+
+def _ensure_schema(dsn: str, schemas: Schemas) -> str:
+    """Create or check the schema, and return the change history's epoch."""
     initialize_database(dsn)
     with _read_write(dsn) as con:
         version = int(con.execute("PRAGMA user_version").fetchone()[0])
@@ -199,6 +205,15 @@ def _ensure_schema(dsn: str, schemas: Schemas) -> None:
             con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         for schema in _distinct(schemas):
             schema.ensure_schema(con)
+        # Databases created before the epoch existed get one on first open.
+        con.execute(
+            "INSERT OR IGNORE INTO metadata (key, value) VALUES ('epoch', ?)",
+            (_new_epoch(),),
+        )
+        with closing(
+            con.execute("SELECT value FROM metadata WHERE key = 'epoch'")
+        ) as cur:
+            return str(cur.fetchone()["value"])
 
 
 def _run_read[R](
@@ -610,10 +625,14 @@ def cleanup_dangling_nodes(dsn: str, *, schemas: Schemas) -> int:
 def reset_change_history(dsn: str, *, schemas: Schemas) -> int:
     """Clear changes and insert one update row per node except the server root.
 
-    Returns the number of change records inserted.
+    Also replaces the epoch, so consumers holding a cursor from the old history
+    are told to start over. Returns the number of change records inserted.
     """
     _ensure_schema(dsn, schemas)
     with _read_write(dsn) as con:
+        con.execute(
+            "UPDATE metadata SET value = ? WHERE key = 'epoch'", (_new_epoch(),)
+        )
         con.execute("DELETE FROM changes")
         con.execute(
             "INSERT INTO changes (node_id, is_removed)"
@@ -695,9 +714,19 @@ class MirrorStore:
         self._dsn = dsn
         self._off_main = off_main
         self._schemas = dict(schemas or {})
+        self._epoch = ""
+
+    @property
+    def epoch(self) -> str:
+        """The change history's epoch, read by ``ensure_schema``.
+
+        Only offline maintenance (``squash``) replaces it, so it stays fixed
+        while the server runs.
+        """
+        return self._epoch
 
     async def ensure_schema(self) -> None:
-        await self._off_main(_ensure_schema, self._dsn, self._schemas)
+        self._epoch = await self._off_main(_ensure_schema, self._dsn, self._schemas)
 
     async def register_schema(self, backend: str, schema: BackendSchema) -> None:
         """Persist backend instance *backend*'s state through *schema* from now on."""

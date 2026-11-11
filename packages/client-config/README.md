@@ -23,6 +23,7 @@ Example config file:
 version: 4
 sources:
   # In multi-source mode (2+ sources), each name becomes a path prefix.
+  # Names must not contain ":", which separates the source in node IDs.
   - name: google
     # The first function creates the backend; the rest are middleware
     # applied in order. args and kwargs are optional.

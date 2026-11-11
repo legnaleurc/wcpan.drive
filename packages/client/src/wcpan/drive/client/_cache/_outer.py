@@ -184,6 +184,21 @@ def summarize_nodes(dsn: str, node_query: NodeQuery, /) -> NodeSummary | None:
         return NodeSummary(count=row["count"], total_size=row["total_size"])
 
 
+def get_node_ids(dsn: str, /) -> list[str]:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
+        query.execute("SELECT id FROM nodes;")
+        return [cast(str, _["id"]) for _ in query]
+
+
+def reset(dsn: str, /) -> None:
+    """Empty the cache, including its root and cursor, in one transaction."""
+    from ._schema import SQL_RESET_TABLES
+
+    with read_write(dsn) as con, closing(con.cursor()) as query:
+        for sql in SQL_RESET_TABLES:
+            query.execute(sql)
+
+
 def get_current_cursor(dsn: str, /) -> str | None:
     with read_only(dsn) as con, closing(con.cursor()) as query:
         return inner_get_metadata(query, KEY_CURSOR)

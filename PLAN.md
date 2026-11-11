@@ -755,7 +755,10 @@ state where two Synology instances already collide.
 1. Cursor reset: epoch, 410 on stale cursors, `"0"` bootstrap, client cache
    reset and resynchronization. Useful alone, since `squash` needs it today.
    Also percent-encode IDs in `client-feed` URLs and reject `:` in client
-   source names.
+   source names. Implemented: the epoch is a `metadata` row (added to existing
+   databases on open, no schema version change), the cursor is
+   `<epoch>.<change_id>` and is parsed only in `handlers/changes.py`, and the
+   client raises `StaleCursorError` on 410.
 2. Identity and isolation, in one release with the database rebuild: the
    registry, `node_ids` with `public`, `lookup`, `native_of`, and `mint`,
    Synology and filesystem conversion sites, routing by mount owner and map

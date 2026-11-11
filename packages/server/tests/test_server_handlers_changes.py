@@ -60,6 +60,8 @@ class _FakeOffMain:
 
 class _FakeMirror:
     def __init__(self) -> None:
+        self.epoch = "e1"
+        self.since: int | None = None
         self._nodes: dict[str, NodeRecord] = {}
         self._cursor: int = 42
         self._changes: list[tuple[str, bool, NodeRecord | None]] = []
@@ -73,6 +75,7 @@ class _FakeMirror:
     async def get_changes_since(
         self, cursor: int, max_size: int
     ) -> tuple[list[tuple[str, bool, NodeRecord | None]], int, bool]:
+        self.since = cursor
         return self._changes[:max_size], self._cursor, len(self._changes) > max_size
 
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
@@ -122,7 +125,7 @@ class TestGetCursor(IsolatedAsyncioTestCase):
             # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
-        self.assertEqual(body["cursor"], 42)
+        self.assertEqual(body["cursor"], "e1.42")
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +194,7 @@ class TestGetChanges(IsolatedAsyncioTestCase):
             # then
             self.assertEqual(resp.status, 200)
             body = await resp.json()
-        self.assertEqual(body["cursor"], 42)
+        self.assertEqual(body["cursor"], "e1.42")
         self.assertFalse(body["has_more"])
         self.assertEqual(len(body["changes"]), 1)
         self.assertFalse(body["changes"][0]["removed"])
@@ -221,6 +224,62 @@ class TestGetChanges(IsolatedAsyncioTestCase):
             resp = await client.get("/api/v1/changes", params={"cursor": "abc"})
             # then
             self.assertEqual(resp.status, 400)
+
+    async def test_malformed_cursor_returns_400(self):
+        # given
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
+        async with TestClient(TestServer(app)) as client:
+            for cursor in ("e1.", ".5", "e1.x", "e1.-1"):
+                with self.subTest(cursor=cursor):
+                    # when
+                    resp = await client.get(
+                        "/api/v1/changes", params={"cursor": cursor}
+                    )
+                    # then
+                    self.assertEqual(resp.status, 400)
+
+    async def test_cursor_of_current_epoch_resumes(self):
+        # given
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
+        async with TestClient(TestServer(app)) as client:
+            # when
+            resp = await client.get("/api/v1/changes", params={"cursor": "e1.7"})
+            # then
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(mirror.since, 7)
+
+    async def test_bootstrap_cursor_starts_from_beginning(self):
+        # given
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
+        async with TestClient(TestServer(app)) as client:
+            # when
+            resp = await client.get("/api/v1/changes", params={"cursor": "0"})
+            # then
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(mirror.since, 0)
+
+    async def test_stale_cursor_returns_410(self):
+        # given
+        mirror = _FakeMirror()
+        app = _make_app(mirror)
+        cases = {
+            "other epoch": "e0.7",
+            "legacy integer": "7",
+            "past the end (restored database)": "e1.43",
+        }
+        async with TestClient(TestServer(app)) as client:
+            for label, cursor in cases.items():
+                with self.subTest(label):
+                    # when
+                    resp = await client.get(
+                        "/api/v1/changes", params={"cursor": cursor}
+                    )
+                    # then
+                    self.assertEqual(resp.status, 410)
+        self.assertIsNone(mirror.since)
 
     async def test_invalid_max_size_returns_400(self):
         # given

@@ -1097,6 +1097,11 @@ class Backend(Service, metaclass=ABCMeta):
                 - changes: List of ChangeAction (additions/updates/removals)
                 - next_cursor: Cursor for the next page or next sync
 
+        Raises:
+            StaleCursorError: If the source can no longer continue from
+                *cursor*. Drive then rebuilds the source's cache from the
+                initial cursor.
+
         Example:
             Implementation pattern::
 

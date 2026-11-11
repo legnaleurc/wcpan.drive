@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS pending_enrichment (
     -- Backend instance whose observation was withheld.
     backend TEXT NOT NULL DEFAULT ''
 );
+
+-- Server-wide values. ``epoch`` names this change history: it is random when
+-- the database is created and replaced by ``squash``, so cursors from another
+-- history are recognized as stale.
+CREATE TABLE IF NOT EXISTS metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 SCHEMA_VERSION = 4

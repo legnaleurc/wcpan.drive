@@ -11,7 +11,7 @@ from aiohttp import ClientSession, ClientTimeout
 from wcpan.drive.client.exceptions import NodeExistsError
 from wcpan.drive.client.types import MediaInfo, Node, WritableFile
 
-from ._lib import NodeRecordDict, node_from_record, node_record_from_dict
+from ._lib import NodeRecordDict, node_from_record, node_record_from_dict, node_url
 from .exceptions import (
     SynologyNameTooLongError,
     SynologyPermanentUploadError,
@@ -122,7 +122,7 @@ async def _upload_empty(
     mime_type: str | None,
     media_info: MediaInfo | None,
 ) -> Node:
-    url = f"{server_url}/api/v1/nodes/{parent_id}"
+    url = node_url(server_url, parent_id)
     params = {"name": name}
     if mime_type:
         params["mime_type"] = mime_type
@@ -158,7 +158,7 @@ async def _upload_stream(
     data: AsyncIterator[bytes],
     media_info: MediaInfo | None,
 ) -> Node:
-    url = f"{server_url}/api/v1/nodes/{parent_id}"
+    url = node_url(server_url, parent_id)
     params = {"name": name}
     if mime_type:
         params["mime_type"] = mime_type
@@ -206,7 +206,7 @@ async def _initiate_session(
     mime_type: str | None,
     media_info: MediaInfo | None,
 ) -> str:
-    url = f"{server_url}/api/v1/nodes/{parent_id}/uploads"
+    url = node_url(server_url, parent_id, "uploads")
     body: dict[str, object] = {"name": name, "size": size}
     if mime_type:
         body["mime_type"] = mime_type
