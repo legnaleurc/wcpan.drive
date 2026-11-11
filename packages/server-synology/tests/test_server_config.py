@@ -10,6 +10,7 @@ from wcpan.drive.server.backend import (
     BackendContext,
     BackendRoutes,
     CoreServices,
+    Mounts,
     enter_backend,
 )
 from wcpan.drive.server.services.mirror import MirrorStore
@@ -98,7 +99,7 @@ def _context(
 ) -> BackendContext:
     return BackendContext(
         name="nas",
-        mounts=mounts or {"p": "/volume1/p"},
+        mounts=Mounts.from_sources(mounts or {"p": "/volume1/p"}),
         core=CoreServices(
             mirror=decoy.mock(cls=MirrorStore),
             node_sync=decoy.mock(cls=NodeSyncService),
@@ -121,7 +122,7 @@ class TestFactory(DecoyTestCase):
         resolve = self.decoy.mock(func=create_mount_registry)
         self.decoy.when(
             await resolve(matchers.Anything(), drive_api=self.client)
-        ).then_return(MountRegistry(mounts={}, root_ids={}))
+        ).then_return(MountRegistry(mounts=Mounts.from_sources({}), root_ids={}))
         for target, mock in (
             (f"{_BACKEND}.create_synology_client", connect),
             (f"{_BACKEND}.create_mount_registry", resolve),

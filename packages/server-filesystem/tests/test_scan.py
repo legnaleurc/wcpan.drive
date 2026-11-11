@@ -210,7 +210,9 @@ class TestIdentity(ScanTestCase):
             paths=self.paths,
             blocking=Blocking(executor=self.io_pool),
         )
-        await ensure_mount_nodes(["docs"], mirror=self.mirror, node_sync=self.node_sync)
+        await ensure_mount_nodes(
+            self.mounts, mirror=self.mirror, node_sync=self.node_sync
+        )
         await self.scan()
 
         # then

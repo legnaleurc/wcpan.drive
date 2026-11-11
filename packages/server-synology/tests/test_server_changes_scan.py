@@ -11,6 +11,7 @@ import wcpan.drive.server.synology._scan as startup_scan_mod
 from decoy import matchers
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     mount_id,
@@ -116,7 +117,7 @@ class TestDeferredScan(DecoyTestCase):
             mkey = mount_name(parent_id)
             if mkey is not None:
                 mounts = _self_svc.mounts  # type: ignore[union-attr]
-                return await by_path(_net, mounts[mkey])
+                return await by_path(_net, mounts[mkey].source)
             if list_all is None:
                 raise AssertionError(f"unexpected deep listing for {parent_id!r}")
             return await list_all(_net, parent_id)
@@ -194,7 +195,10 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
+                                    mounts=Mounts.from_sources(
+                                        {"a": "/vol/a", "b": "/vol/b"}
+                                    ),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),
@@ -282,7 +286,8 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a"}, root_ids={}
+                                    mounts=Mounts.from_sources({"a": "/vol/a"}),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),
@@ -361,7 +366,8 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a"}, root_ids={}
+                                    mounts=Mounts.from_sources({"a": "/vol/a"}),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),
@@ -440,7 +446,8 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a"}, root_ids={}
+                                    mounts=Mounts.from_sources({"a": "/vol/a"}),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),
@@ -521,7 +528,8 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a"}, root_ids={}
+                                    mounts=Mounts.from_sources({"a": "/vol/a"}),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),
@@ -606,7 +614,8 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a"}, root_ids={}
+                                    mounts=Mounts.from_sources({"a": "/vol/a"}),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),
@@ -717,7 +726,8 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a"}, root_ids={}
+                                    mounts=Mounts.from_sources({"a": "/vol/a"}),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),
@@ -792,7 +802,10 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
+                                    mounts=Mounts.from_sources(
+                                        {"a": "/vol/a", "b": "/vol/b"}
+                                    ),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),
@@ -886,7 +899,10 @@ class TestDeferredScan(DecoyTestCase):
                             store=SynologyStore(mirror=mirror),
                             syno_paths=SynologyPathService(
                                 registry=MountRegistry(
-                                    mounts={"a": "/vol/a", "b": "/vol/b"}, root_ids={}
+                                    mounts=Mounts.from_sources(
+                                        {"a": "/vol/a", "b": "/vol/b"}
+                                    ),
+                                    root_ids={},
                                 ),
                                 store=SynologyStore(mirror=mirror),
                             ),

@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from decoy import matchers
 from wcpan.drive.protocol.lib import node_record_from_dict
 from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.handlers.nodes import (
     create_node,
     delete_node,
@@ -221,7 +222,7 @@ class _NodesTestCase(DecoyTestCase):
         mirror._nodes.setdefault("new-parent", _make_dir("new-parent"))
         mirror._nodes.setdefault("bad", _make_dir("bad"))
         syno_paths = SynologyPathService(
-            registry=MountRegistry(mounts={}, root_ids={}),
+            registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
             store=mirror,  # type: ignore[arg-type]
         )
         node_sync = NodeSyncService(

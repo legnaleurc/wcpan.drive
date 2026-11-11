@@ -55,7 +55,7 @@ from .keys import (
     WRITE_QUEUE_KEY,
 )
 from .services.mirror import MirrorStore, create_mirror_store
-from .services.mounts import ensure_mount_nodes
+from .services.mounts import Mounts, ensure_mount_nodes
 from .services.off_main import OffMainService
 from .services.operations import OperationInvalidError, OperationNotSupportedError
 from .services.paths import MountSource
@@ -111,6 +111,7 @@ class Core:
     metadata_queue: MetadataQueue
     off_main: OffMainService
     local_paths: LazyLocalPaths
+    mounts: Mounts
 
 
 @asynccontextmanager
@@ -129,13 +130,14 @@ async def managed_core(
     write_queue = create_write_queue()
     metadata_queue = create_metadata_queue()
     local_paths = LazyLocalPaths({n: m.backend for n, m in config.mounts.items()})
+    mounts = Mounts.from_sources({n: m.source for n, m in config.mounts.items()})
     node_sync = NodeSyncService(
         mirror=mirror,
         write_queue=write_queue,
         off_main=off_main,
         mounts={
-            name: MountSource(source=m.source, local_path=local_paths.for_mount(name))
-            for name, m in config.mounts.items()
+            m.id: MountSource(source=m.source, local_path=local_paths.for_mount(m.name))
+            for m in mounts.values()
         },
         metadata_queue=metadata_queue,
     )
@@ -162,6 +164,7 @@ async def managed_core(
             metadata_queue=metadata_queue,
             off_main=off_main,
             local_paths=local_paths,
+            mounts=mounts,
         )
 
 
@@ -182,7 +185,7 @@ async def entered_backends(
             settings = config.backends[name]
             context = BackendContext(
                 name=name,
-                mounts=config.mounts_of(name),
+                mounts=core.mounts.subset(config.mounts_of(name)),
                 core=CoreServices(
                     mirror=core.mirror,
                     node_sync=core.node_sync.for_backend(name),
@@ -218,13 +221,14 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             app[CHANGE_SERVICE_KEY] = core.node_sync
 
             await ensure_mount_nodes(
-                config.mounts, mirror=core.mirror, node_sync=core.node_sync
+                core.mounts, mirror=core.mirror, node_sync=core.node_sync
             )
             backends = await stack.enter_async_context(
                 entered_backends(config, core, offline=False, routes=routes)
             )
             router = BackendRouter(
                 mirror=core.mirror,
+                mounts=core.mounts,
                 mount_backends={n: m.backend for n, m in config.mounts.items()},
                 operations={n: b.operations for n, b in backends.items()},
                 uploaders={n: b.uploader for n, b in backends.items()},

@@ -13,7 +13,7 @@ from unittest import IsolatedAsyncioTestCase
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.mirror import MirrorStore
-from wcpan.drive.server.services.mounts import ensure_mount_nodes
+from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import BackendLocator, NodeObservation
@@ -66,6 +66,10 @@ def _file(node_id: str, parent_id: str) -> NodeRecord:
     )
 
 
+def _mounts(*names: str) -> Mounts:
+    return Mounts.from_sources({name: f"/{name}" for name in names})
+
+
 class TestBackendViews(IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
@@ -96,7 +100,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
             ),
         ]
         await ensure_mount_nodes(
-            ["one", "two"], mirror=self.mirror, node_sync=self.node_sync
+            _mounts("one", "two"), mirror=self.mirror, node_sync=self.node_sync
         )
 
     async def asyncTearDown(self) -> None:
@@ -156,14 +160,16 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         cursor = await self.mirror.get_cursor()
         # when
         await ensure_mount_nodes(
-            ["one", "two"], mirror=self.mirror, node_sync=self.node_sync
+            _mounts("one", "two"), mirror=self.mirror, node_sync=self.node_sync
         )
         # then
         self.assertEqual(await self.mirror.get_cursor(), cursor)
 
         # when
         await ensure_mount_nodes(
-            ["one", "two", "three"], mirror=self.mirror, node_sync=self.node_sync
+            _mounts("one", "two", "three"),
+            mirror=self.mirror,
+            node_sync=self.node_sync,
         )
         # then
         changes, _, _ = await self.mirror.get_changes_since(cursor, 100)

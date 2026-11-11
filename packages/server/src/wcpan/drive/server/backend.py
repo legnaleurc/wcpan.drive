@@ -28,6 +28,8 @@ from aiohttp.typedefs import Handler
 from wcpan.drive.plugin import check_settings
 
 from .services.mirror import MirrorStore
+from .services.mounts import Mount as Mount
+from .services.mounts import Mounts
 from .services.off_main import OffMainService
 from .services.operations import NodeOperations
 from .services.sync import NodeSyncService
@@ -82,8 +84,8 @@ class BackendContext:
     """What the core hands a backend factory, besides the instance's settings."""
 
     name: str
-    # Mount name to source, for the mounts this instance serves.
-    mounts: Mapping[str, str]
+    # The mounts this instance serves. Their node IDs are opaque.
+    mounts: Mounts
     core: CoreServices
     routes: BackendRoutes
     # Maintenance mode: no connection or background work until a command runs.

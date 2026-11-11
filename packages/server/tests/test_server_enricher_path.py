@@ -3,7 +3,8 @@
 from pathlib import Path
 from unittest import TestCase
 
-from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.paths import (
     MountSource,
     map_by_prefix,
@@ -15,8 +16,12 @@ from wcpan.drive.server.services.paths import (
 
 def _mount(
     name: str, source: str, local_paths: dict[str, str]
-) -> dict[str, MountSource]:
-    return {name: MountSource(source=source, local_path=map_by_prefix(local_paths))}
+) -> dict[NodeId, MountSource]:
+    return {
+        mount_id(name): MountSource(
+            source=source, local_path=map_by_prefix(local_paths)
+        )
+    }
 
 
 def _node(

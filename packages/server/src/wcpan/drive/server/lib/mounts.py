@@ -1,6 +1,4 @@
-"""Virtual-ID grammar and mount-node helpers."""
-
-from collections.abc import Iterable
+"""Virtual-ID grammar and mount-node helpers; private to the core."""
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE, utc_now
 from wcpan.drive.protocol.types import NodeId, NodeRecord
@@ -30,7 +28,7 @@ def mount_name(node_id: NodeId) -> str | None:
     return str(node_id)[1:]
 
 
-def _virtual_directory(
+def virtual_directory(
     node_id: NodeId, parent_id: NodeId | None, name: str
 ) -> NodeRecord:
     now = utc_now()
@@ -52,10 +50,3 @@ def _virtual_directory(
         height=0,
         ms_duration=0,
     )
-
-
-def structural_records(mount_names: Iterable[str]) -> list[NodeRecord]:
-    """The server root and one virtual directory per mount."""
-    return [_virtual_directory(SERVER_ROOT_ID, None, "")] + [
-        _virtual_directory(mount_id(name), SERVER_ROOT_ID, name) for name in mount_names
-    ]

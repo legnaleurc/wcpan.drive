@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     mount_id,
@@ -59,9 +60,8 @@ async def _reconcile_with_worker(
             mounts={},
             metadata_queue=mq,
         )
-        syno_mounts = {k: SynologyPath(v) for k, v in mounts.items()}
         syno_paths = SynologyPathService(
-            registry=MountRegistry(mounts=syno_mounts, root_ids={}),
+            registry=MountRegistry(mounts=Mounts.from_sources(mounts), root_ids={}),
             store=SynologyStore(mirror=mirror),
         )
         bf = BackfillService(

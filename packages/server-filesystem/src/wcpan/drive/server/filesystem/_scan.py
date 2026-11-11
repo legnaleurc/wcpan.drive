@@ -26,8 +26,8 @@ from logging import getLogger
 
 from wcpan.drive.protocol.lib import guess_mime_type
 from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.bfs import parallel_bfs
-from wcpan.drive.server.lib.mounts import mount_id, mount_name
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.operations import LocateUndecidedError
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
@@ -148,6 +148,10 @@ class FilesystemScanner:
         self._sweep_staging_after = sweep_staging_after
         self._live_staging = set[str]()
 
+    @property
+    def mounts(self) -> Mounts:
+        return self._paths.mounts
+
     def hold_staging(self, name: str) -> None:
         """Keep the staging file *name* from being swept while an upload uses it."""
         self._live_staging.add(name)
@@ -157,7 +161,7 @@ class FilesystemScanner:
 
     async def scan(self) -> None:
         """One full pass over every mount."""
-        mounts = {mount_id(name) for name in self._paths.mounts}
+        mounts = {m.id for m in self._paths.mounts.values()}
         await self._pass(mounts, scoped=None)
 
     async def scan_folders(self, folder_ids: Iterable[NodeId]) -> None:
@@ -180,9 +184,9 @@ class FilesystemScanner:
             if folder_id in visited:
                 continue
             visited.add(folder_id)
-            if mount_name(folder_id) is not None or await self._still_present(
+            if self._paths.mounts.by_id(
                 folder_id
-            ):
+            ) is not None or await self._still_present(folder_id):
                 present.add(folder_id)
                 continue
             record = await self._mirror.get_node_by_id(folder_id)
@@ -306,12 +310,11 @@ class FilesystemScanner:
 
     async def _folder_path(self, folder_id: NodeId) -> str | None:
         """The directory to list, or ``None`` when it cannot be read safely."""
-        name = mount_name(folder_id)
-        if name is not None:
-            root = self._paths.mounts.get(name)
-            if root is None or not await self._source_present(name, root):
+        mount = self._paths.mounts.by_id(folder_id)
+        if mount is not None:
+            if not await self._source_present(mount.name, mount.source):
                 return None
-            return root
+            return mount.source
         return await self._paths.path_of(folder_id)
 
     async def locate(self, node_id: NodeId) -> NodeObservation | None:

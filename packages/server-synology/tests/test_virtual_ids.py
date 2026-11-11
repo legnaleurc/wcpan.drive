@@ -6,6 +6,7 @@ from unittest import TestCase
 
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     is_mount_node_id,
@@ -29,7 +30,7 @@ from wcpan.synology import (
     SynologyPath,
 )
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, mounts_of
 
 
 def _info(**fields: object) -> SynologyFileInfo:
@@ -126,7 +127,7 @@ class _PathTestCase(DecoyTestCase):
 
     def _service(self, mounts: dict[str, SynologyPath] | None = None):
         return SynologyPathService(
-            registry=MountRegistry(mounts=mounts or {}, root_ids={}),
+            registry=MountRegistry(mounts=mounts_of(mounts or {}), root_ids={}),
             store=self.store,
         )
 
@@ -167,9 +168,9 @@ class TestCreateMountRegistry(_PathTestCase):
 
     async def test_empty_mounts(self):
         # when
-        registry = await create_mount_registry({}, drive_api=self.drive_api)
+        registry = await create_mount_registry(Mounts(), drive_api=self.drive_api)
         # then
-        self.assertEqual(registry.mounts, {})
+        self.assertEqual(registry.paths, {})
         self.assertIsNone(
             registry.lookup_mount_virtual_id(SynologyFileId(file_id="unknown"))
         )
@@ -182,9 +183,11 @@ class TestCreateMountRegistry(_PathTestCase):
         }
         await self._stub_roots(mounts)
         # when
-        registry = await create_mount_registry(mounts, drive_api=self.drive_api)
+        registry = await create_mount_registry(
+            mounts_of(mounts), drive_api=self.drive_api
+        )
         # then
-        self.assertEqual(registry.mounts, mounts)
+        self.assertEqual(registry.paths, mounts)
         self.assertEqual(
             registry.lookup_mount_virtual_id(SynologyFileId(file_id="id-1")),
             "_photos",
@@ -202,7 +205,7 @@ class TestCreateMountRegistry(_PathTestCase):
         }
         # when / then
         with self.assertRaises(ValueError):
-            await create_mount_registry(mounts, drive_api=self.drive_api)
+            await create_mount_registry(mounts_of(mounts), drive_api=self.drive_api)
         # then
         await self._verify_no_lookup()
 
@@ -214,7 +217,7 @@ class TestCreateMountRegistry(_PathTestCase):
         }
         # when / then
         with self.assertRaises(ValueError):
-            await create_mount_registry(mounts, drive_api=self.drive_api)
+            await create_mount_registry(mounts_of(mounts), drive_api=self.drive_api)
 
     async def test_prefix_but_not_subdirectory_is_ok(self):
         # given
@@ -224,7 +227,9 @@ class TestCreateMountRegistry(_PathTestCase):
         }
         await self._stub_roots(mounts)
         # when
-        registry = await create_mount_registry(mounts, drive_api=self.drive_api)
+        registry = await create_mount_registry(
+            mounts_of(mounts), drive_api=self.drive_api
+        )
         # then
         self.assertEqual(
             registry.lookup_mount_virtual_id(SynologyFileId(file_id="id-1")),
@@ -243,7 +248,7 @@ class TestCreateMountRegistry(_PathTestCase):
         }
         # when / then
         with self.assertRaises(ValueError):
-            await create_mount_registry(mounts, drive_api=self.drive_api)
+            await create_mount_registry(mounts_of(mounts), drive_api=self.drive_api)
 
 
 class TestFindChildByName(_PathTestCase):

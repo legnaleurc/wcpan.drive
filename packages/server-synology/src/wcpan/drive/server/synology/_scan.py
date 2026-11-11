@@ -7,7 +7,6 @@ from logging import getLogger
 
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.lib.bfs import parallel_bfs
-from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -239,7 +238,7 @@ class StartupScanService:
         pre_scan_max_ids: dict[str, int] = {
             name: last_max_ids.get(name, 0) for name in self._syno_paths.mounts
         }
-        mount_ids = {mount_id(n) for n in self._syno_paths.mounts}
+        mount_ids = {m.id for m in self._syno_paths.mounts.values()}
 
         async with reconcile_session(
             mount_ids,
@@ -248,9 +247,9 @@ class StartupScanService:
             locate=partial(self._syno_paths.locate, self._drive_api),
         ) as session:
             acc = ScanAccumulator(session=session)
-            for name, syno_path in self._syno_paths.mounts.items():
+            for name, syno_path in self._syno_paths.paths.items():
                 _L.debug("Scanning mount %r (%s)", name, syno_path)
-                mid = mount_id(name)
+                mid = self._syno_paths.mounts[name].id
                 mount_last = last_max_ids.get(name, 0)
                 try:
                     async with self._node_sync.observe() as level_read:
@@ -287,7 +286,7 @@ class StartupScanService:
 
         The root and mount nodes already exist; the core creates them.
         """
-        last_max_ids = await self._store.get_mount_max_ids(self._syno_paths.mounts)
+        last_max_ids = await self._store.get_mount_max_ids(self._syno_paths.paths)
         if not any(last_max_ids.values()):
             _L.info(
                 "First run: performing full scan of %d mount(s)",
@@ -306,7 +305,7 @@ class StartupScanService:
                     partial(
                         self._store.set_mount_state,
                         name,
-                        self._syno_paths.mounts[name].path,
+                        self._syno_paths.paths[name].path,
                         checkpoint,
                     )
                 )

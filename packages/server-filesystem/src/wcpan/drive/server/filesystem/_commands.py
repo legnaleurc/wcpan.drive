@@ -5,8 +5,8 @@ server stopped.
 """
 
 import argparse
-from collections.abc import Mapping
 
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.services.mirror import MirrorStore
 
 from ._handles import filesystem_id
@@ -27,13 +27,12 @@ def command_parser(name: str) -> argparse.ArgumentParser:
     return parser
 
 
-async def rebind_mount(
-    mirror: MirrorStore, mounts: Mapping[str, str], mount: str
-) -> str:
+async def rebind_mount(mirror: MirrorStore, mounts: Mounts, mount: str) -> str:
     """Record the filesystem *mount*'s source is on now."""
-    source = mounts.get(mount)
-    if source is None:
+    entry = mounts.get(mount)
+    if entry is None:
         raise ValueError(f"{mount!r} is not a mount of this backend")
+    source = entry.source
     fsid = filesystem_id(source)
     await FilesystemStore(mirror=mirror).set_mount_fsid(mount, source, fsid)
     return fsid

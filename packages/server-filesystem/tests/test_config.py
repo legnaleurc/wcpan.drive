@@ -11,6 +11,7 @@ from wcpan.drive.server.backend import (
     BackendContext,
     BackendRoutes,
     CoreServices,
+    Mounts,
     enter_backend,
 )
 from wcpan.drive.server.filesystem import create_backend
@@ -36,19 +37,29 @@ class TestFilesystemSettings(TestCase):
     def test_mounts_must_be_absolute(self) -> None:
         # when / then
         with self.assertRaises(ValueError):
-            check_mounts({"docs": "relative/docs"})
+            check_mounts(Mounts.from_sources({"docs": "relative/docs"}))
 
     def test_nested_mounts_are_rejected(self) -> None:
         # when / then
         with self.assertRaises(ValueError):
-            check_mounts({"a": "/srv/data", "b": "/srv/data/inner/"})
+            check_mounts(
+                Mounts.from_sources({"a": "/srv/data", "b": "/srv/data/inner/"})
+            )
 
     def test_sibling_prefix_is_not_nested(self) -> None:
         # when / then
         self.assertEqual(
-            check_mounts({"a": "/srv/data", "b": "/srv/data2/"}),
+            _sources(
+                check_mounts(
+                    Mounts.from_sources({"a": "/srv/data", "b": "/srv/data2/"})
+                )
+            ),
             {"a": "/srv/data", "b": "/srv/data2"},
         )
+
+
+def _sources(mounts: Mounts) -> dict[str, str]:
+    return {name: m.source for name, m in mounts.items()}
 
 
 def _context(mounts: dict[str, str]) -> BackendContext:
@@ -56,7 +67,7 @@ def _context(mounts: dict[str, str]) -> BackendContext:
     mirror.register_schema = AsyncMock()
     return BackendContext(
         name="disk",
-        mounts=mounts,
+        mounts=Mounts.from_sources(mounts),
         core=CoreServices(mirror=mirror, node_sync=MagicMock(), off_main=MagicMock()),
         routes=BackendRoutes(name="disk"),
         offline=True,
@@ -85,7 +96,7 @@ class TestFactory(IsolatedAsyncioTestCase):
             _context({"docs": "/srv/docs/"}), rescan_interval=60
         ) as backend:
             # then
-            self.assertEqual(backend.mounts, {"docs": "/srv/docs"})
+            self.assertEqual(_sources(backend.mounts), {"docs": "/srv/docs"})
 
     async def test_media_is_probed_at_source_paths_by_default(self) -> None:
         # when

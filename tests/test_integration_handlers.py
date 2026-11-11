@@ -18,6 +18,7 @@ from wcpan.drive.client.feed._lib import node_record_from_dict
 from wcpan.drive.client.feed.writable import _media_info_to_params
 from wcpan.drive.client.types import MediaInfo
 from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.handlers.changes import get_root
 from wcpan.drive.server.handlers.health import put_null
 from wcpan.drive.server.handlers.nodes import upload_node
@@ -142,7 +143,7 @@ def _make_app(
         ),
     )
     syno_paths = SynologyPathService(
-        registry=MountRegistry(mounts={}, root_ids={}),
+        registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
         store=mirror,  # type: ignore[arg-type]
     )
     node_sync = NodeSyncService(

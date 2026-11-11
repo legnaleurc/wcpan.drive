@@ -7,7 +7,6 @@ from logging import getLogger
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
 from wcpan.drive.server.lib.debounce import TaskIdDebouncer
-from wcpan.drive.server.lib.mounts import mount_name
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation, ReadSeq
@@ -306,19 +305,10 @@ class WebhookService:
     async def _is_node_under_configured_mount(self, node: NodeRecord) -> bool:
         if node.parent_id is None:
             return False
-
-        direct_mount = mount_name(node.parent_id)
-        if direct_mount is not None:
-            return direct_mount in self._mount_registry.mounts
-
-        ancestors = await self._mirror.get_ancestors(node.id)
-        if not ancestors:
-            return False
-        top = ancestors[-1]
-        if top.parent_id is None:
-            return False
-        ancestor_mount = mount_name(top.parent_id)
-        return ancestor_mount in self._mount_registry.mounts
+        mounts = self._mount_registry.mounts
+        if mounts.by_id(node.parent_id) is not None:
+            return True
+        return await mounts.containing(node.id, mirror=self._mirror) is not None
 
     async def _scan_moved_dir_subtree(self, folder_id: NodeId) -> None:
         """BFS-populate children of a moved directory not delivered by the webhook."""

@@ -6,7 +6,6 @@ from pathlib import PurePosixPath
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.bfs import parallel_bfs
-from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, mount_id, mount_name
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.paths import VirtualPathService
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
@@ -90,11 +89,11 @@ class BackfillService:
 
         Removals are decided at the end of the pass (see ``ReconcileSession``).
         """
-        own = {mount_id(name) for name in self._syno_paths.mounts}
-        if root_node_id == SERVER_ROOT_ID:
+        mounts = self._syno_paths.mounts
+        if root_node_id == mounts.root_id:
             roots = await self._mirror.get_children(root_node_id)
-            initial = [c.id for c in roots if c.id in own]
-        elif await self._mount_of(root_node_id) in own:
+            initial = [c.id for c in roots if mounts.by_id(c.id) is not None]
+        elif await mounts.containing(root_node_id, mirror=self._mirror) is not None:
             initial = [root_node_id]
         else:
             initial = []
@@ -112,12 +111,6 @@ class BackfillService:
             return await self._reconcile_in_session(
                 initial, session=session, dry_run=dry_run
             )
-
-    async def _mount_of(self, node_id: NodeId) -> NodeId | None:
-        if mount_name(node_id) is not None:
-            return node_id
-        ancestors = await self._mirror.get_ancestors(node_id)
-        return ancestors[-1].parent_id if ancestors else None
 
     async def _reconcile_in_session(
         self,

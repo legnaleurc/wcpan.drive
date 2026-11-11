@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from decoy import matchers
 from wcpan.drive.protocol.lib import node_record_from_dict
 from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.handlers.nodes import create_node, upload_node
 from wcpan.drive.server.handlers.upload import (
     create_upload_session,
@@ -153,7 +154,7 @@ def _make_app(
     wq = create_write_queue()
     mirror._nodes.setdefault("parent-a", _make_dir("parent-a"))
     syno_paths = SynologyPathService(
-        registry=MountRegistry(mounts={}, root_ids={}),
+        registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
         store=mirror,  # type: ignore[arg-type]
     )
     node_sync = NodeSyncService(

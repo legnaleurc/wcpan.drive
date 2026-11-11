@@ -21,7 +21,7 @@ from wcpan.drive.server.filesystem._store import FILESYSTEM_SCHEMA, FilesystemSt
 from wcpan.drive.server.filesystem._watch import DirectoryWatcher
 from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.mirror import MirrorStore
-from wcpan.drive.server.services.mounts import ensure_mount_nodes
+from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.workers import (
@@ -74,7 +74,8 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             ),
         ]
         self.store = FilesystemStore(mirror=self.mirror)
-        self.paths = NodePaths(mirror=self.mirror, mounts={"docs": str(self.source)})
+        self.mounts = Mounts.from_sources({"docs": str(self.source)})
+        self.paths = NodePaths(mirror=self.mirror, mounts=self.mounts)
         blocking = Blocking(executor=self.io_pool)
         self.watcher = DirectoryWatcher.create() if self.watch else None
         if self.watcher is not None:
@@ -104,7 +105,9 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             blocking=blocking,
             read_only=self.read_only,
         )
-        await ensure_mount_nodes(["docs"], mirror=self.mirror, node_sync=self.node_sync)
+        await ensure_mount_nodes(
+            self.mounts, mirror=self.mirror, node_sync=self.node_sync
+        )
 
     async def asyncTearDown(self) -> None:
         if self.watcher is not None:

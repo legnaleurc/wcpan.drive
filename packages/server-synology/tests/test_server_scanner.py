@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from unittest.mock import AsyncMock, patch
 
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -18,7 +19,7 @@ from wcpan.drive.server.types import WriteQueue
 from wcpan.drive.server.workers import create_write_queue
 from wcpan.synology import SynologyClient, SynologyPath
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, mounts_of
 
 
 class TestScannerWriteBack(DecoyTestCase):
@@ -64,7 +65,9 @@ class TestScannerWriteBack(DecoyTestCase):
                         mirror=mirror,
                         store=SynologyStore(mirror=mirror),
                         syno_paths=SynologyPathService(
-                            registry=MountRegistry(mounts=mounts, root_ids={}),
+                            registry=MountRegistry(
+                                mounts=mounts_of(mounts), root_ids={}
+                            ),
                             store=SynologyStore(mirror=mirror),
                         ),
                         node_sync=cs,

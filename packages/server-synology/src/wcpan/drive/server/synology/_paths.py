@@ -1,7 +1,7 @@
 """Bridge between mirror node IDs and Synology Drive API references."""
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server.lib.mounts import mount_name
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.names import normalize_name
 from wcpan.drive.server.services.operations import LocateUndecidedError
 from wcpan.drive.server.types import NodeObservation
@@ -40,17 +40,22 @@ class SynologyPathService:
         self._store = store
 
     @property
-    def mounts(self) -> dict[str, SynologyPath]:
+    def mounts(self) -> Mounts:
         return self._registry.mounts
+
+    @property
+    def paths(self) -> dict[str, SynologyPath]:
+        """Synology path of each mount, by mount name."""
+        return self._registry.paths
 
     async def synology_parent_ref(
         self,
         parent_node_id: NodeId,
     ) -> SynologyParentRef:
         """Translate a mirror parent node ID into a Synology API parent ref."""
-        key = mount_name(parent_node_id)
-        if key is not None:
-            return self._registry.mounts[key]
+        mount = self._registry.mounts.by_id(parent_node_id)
+        if mount is not None:
+            return self._registry.paths[mount.name]
         return await self._resolve_locator_ref(parent_node_id)
 
     async def resolve_parent(

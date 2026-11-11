@@ -8,7 +8,7 @@ from logging import getLogger
 from pathlib import Path
 from typing import Annotated
 
-from wcpan.drive.server.backend import BackendContext, CoreServices
+from wcpan.drive.server.backend import BackendContext, CoreServices, Mounts
 from wcpan.drive.server.services.paths import map_by_prefix
 from wcpan.drive.server.services.upload import UPLOAD_SESSION_TTL
 
@@ -145,7 +145,7 @@ class FilesystemBackend:
         *,
         context: BackendContext,
         config: FilesystemConfig,
-        mounts: dict[str, str],
+        mounts: Mounts,
     ) -> None:
         self._context = context
         self._config = config
@@ -162,7 +162,7 @@ class FilesystemBackend:
         return self._context.name
 
     @property
-    def mounts(self) -> dict[str, str]:
+    def mounts(self) -> Mounts:
         return self._mounts
 
     def local_path(self, source_path: str) -> Path | None:

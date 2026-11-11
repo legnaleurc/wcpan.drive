@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     mount_id,
@@ -49,7 +50,7 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, mounts_of
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -300,7 +301,7 @@ class TestStaleEnrichment(_RaceTestCase):
 class TestBackfillOrdering(_RaceTestCase):
     def backfill(self) -> tuple[BackfillService, SynologyPathService]:
         syno_paths = SynologyPathService(
-            registry=MountRegistry(mounts=self.mounts, root_ids={}),
+            registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
             store=SynologyStore(mirror=self.mirror),
         )
         backfill = BackfillService(
@@ -385,7 +386,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         await self.mirror.apply_observations([_obs(self.a), _obs(self.b), _obs(self.x)])
         self.drive_api = self.decoy.mock(cls=SynologyClient)
         self.syno_paths = SynologyPathService(
-            registry=MountRegistry(mounts=self.mounts, root_ids={}),
+            registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
             store=SynologyStore(mirror=self.mirror),
         )
 
@@ -490,7 +491,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         x = _node("x", "a")
         await self.mirror.apply_observations([_obs(a), _obs(b), _obs(x)])
         syno_paths = SynologyPathService(
-            registry=MountRegistry(mounts=self.mounts, root_ids={}),
+            registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
             store=SynologyStore(mirror=self.mirror),
         )
         drive_api = self.decoy.mock(cls=SynologyClient)

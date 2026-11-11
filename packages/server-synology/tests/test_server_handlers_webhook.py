@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.debounce import TaskIdDebouncer
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -45,7 +46,9 @@ _FAKE_SYNO_INFO: SynologyFileInfo = {
     "sync_id": 1,
 }
 
-_VIDEO_MOUNT = MountRegistry(mounts={"video": "/team-folders/video/L"}, root_ids={})
+_VIDEO_MOUNT = MountRegistry(
+    mounts=Mounts.from_sources({"video": "/team-folders/video/L"}), root_ids={}
+)
 
 
 def _make_node(
@@ -92,7 +95,8 @@ class _WebhookTestCase(DecoyTestCase):
             store=self.store,
             node_sync=self.node_sync,
             syno_paths=self.syno_paths,
-            mount_registry=mount_registry or MountRegistry(mounts={}, root_ids={}),
+            mount_registry=mount_registry
+            or MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
         )
 
     async def _stub_source(self, node: NodeRecord) -> None:
@@ -189,7 +193,7 @@ class TestFetchAndEnrich(_WebhookTestCase):
     async def test_parent_resolved_via_mount(self):
         # given
         registry = MountRegistry(
-            mounts={},
+            mounts=Mounts.from_sources({}),
             root_ids={
                 SynologyFileId(file_id="real-parent"): NodeId("_docs"),
             },
@@ -544,7 +548,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         # given
         await self._stub_source(_make_node("f1", NodeId("_video")))
         registry = MountRegistry(
-            mounts={"video": "/team-folders/video/L"},
+            mounts=Mounts.from_sources({"video": "/team-folders/video/L"}),
             root_ids={
                 SynologyFileId(file_id="mount-root"): NodeId("_video"),
             },

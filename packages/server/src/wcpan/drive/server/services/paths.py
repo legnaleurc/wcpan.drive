@@ -1,7 +1,7 @@
 """Path services over the mirror.
 
 - ``LocalPathService``    — resolve node records to host-filesystem paths
-                            (holds *mirror* and per-mount *MountSource*)
+                            (holds *mirror* and *MountSource* by mount node ID)
 - ``VirtualPathService``  — resolve client-facing virtual paths to node IDs
                             (holds *mirror*)
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from ..lib.mounts import SERVER_ROOT_ID, is_virtual, mount_name
+from ..lib.mounts import SERVER_ROOT_ID, is_virtual
 from ..types import VirtualPath
 from .mirror import MirrorStore
 
@@ -57,7 +57,7 @@ class LocalPathService:
         self,
         *,
         mirror: MirrorStore,
-        mounts: Mapping[str, MountSource],
+        mounts: Mapping[NodeId, MountSource],
     ) -> None:
         self._mirror = mirror
         self._mounts = mounts
@@ -130,7 +130,7 @@ def _virtual_path_segments(virtual_path: VirtualPath) -> list[str]:
 
 
 def _resolve_local_path(
-    mounts: Mapping[str, MountSource],
+    mounts: Mapping[NodeId, MountSource],
     record: NodeRecord,
     node_cache: dict[str, NodeRecord | None],
 ) -> Path | None:
@@ -147,11 +147,7 @@ def _resolve_local_path(
 
     if not current.parent_id:
         return None
-    mname = mount_name(current.parent_id)
-    if mname is None:
-        return None
-
-    mount = mounts.get(mname)
+    mount = mounts.get(current.parent_id)
     if mount is None:
         return None
 

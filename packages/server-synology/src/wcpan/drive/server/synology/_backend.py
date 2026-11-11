@@ -8,10 +8,10 @@ from logging import getLogger
 from pathlib import Path
 from typing import Annotated
 
-from wcpan.drive.server.backend import BackendContext
+from wcpan.drive.server.backend import BackendContext, Mounts
 from wcpan.drive.server.services.paths import map_by_prefix
 from wcpan.drive.server.services.spool import SpooledFiles, create_spool_area
-from wcpan.synology import SynologyClient, SynologyPath
+from wcpan.synology import SynologyClient
 
 from ._backfill import BackfillService
 from ._commands import command_parser, print_stats
@@ -104,9 +104,6 @@ class SynologyBackend:
     def __init__(self, *, context: BackendContext, config: SynologyConfig) -> None:
         self._context = context
         self._config = config
-        self._mounts = {
-            name: SynologyPath(source) for name, source in context.mounts.items()
-        }
         self._local_path = map_by_prefix(config.local_paths)
         self._webhook_queue = create_webhook_queue()
         self._scan_done = asyncio.Event()
@@ -121,8 +118,8 @@ class SynologyBackend:
         return self._config
 
     @property
-    def mounts(self) -> dict[str, SynologyPath]:
-        return self._mounts
+    def mounts(self) -> Mounts:
+        return self._context.mounts
 
     def local_path(self, source_path: str) -> Path | None:
         return self._local_path(source_path)
@@ -171,7 +168,9 @@ class SynologyBackend:
         """Log in and resolve the mount roots."""
         async with create_synology_client(self._config) as drive_api:
             store = SynologyStore(mirror=self._context.core.mirror)
-            registry = await create_mount_registry(self._mounts, drive_api=drive_api)
+            registry = await create_mount_registry(
+                self._context.mounts, drive_api=drive_api
+            )
             yield _Connection(
                 drive_api=drive_api,
                 store=store,

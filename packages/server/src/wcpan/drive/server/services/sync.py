@@ -61,7 +61,7 @@ class NodeSyncService:
         mirror: MirrorStore,
         write_queue: WriteQueue,
         off_main: OffMainService,
-        mounts: Mapping[str, MountSource],
+        mounts: Mapping[NodeId, MountSource],
         metadata_queue: MetadataQueue,
     ) -> None:
         self._mirror = mirror

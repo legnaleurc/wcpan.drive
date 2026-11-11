@@ -5,8 +5,9 @@ paths unless ``local_paths`` maps them elsewhere.
 """
 
 import os
-from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from wcpan.drive.server.backend import Mounts
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -26,14 +27,15 @@ class FilesystemConfig:
             raise ValueError("rescan_interval must be positive")
 
 
-def check_mounts(mounts: Mapping[str, str]) -> dict[str, str]:
-    """Normalized mount sources; rejects relative and nested sources."""
-    normalized: dict[str, str] = {}
-    for name, source in mounts.items():
-        if not os.path.isabs(source):
-            raise ValueError(f"Mount {name!r} source {source!r} is not absolute")
-        normalized[name] = os.path.normpath(source)
-    sources = sorted(normalized.values())
+def check_mounts(mounts: Mounts) -> Mounts:
+    """*mounts* with normalized sources; rejects relative and nested sources."""
+    for name, mount in mounts.items():
+        if not os.path.isabs(mount.source):
+            raise ValueError(f"Mount {name!r} source {mount.source!r} is not absolute")
+    normalized = Mounts(
+        replace(m, source=os.path.normpath(m.source)) for m in mounts.values()
+    )
+    sources = sorted(m.source for m in normalized.values())
     for i, a in enumerate(sources):
         for b in sources[i + 1 :]:
             if b == a or b.startswith(a.rstrip("/") + "/"):

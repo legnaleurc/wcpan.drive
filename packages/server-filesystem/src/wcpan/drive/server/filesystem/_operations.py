@@ -16,7 +16,6 @@ from logging import getLogger
 from typing import BinaryIO
 
 from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
-from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.operations import (
     OperationConflictError,
@@ -103,7 +102,7 @@ class _Writes:
             raise OperationNotSupportedError(_READ_ONLY)
 
     async def _folder(self, folder_id: NodeId) -> str:
-        if folder_id == SERVER_ROOT_ID:
+        if folder_id == self._scanner.mounts.root_id:
             raise OperationNotSupportedError("Cannot change the server root")
         path = await self._scanner.folder_path(folder_id)
         if path is None:

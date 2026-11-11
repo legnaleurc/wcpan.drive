@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections.abc import Mapping
 from unittest import IsolatedAsyncioTestCase
 
 from aiohttp import web
@@ -7,6 +8,13 @@ from aiohttp.base_protocol import BaseProtocol
 from aiohttp.streams import StreamReader
 from aiohttp.test_utils import make_mocked_request
 from decoy import Decoy
+from wcpan.drive.server.backend import Mounts
+from wcpan.synology import SynologyPath
+
+
+def mounts_of(paths: Mapping[str, SynologyPath]) -> Mounts:
+    """Mounts with the given Synology paths as their sources."""
+    return Mounts.from_sources({name: p.path for name, p in paths.items()})
 
 
 class DecoyTestCase(IsolatedAsyncioTestCase):

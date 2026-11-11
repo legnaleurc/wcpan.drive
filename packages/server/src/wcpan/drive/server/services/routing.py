@@ -5,8 +5,8 @@ from contextlib import AbstractAsyncContextManager
 
 from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 
-from ..lib.mounts import SERVER_ROOT_ID, mount_name
 from .mirror import MirrorStore
+from .mounts import Mounts
 from .operations import (
     NodeOperations,
     OperationNotSupportedError,
@@ -22,12 +22,14 @@ class BackendRouter:
         self,
         *,
         mirror: MirrorStore,
+        mounts: Mounts,
         mount_backends: Mapping[str, str],
         operations: Mapping[str, NodeOperations],
         uploaders: Mapping[str, Uploader],
         files: Mapping[str, FileOpener],
     ) -> None:
         self._mirror = mirror
+        self._mounts = mounts
         self._mount_backends = mount_backends
         self._operations = operations
         self._uploaders = uploaders
@@ -35,15 +37,10 @@ class BackendRouter:
 
     async def backend_of(self, node_id: NodeId) -> str:
         """The backend instance serving the mount that contains *node_id*."""
-        if node_id == SERVER_ROOT_ID:
+        if node_id == self._mounts.root_id:
             raise OperationNotSupportedError("Cannot change the server root")
-        name = mount_name(node_id)
-        if name is None:
-            ancestors = await self._mirror.get_ancestors(node_id)
-            top = ancestors[-1] if ancestors else None
-            if top is not None and top.parent_id is not None:
-                name = mount_name(top.parent_id)
-        backend = self._mount_backends.get(name) if name is not None else None
+        mount = await self._mounts.containing(node_id, mirror=self._mirror)
+        backend = self._mount_backends.get(mount.name) if mount is not None else None
         if backend is None:
             raise OperationUnavailableError(f"{node_id} is not in a configured mount")
         return backend

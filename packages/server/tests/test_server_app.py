@@ -61,7 +61,8 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         async with asyncio.timeout(5):
             await self.backend.running.wait()
         # then
-        self.assertEqual(self.backend.context.mounts, {"docs": "/docs"})
+        mounts = self.backend.context.mounts
+        self.assertEqual({n: m.source for n, m in mounts.items()}, {"docs": "/docs"})
         self.assertFalse(self.backend.context.offline)
 
         # when / then
