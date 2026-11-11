@@ -7,6 +7,7 @@ aiohttp.test_utils.TestClient.  No real Synology connection is needed.
 
 import asyncio
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from unittest import IsolatedAsyncioTestCase
@@ -17,7 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from wcpan.drive.client.feed._lib import node_record_from_dict
 from wcpan.drive.client.feed.writable import _media_info_to_params
 from wcpan.drive.client.types import MediaInfo
-from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.handlers.changes import get_root
 from wcpan.drive.server.handlers.health import put_null
@@ -114,6 +115,22 @@ class _FakeMirror:
         }
 
 
+class _IdentityIds:
+    """``NodeIdMap`` whose public IDs are the permanent links themselves."""
+
+    async def public(self, natives: Sequence[str]) -> list[NodeId]:
+        return [NodeId(n) for n in natives]
+
+    async def lookup(self, native: str) -> NodeId | None:
+        return NodeId(native)
+
+    async def native_of(self, node_id: NodeId) -> str:
+        return str(node_id)
+
+    def mint(self) -> NodeId:
+        raise AssertionError("Synology does not mint IDs")
+
+
 def _make_app(
     mirror: _FakeMirror,
     spool: SpoolArea,
@@ -145,6 +162,7 @@ def _make_app(
     syno_paths = SynologyPathService(
         registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
         store=mirror,  # type: ignore[arg-type]
+        ids=_IdentityIds(),
     )
     node_sync = NodeSyncService(
         mirror=mirror,

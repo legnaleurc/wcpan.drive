@@ -29,7 +29,7 @@ from wcpan.drive.server.types import (
 from wcpan.drive.server.workers import create_write_queue, metadata_worker
 from wcpan.synology import SynologyClient, SynologyFileId
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, IdentityIds
 
 
 def _node(
@@ -188,15 +188,20 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources(
                                         {"a": "/vol/a", "b": "/vol/b"}
                                     ),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )
@@ -279,13 +284,18 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=drive_api,
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources({"a": "/vol/a"}),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )
@@ -359,13 +369,18 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources({"a": "/vol/a"}),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )
@@ -439,13 +454,18 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources({"a": "/vol/a"}),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )
@@ -521,13 +541,18 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources({"a": "/vol/a"}),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )
@@ -607,13 +632,18 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources({"a": "/vol/a"}),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )
@@ -719,13 +749,18 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=drive_api,
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources({"a": "/vol/a"}),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )
@@ -795,15 +830,20 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=self.decoy.mock(cls=SynologyClient),
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources(
                                         {"a": "/vol/a", "b": "/vol/b"}
                                     ),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )
@@ -892,15 +932,20 @@ class TestDeferredScan(DecoyTestCase):
                         svc = StartupScanService(
                             drive_api=drive_api,
                             mirror=mirror,
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                             syno_paths=SynologyPathService(
+                                ids=IdentityIds(),
                                 registry=MountRegistry(
                                     mounts=Mounts.from_sources(
                                         {"a": "/vol/a", "b": "/vol/b"}
                                     ),
                                     root_ids={},
                                 ),
-                                store=SynologyStore(mirror=mirror),
+                                store=SynologyStore(
+                                    mirror=mirror, ns=mirror.namespace("synology")
+                                ),
                             ),
                             node_sync=cs,
                         )

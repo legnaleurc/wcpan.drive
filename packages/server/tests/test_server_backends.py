@@ -11,7 +11,11 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.services.mirror import MirrorStore
+from wcpan.drive.server.services.mirror import (
+    BackendNamespace,
+    MirrorStore,
+    SchemaVersionError,
+)
 from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes, mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -26,21 +30,28 @@ from wcpan.drive.server.workers import (
 
 
 class _RecordingSchema:
-    def __init__(self) -> None:
+    def __init__(self, version: int = 1) -> None:
+        self.version = version
         self.bound: list[tuple[str, str]] = []
 
-    def ensure_schema(self, con: sqlite3.Connection) -> None:
+    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         pass
 
     def bind_locator(
-        self, con: sqlite3.Connection, node_id: NodeId, locator: BackendLocator
+        self,
+        con: sqlite3.Connection,
+        ns: BackendNamespace,
+        node_id: NodeId,
+        locator: BackendLocator,
     ) -> None:
         self.bound.append((node_id, locator))
 
-    def forget_nodes(self, con: sqlite3.Connection, node_ids: Sequence[str]) -> None:
+    def forget_nodes(
+        self, con: sqlite3.Connection, ns: BackendNamespace, node_ids: Sequence[str]
+    ) -> None:
         pass
 
-    def forget_orphans(self, con: sqlite3.Connection) -> None:
+    def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         pass
 
 
@@ -173,3 +184,51 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         # then
         changes, _, _ = await self.mirror.get_changes_since(cursor, 100)
         self.assertEqual([c[0] for c in changes], [mount_id("three")])
+
+    async def test_observed_nodes_belong_to_their_backend(self) -> None:
+        # given
+        view_a = self.node_sync.for_backend("a")
+        # when
+        async with view_a.observe() as read:
+            await view_a.upsert(
+                NodeObservation(record=_file("fa", mount_id("one")), locator=None),
+                read=read,
+            )
+        await self.node_sync.wait_enrichment_drained()
+        await self.mirror.mark_enrichment_pending(NodeId("withheld"), "b")
+
+        # then: withheld nodes too; mounts belong to the core
+        self.assertEqual(await self.mirror.owner_of(NodeId("fa")), "a")
+        self.assertEqual(await self.mirror.owner_of(NodeId("withheld")), "b")
+        self.assertIsNone(await self.mirror.owner_of(mount_id("one")))
+
+    async def test_instances_have_their_own_namespaces(self) -> None:
+        a = self.mirror.namespace("a")
+        b = self.mirror.namespace("b")
+        self.assertNotEqual(a.table("t"), b.table("t"))
+        self.assertRegex(a.table("t"), r"^t_[0-9a-f]+$")
+
+    async def test_registrations_survive_restart(self) -> None:
+        # given
+        ns = self.mirror.namespace("a")
+        # when
+        mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
+        await mirror.ensure_schema()
+        # then
+        self.assertEqual(await mirror.register_schema("a", _RecordingSchema()), ns)
+        self.assertEqual(await mirror.registered_backends(), ["a", "b"])
+
+    async def test_rejects_another_schema_version(self) -> None:
+        mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
+        await mirror.ensure_schema()
+        with self.assertRaises(SchemaVersionError):
+            await mirror.register_schema("a", _RecordingSchema(version=2))
+
+    async def test_rejects_another_backend_type(self) -> None:
+        # given
+        await self.mirror.register_backend("c", "pkg.create_backend")
+        mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
+        await mirror.ensure_schema()
+        # when / then
+        with self.assertRaises(SchemaVersionError):
+            await mirror.register_backend("c", "other.create_backend")

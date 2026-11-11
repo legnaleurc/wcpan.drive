@@ -17,7 +17,7 @@ from wcpan.synology import (
     SynologyWebhookEvent,
 )
 
-from ._convert import SynologyLocator, convert_file_info
+from ._convert import SynologyLocator
 from ._mounts import MountRegistry
 from ._paths import SynologyPathService
 from ._store import SynologyStore
@@ -45,7 +45,8 @@ class _WebhookActionPlan:
     fetch_immediately: bool = False
     wait_for_writes: bool = False
     scan_moved_dir_subtree: bool = False
-    delete_id: NodeId | None = None
+    # Permanent link of a removed node; it is looked up, never minted.
+    delete_link: str | None = None
     schedule_delayed_upsert: bool = False
 
 
@@ -104,9 +105,7 @@ class WebhookService:
             resolved = self._mount_registry.lookup_mount_virtual_id(parent_file_ref)
             if resolved is None:
                 if event_type in ("file_moved", "file_renamed"):
-                    existing = await self._mirror.get_node_by_id(
-                        NodeId(permanent_link_ref.permanent_link)
-                    )
+                    existing = await self._mirrored(permanent_link_ref)
                     if existing is not None:
                         _L.debug(
                             "file_id %s moved outside configured mounts; deleting from mirror",
@@ -132,15 +131,15 @@ class WebhookService:
                 event_type,
             )
             return
-        observation = convert_file_info(info, effective_parent_id)
+        observation = await self._syno_paths.convert_one(info, effective_parent_id)
         if observation is None:
             return
-        if observation.record.id != permanent_link_ref.permanent_link:
+        if info.get("permanent_link") != permanent_link_ref.permanent_link:
             _L.debug(
                 "Webhook permanent_link mismatch for file_id %s: payload=%s fetched=%s",
                 file_ref.file_id,
                 permanent_link_ref.permanent_link,
-                observation.record.id,
+                info.get("permanent_link"),
             )
         await self._node_sync.upsert(observation, read=read)
 
@@ -166,7 +165,7 @@ class WebhookService:
                 file_ref=file_ref,
                 permanent_link_ref=permanent_link_ref,
                 parent_file_ref=parent_file_ref,
-                delete_id=NodeId(permanent_link_ref.permanent_link),
+                delete_link=permanent_link,
             )
 
         if event_type == "file_modified" and file_type == "file":
@@ -259,9 +258,12 @@ class WebhookService:
                 )
             else:
                 await self._scan_moved_dir_subtree(subtree_root_id)
-        if plan.delete_id is not None:
-            async with self._node_sync.observe() as read:
-                await self._node_sync.delete(plan.delete_id, read=read)
+        if plan.delete_link is not None:
+            # An unknown permanent link was never mirrored: nothing to delete.
+            node_id = await self._syno_paths.ids.lookup(plan.delete_link)
+            if node_id is not None:
+                async with self._node_sync.observe() as read:
+                    await self._node_sync.delete(node_id, read=read)
         if plan.schedule_delayed_upsert:
             pending.schedule(
                 plan.schedule_key,
@@ -280,9 +282,7 @@ class WebhookService:
         if not plan.scan_moved_dir_subtree:
             return False
 
-        source_node = await self._mirror.get_node_by_id(
-            NodeId(plan.permanent_link_ref.permanent_link)
-        )
+        source_node = await self._mirrored(plan.permanent_link_ref)
         if source_node is None:
             source_node = await self._store.get_node_by_locator(
                 SynologyLocator(plan.file_ref.file_id)
@@ -330,10 +330,7 @@ class WebhookService:
             dir_records: list[NodeObservation] = []
             file_records: list[NodeObservation] = []
             children: list[NodeId] = []
-            for item in items:
-                observation = convert_file_info(item, parent_id=current_id)
-                if observation is None:
-                    continue
+            for item, observation in await self._syno_paths.convert(items, current_id):
                 if item["type"] == "dir":
                     dir_records.append(observation)
                     children.append(observation.record.id)
@@ -353,21 +350,29 @@ class WebhookService:
         file_ref: SynologyFileId,
         permanent_link_ref: SynologyPermanentLink,
     ) -> NodeId | None:
-        record = await self._mirror.get_node_by_id(
-            NodeId(permanent_link_ref.permanent_link)
-        )
+        record = await self._mirrored(permanent_link_ref)
         if record is not None:
             return record.id
         info = await self._drive_api.get_file(permanent_link_ref)
         if info is not None:
             permanent_link = info.get("permanent_link")
-            return NodeId(permanent_link or permanent_link_ref.permanent_link)
+            (node_id,) = await self._syno_paths.ids.public(
+                [permanent_link or permanent_link_ref.permanent_link]
+            )
+            return node_id
         record = await self._store.get_node_by_locator(
             SynologyLocator(file_ref.file_id)
         )
         if record is not None:
             return record.id
         return None
+
+    async def _mirrored(self, ref: SynologyPermanentLink) -> NodeRecord | None:
+        """The mirrored node with permanent link *ref*, without minting an ID."""
+        node_id = await self._syno_paths.ids.lookup(ref.permanent_link)
+        if node_id is None:
+            return None
+        return await self._mirror.get_node_by_id(node_id)
 
     async def run(
         self,

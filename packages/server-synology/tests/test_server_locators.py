@@ -60,8 +60,10 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
             off_main=OffMainService(pool=self.pool),
             schemas={"synology": SYNOLOGY_SCHEMA},
         )
-        self.store = SynologyStore(mirror=self.mirror)
         await self.mirror.ensure_schema()
+        self.store = SynologyStore(
+            mirror=self.mirror, ns=self.mirror.namespace("synology")
+        )
         await self.mirror.bulk_upsert_nodes(
             [_node(SERVER_ROOT_ID, None), _node(_MOUNT, SERVER_ROOT_ID)]
         )
@@ -146,11 +148,13 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
         # Detach "d" from the tree so the reachability GC treats it as dangling.
         await self.mirror.bulk_upsert_nodes([_node("d", "missing-parent")])
 
-        # when / then
-        self.assertEqual(
-            cleanup_dangling_nodes(self.db_path, schemas={"synology": SYNOLOGY_SCHEMA}),
-            1,
-        )
+        # when: gc runs offline, so bindings go when the backend registers again
+        self.assertEqual(cleanup_dangling_nodes(self.db_path), 1)
+        await MirrorStore(
+            self.db_path,
+            off_main=OffMainService(pool=self.pool),
+            schemas={"synology": SYNOLOGY_SCHEMA},
+        ).ensure_schema()
 
         # then
         self.assertEqual(await self.store.get_locators([NodeId("d")]), {})

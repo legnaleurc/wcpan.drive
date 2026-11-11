@@ -19,6 +19,7 @@ from wcpan.drive.server.filesystem._paths import NodePaths
 from wcpan.drive.server.filesystem._scan import FilesystemScanner
 from wcpan.drive.server.filesystem._store import FILESYSTEM_SCHEMA, FilesystemStore
 from wcpan.drive.server.filesystem._watch import DirectoryWatcher
+from wcpan.drive.server.services.ids import NodeIds
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes, mount_id
 from wcpan.drive.server.services.off_main import OffMainService
@@ -57,13 +58,15 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         await self.mirror.ensure_schema()
         self.write_queue = create_write_queue()
         self.metadata_queue = create_metadata_queue()
+        # The backend's own view, as the server hands it over.
         self.node_sync = NodeSyncService(
             mirror=self.mirror,
             write_queue=self.write_queue,
             off_main=OffMainService(pool=self.pool),
             mounts={},
             metadata_queue=self.metadata_queue,
-        )
+        ).for_backend("fs")
+        self.ids = NodeIds(mirror=self.mirror, key=self.mirror.namespace("fs").key)
         self.tasks = [
             asyncio.create_task(write_worker(self.write_queue, noop_after_write)),
             asyncio.create_task(
@@ -72,7 +75,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
                 )
             ),
         ]
-        self.store = FilesystemStore(mirror=self.mirror)
+        self.store = FilesystemStore(mirror=self.mirror, ns=self.mirror.namespace("fs"))
         self.mounts = Mounts.from_sources({"docs": str(self.source)})
         self.paths = NodePaths(mirror=self.mirror, mounts=self.mounts)
         blocking = Blocking(executor=self.io_pool)
@@ -83,6 +86,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             mirror=self.mirror,
             store=self.store,
             node_sync=self.node_sync,
+            ids=self.ids,
             paths=self.paths,
             blocking=blocking,
             watcher=self.watcher,

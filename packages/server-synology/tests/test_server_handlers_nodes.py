@@ -58,7 +58,7 @@ from wcpan.synology import (
     SynologyUploadError,
 )
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, IdentityIds
 
 
 _EPOCH = 0
@@ -223,6 +223,7 @@ class _NodesTestCase(DecoyTestCase):
         mirror._nodes.setdefault("new-parent", _make_dir("new-parent"))
         mirror._nodes.setdefault("bad", _make_dir("bad"))
         syno_paths = SynologyPathService(
+            ids=IdentityIds(),
             registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
             store=mirror,  # type: ignore[arg-type]
         )

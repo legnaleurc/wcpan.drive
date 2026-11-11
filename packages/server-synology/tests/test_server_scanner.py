@@ -19,7 +19,7 @@ from wcpan.drive.server.types import WriteQueue
 from wcpan.drive.server.workers import create_write_queue
 from wcpan.synology import SynologyClient, SynologyPath
 
-from ._lib import DecoyTestCase, mounts_of
+from ._lib import DecoyTestCase, IdentityIds, mounts_of
 
 
 class TestScannerWriteBack(DecoyTestCase):
@@ -63,12 +63,17 @@ class TestScannerWriteBack(DecoyTestCase):
                     svc = StartupScanService(
                         drive_api=self.decoy.mock(cls=SynologyClient),
                         mirror=mirror,
-                        store=SynologyStore(mirror=mirror),
+                        store=SynologyStore(
+                            mirror=mirror, ns=mirror.namespace("synology")
+                        ),
                         syno_paths=SynologyPathService(
+                            ids=IdentityIds(),
                             registry=MountRegistry(
                                 mounts=mounts_of(mounts), root_ids={}
                             ),
-                            store=SynologyStore(mirror=mirror),
+                            store=SynologyStore(
+                                mirror=mirror, ns=mirror.namespace("synology")
+                            ),
                         ),
                         node_sync=cs,
                     )
@@ -98,7 +103,9 @@ class TestScannerWriteBack(DecoyTestCase):
                 await self._run_initial_sync(mirror, mounts, {"a": 500, "b": 300})
 
                 # then
-                result = await SynologyStore(mirror=mirror).get_mount_max_ids(mounts)
+                result = await SynologyStore(
+                    mirror=mirror, ns=mirror.namespace("synology")
+                ).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 500, "b": 300})
         finally:
             os.unlink(db_path)
@@ -118,14 +125,20 @@ class TestScannerWriteBack(DecoyTestCase):
                 await mirror.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
                 # Seed existing per-mount state
-                await SynologyStore(mirror=mirror).set_mount_state("a", "/vol/a", 100)
-                await SynologyStore(mirror=mirror).set_mount_state("b", "/vol/b", 80)
+                await SynologyStore(
+                    mirror=mirror, ns=mirror.namespace("synology")
+                ).set_mount_state("a", "/vol/a", 100)
+                await SynologyStore(
+                    mirror=mirror, ns=mirror.namespace("synology")
+                ).set_mount_state("b", "/vol/b", 80)
 
                 # when
                 await self._run_initial_sync(mirror, mounts, {"a": 200, "b": 150})
 
                 # then
-                result = await SynologyStore(mirror=mirror).get_mount_max_ids(mounts)
+                result = await SynologyStore(
+                    mirror=mirror, ns=mirror.namespace("synology")
+                ).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 200, "b": 150})
         finally:
             os.unlink(db_path)
@@ -144,15 +157,21 @@ class TestScannerWriteBack(DecoyTestCase):
                 )
                 await mirror.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
-                await SynologyStore(mirror=mirror).set_mount_state("a", "/vol/a", 100)
-                await SynologyStore(mirror=mirror).set_mount_state("b", "/vol/b", 80)
+                await SynologyStore(
+                    mirror=mirror, ns=mirror.namespace("synology")
+                ).set_mount_state("a", "/vol/a", 100)
+                await SynologyStore(
+                    mirror=mirror, ns=mirror.namespace("synology")
+                ).set_mount_state("b", "/vol/b", 80)
 
                 # when
                 # Scan returns identical values — no advance
                 await self._run_initial_sync(mirror, mounts, {"a": 100, "b": 80})
 
                 # then
-                result = await SynologyStore(mirror=mirror).get_mount_max_ids(mounts)
+                result = await SynologyStore(
+                    mirror=mirror, ns=mirror.namespace("synology")
+                ).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 100, "b": 80})
         finally:
             os.unlink(db_path)
@@ -190,7 +209,9 @@ class TestScannerWriteBack(DecoyTestCase):
                 )
 
                 # then
-                result = await SynologyStore(mirror=mirror).get_mount_max_ids(mounts)
+                result = await SynologyStore(
+                    mirror=mirror, ns=mirror.namespace("synology")
+                ).get_mount_max_ids(mounts)
                 self.assertEqual(result, {"a": 300})
         finally:
             os.unlink(db_path)

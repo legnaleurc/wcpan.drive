@@ -160,7 +160,10 @@ class TestRuntime(_WatchTestCase):
             watcher=self.watcher,
             rescan_interval=3600,
             core=CoreServices(
-                mirror=self.mirror, node_sync=self.node_sync, off_main=MagicMock()
+                mirror=self.mirror,
+                node_sync=self.node_sync,
+                off_main=MagicMock(),
+                ids=self.ids,
             ),
             settle_delay=0.05,
         )

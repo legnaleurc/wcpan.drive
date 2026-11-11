@@ -48,7 +48,7 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from ._lib import DecoyTestCase, mounts_of
+from ._lib import DecoyTestCase, IdentityIds, mounts_of
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -299,13 +299,18 @@ class TestStaleEnrichment(_RaceTestCase):
 class TestBackfillOrdering(_RaceTestCase):
     def backfill(self) -> tuple[BackfillService, SynologyPathService]:
         syno_paths = SynologyPathService(
+            ids=IdentityIds(),
             registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
-            store=SynologyStore(mirror=self.mirror),
+            store=SynologyStore(
+                mirror=self.mirror, ns=self.mirror.namespace("synology")
+            ),
         )
         backfill = BackfillService(
             drive_api=object(),  # type: ignore[arg-type]
             mirror=self.mirror,
-            store=SynologyStore(mirror=self.mirror),
+            store=SynologyStore(
+                mirror=self.mirror, ns=self.mirror.namespace("synology")
+            ),
             syno_paths=syno_paths,
             node_sync=self.node_sync,
         )
@@ -384,8 +389,11 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         await self.mirror.apply_observations([_obs(self.a), _obs(self.b), _obs(self.x)])
         self.drive_api = self.decoy.mock(cls=SynologyClient)
         self.syno_paths = SynologyPathService(
+            ids=IdentityIds(),
             registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
-            store=SynologyStore(mirror=self.mirror),
+            store=SynologyStore(
+                mirror=self.mirror, ns=self.mirror.namespace("synology")
+            ),
         )
 
     async def _rehearse_get_x(self):
@@ -489,8 +497,11 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         x = _node("x", "a")
         await self.mirror.apply_observations([_obs(a), _obs(b), _obs(x)])
         syno_paths = SynologyPathService(
+            ids=IdentityIds(),
             registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
-            store=SynologyStore(mirror=self.mirror),
+            store=SynologyStore(
+                mirror=self.mirror, ns=self.mirror.namespace("synology")
+            ),
         )
         drive_api = self.decoy.mock(cls=SynologyClient)
         # x moved from a to b after b was listed and before a was.
@@ -500,7 +511,9 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         backfill = BackfillService(
             drive_api=drive_api,
             mirror=self.mirror,
-            store=SynologyStore(mirror=self.mirror),
+            store=SynologyStore(
+                mirror=self.mirror, ns=self.mirror.namespace("synology")
+            ),
             syno_paths=syno_paths,
             node_sync=self.node_sync,
         )

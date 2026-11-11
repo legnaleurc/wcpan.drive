@@ -14,22 +14,33 @@ from unittest.mock import MagicMock
 from aiohttp import web
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.backend import BackendContext
+from wcpan.drive.server.services.mirror import BackendNamespace
 from wcpan.drive.server.types import BackendLocator
 
 
 class FakeSchema:
-    def ensure_schema(self, con: sqlite3.Connection) -> None:
-        con.execute("CREATE TABLE IF NOT EXISTS fake_backend (x INTEGER)")
+    version = 1
+
+    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
+        con.execute(
+            f"CREATE TABLE IF NOT EXISTS {ns.table('fake_backend')} (x INTEGER)"
+        )
 
     def bind_locator(
-        self, con: sqlite3.Connection, node_id: NodeId, locator: BackendLocator
+        self,
+        con: sqlite3.Connection,
+        ns: BackendNamespace,
+        node_id: NodeId,
+        locator: BackendLocator,
     ) -> None:
         pass
 
-    def forget_nodes(self, con: sqlite3.Connection, node_ids: Sequence[str]) -> None:
+    def forget_nodes(
+        self, con: sqlite3.Connection, ns: BackendNamespace, node_ids: Sequence[str]
+    ) -> None:
         pass
 
-    def forget_orphans(self, con: sqlite3.Connection) -> None:
+    def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         pass
 
 

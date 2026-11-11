@@ -1,4 +1,4 @@
-"""Mount lookup by name and node ID, and routing by containing mount."""
+"""Mount lookup by name and node ID, and routing by mount and node owner."""
 
 import asyncio
 import os
@@ -161,41 +161,54 @@ class TestContaining(IsolatedAsyncioTestCase):
         self.assertIsNone(await self._containing(_ALL, "unknown"))
 
 
+class _Owners:
+    """``owner_of`` over fixed ID map rows."""
+
+    def __init__(self, owners: dict[str, str]) -> None:
+        self._owners = owners
+
+    async def owner_of(self, node_id: NodeId) -> str | None:
+        return self._owners.get(node_id)
+
+
 class TestBackendOf(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        mirror = _Ancestors(
-            _ALL,
-            [
-                _dir(_DOCS.id, _ALL.root_id),
-                _dir("folder", _DOCS.id),
-                _dir("photo", _PICS.id),
-            ],
-        )
+        mirror = _Owners({"folder": "disk", "photo": "nas", "old": "gone"})
         self.router = BackendRouter(
             mirror=cast(MirrorStore, mirror),
             mounts=_ALL.subset(["docs", "pics"]),
             mount_backends={"docs": "disk"},
-            operations={"disk": cast(NodeOperations, object())},
+            operations={
+                "disk": cast(NodeOperations, object()),
+                "nas": cast(NodeOperations, object()),
+            },
             uploaders={},
             files={},
         )
 
-    async def test_node_routes_to_the_backend_of_its_mount(self) -> None:
-        # then
+    async def test_mount_routes_to_its_backend(self) -> None:
         self.assertEqual(await self.router.backend_of(_DOCS.id), "disk")
+
+    async def test_node_routes_to_the_backend_that_owns_it(self) -> None:
         self.assertEqual(await self.router.backend_of(NodeId("folder")), "disk")
+        # by its own map row, even under a mount served by another backend
+        self.assertEqual(await self.router.backend_of(NodeId("photo")), "nas")
 
     async def test_server_root_is_not_supported(self) -> None:
         # when / then
         with self.assertRaises(OperationNotSupportedError):
             await self.router.backend_of(_ALL.root_id)
 
-    async def test_mount_without_backend_is_unavailable(self) -> None:
-        # when / then
+    async def test_unserved_nodes_are_unavailable(self) -> None:
+        # a mount without a backend
         with self.assertRaises(OperationUnavailableError):
-            await self.router.backend_of(NodeId("photo"))
+            await self.router.backend_of(_PICS.id)
+        # a node without a map row
         with self.assertRaises(OperationUnavailableError):
             await self.router.backend_of(NodeId("unknown"))
+        # a node of a backend that is not running
+        with self.assertRaises(OperationUnavailableError):
+            await self.router.backend_of(NodeId("old"))
 
 
 class TestMountNodes(IsolatedAsyncioTestCase):

@@ -50,7 +50,7 @@ from wcpan.synology import (
     SynologyUploadConflictError,
 )
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, IdentityIds
 
 
 _PARENT = SynologyFileId(file_id="parent-a")
@@ -154,6 +154,7 @@ def _make_app(
     wq = create_write_queue()
     mirror._nodes.setdefault("parent-a", _make_dir("parent-a"))
     syno_paths = SynologyPathService(
+        ids=IdentityIds(),
         registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
         store=mirror,  # type: ignore[arg-type]
     )

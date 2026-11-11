@@ -13,7 +13,6 @@ from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import ReadSeq, VirtualPath
 from wcpan.synology import SynologyClient
 
-from ._convert import convert_file_info
 from ._paths import SynologyPathService
 from ._store import SynologyStore
 
@@ -142,11 +141,7 @@ class BackfillService:
             children: list[NodeId] = []
 
             checked += len(items)
-            listed = [
-                (item, o)
-                for item in items
-                if (o := convert_file_info(item, parent_id=parent_id)) is not None
-            ]
+            listed = await self._syno_paths.convert(items, parent_id)
             session.saw(o.record.id for _, o in listed)
 
             for item, from_api in listed:

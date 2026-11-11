@@ -54,6 +54,7 @@ from .keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
+from .services.ids import NodeIds
 from .services.mirror import MirrorStore, create_mirror_store
 from .services.mounts import Mounts, ensure_mount_nodes, load_mounts
 from .services.off_main import OffMainService
@@ -127,6 +128,14 @@ async def managed_core(
     offline commands, which run with the server stopped.
     """
     mirror = await create_mirror_store(config.database_url, off_main=off_main)
+    for name in await mirror.registered_backends():
+        if name not in config.backends:
+            # Kept until dropped, so a config typo does not discard a mirror.
+            _L.warning(
+                "Backend %r is registered but not configured; its nodes stay"
+                " in the mirror and cannot be read or changed",
+                name,
+            )
     write_queue = create_write_queue()
     metadata_queue = create_metadata_queue()
     local_paths = LazyLocalPaths({n: m.backend for n, m in config.mounts.items()})
@@ -185,6 +194,7 @@ async def entered_backends(
         backends: dict[str, Backend] = {}
         for name in selected:
             settings = config.backends[name]
+            key = await core.mirror.register_backend(name, settings.type)
             context = BackendContext(
                 name=name,
                 mounts=core.mounts.subset(config.mounts_of(name)),
@@ -192,6 +202,7 @@ async def entered_backends(
                     mirror=core.mirror,
                     node_sync=core.node_sync.for_backend(name),
                     off_main=core.off_main,
+                    ids=NodeIds(mirror=core.mirror, key=key),
                 ),
                 routes=routes[name] if routes is not None else BackendRoutes(name=name),
                 offline=offline,

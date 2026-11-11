@@ -128,8 +128,11 @@ async def create_backend(
         local_paths=local_paths,
     )
     mounts = check_mounts(context.mounts)
-    await context.core.mirror.register_schema(context.name, FILESYSTEM_SCHEMA)
-    backend = FilesystemBackend(context=context, config=config, mounts=mounts)
+    ns = await context.core.mirror.register_schema(context.name, FILESYSTEM_SCHEMA)
+    store = FilesystemStore(mirror=context.core.mirror, ns=ns)
+    backend = FilesystemBackend(
+        context=context, config=config, mounts=mounts, store=store
+    )
     if context.offline:
         yield backend
         return
@@ -146,10 +149,12 @@ class FilesystemBackend:
         context: BackendContext,
         config: FilesystemConfig,
         mounts: Mounts,
+        store: FilesystemStore,
     ) -> None:
         self._context = context
         self._config = config
         self._mounts = mounts
+        self._store = store
         self._local_path = (
             map_by_prefix(config.local_paths)
             if config.local_paths is not None
@@ -189,9 +194,7 @@ class FilesystemBackend:
     async def command(self, argv: Sequence[str]) -> None:
         args = command_parser(self.name).parse_args(list(argv))
         if args.command == "rebind-mount":
-            fsid = await rebind_mount(
-                self._context.core.mirror, self._mounts, args.mount
-            )
+            fsid = await rebind_mount(self._store, self._mounts, args.mount)
             print(f"Mount {args.mount!r} now expects filesystem {fsid}.")
 
     @asynccontextmanager
@@ -203,12 +206,13 @@ class FilesystemBackend:
         watcher = DirectoryWatcher.create() if self._config.watch else None
         try:
             blocking = Blocking(executor=executor)
-            store = FilesystemStore(mirror=core.mirror)
+            store = self._store
             paths = NodePaths(mirror=core.mirror, mounts=self._mounts)
             scanner = FilesystemScanner(
                 mirror=core.mirror,
                 store=store,
                 node_sync=core.node_sync,
+                ids=core.ids,
                 paths=paths,
                 blocking=blocking,
                 watcher=watcher,

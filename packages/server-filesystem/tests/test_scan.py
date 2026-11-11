@@ -207,6 +207,7 @@ class TestIdentity(ScanTestCase):
             mirror=self.mirror,
             store=self.store,
             node_sync=self.node_sync,
+            ids=self.ids,
             paths=self.paths,
             blocking=Blocking(executor=self.io_pool),
         )

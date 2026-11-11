@@ -527,9 +527,8 @@ paths. Synology webhooks use the per-instance route
 `/api/v1/backends/<name>/webhook`.
 
 Not done: an explicit policy when a mount changes backend or source beyond the
-existing checkpoint and filesystem-identity checks; node IDs rely on each
-backend minting globally unique IDs rather than an enforced namespace (see
-Core-minted node identity).
+existing checkpoint and filesystem-identity checks. Node IDs are minted by the
+core and each instance has its own tables (see Core-minted node identity).
 
 - Preserve existing client imports, HTTP routes, error behavior, and CLI behavior
   during the internal refactor unless a separately reviewed migration requires change.
@@ -538,7 +537,8 @@ Core-minted node identity).
 - Keep Synology credentials, native mount paths, and webhook settings in backend
   configuration; generic server settings remain in the server configuration.
 - Provide explicit database migration and rollback/backup guidance before extraction.
-  Existing node IDs and public feed continuity should survive migration.
+  Schema 5 is the exception: it is rebuilt, not migrated, so node IDs and the
+  feed start over and clients resynchronize through stale cursors.
 - Update `README.md`, config scaffolds, and configuration tests together when
   installation, commands, or configuration behavior changes.
 
@@ -765,7 +765,25 @@ state where two Synology instances already collide.
    row, per-instance backend tables and indexes with the namespace passed to
    `BackendSchema`, per-instance schema versions, and per-backend `gc`. Shipping
    identity without table isolation would leave the `file_id` and `identity`
-   collisions in place.
+   collisions in place. Implemented as schema 5 (older databases are refused
+   with a message to move them aside). Differences from the design above:
+   - `public` writes misses directly with `MirrorStore.write`, not through the
+     write queue; the insert is idempotent and independent of the node's own
+     write, so ordering does not matter and it cannot wait on the writer.
+   - `mint` only generates the ID. The map row is written with the node's first
+     observation or withheld enrichment record, in that transaction
+     (`_claim_id`), so a filesystem scan does not pay one transaction per new
+     file.
+   - The registry key is 8 hex characters and names tables as
+     `<name>_<key>` (`BackendNamespace.table`); `register_schema` returns the
+     namespace. The registry also refuses a change of an instance's backend
+     type.
+   - `gc` is one pass: reachability carries the owner of each configured mount,
+     and a mount not in the config keeps everything below it. Backend rows of
+     removed nodes are still dropped when the instance next registers
+     (`forget_orphans`), since offline `gc` does not load backends.
+   - From Lifecycle: an instance registered but no longer configured is
+     reported at startup, and routing to it gives 503.
 3. Lifecycle commands: `drop`, `rebuild`, and mount reassignment.
 
 Not part of this work: a separate `NodeSyncService` per backend. Today the

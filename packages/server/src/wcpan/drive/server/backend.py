@@ -27,6 +27,7 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from wcpan.drive.plugin import check_settings
 
+from .services.ids import NodeIdMap
 from .services.mirror import MirrorStore
 from .services.mounts import Mount as Mount
 from .services.mounts import Mounts
@@ -49,12 +50,14 @@ def backend_route(backend: str, path: str) -> str:
 class CoreServices:
     """Server services a backend instance builds on.
 
-    ``node_sync`` tags every observation with the instance name.
+    ``node_sync`` tags every observation with the instance name. ``ids`` maps
+    the instance's native IDs to the public node IDs it uses with the core.
     """
 
     mirror: MirrorStore
     node_sync: NodeSyncService
     off_main: OffMainService
+    ids: NodeIdMap
 
 
 @dataclass(kw_only=True)

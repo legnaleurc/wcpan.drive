@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated
 
 from wcpan.drive.server.backend import BackendContext, Mounts
+from wcpan.drive.server.services.mirror import BackendNamespace
 from wcpan.drive.server.services.paths import map_by_prefix
 from wcpan.drive.server.services.spool import SpooledFiles, create_spool_area
 from wcpan.synology import SynologyClient
@@ -89,8 +90,8 @@ async def create_backend(
         local_paths=dict(local_paths or {}),
         upload_tmp_dir=upload_tmp_dir,
     )
-    await context.core.mirror.register_schema(context.name, SYNOLOGY_SCHEMA)
-    backend = SynologyBackend(context=context, config=config)
+    ns = await context.core.mirror.register_schema(context.name, SYNOLOGY_SCHEMA)
+    backend = SynologyBackend(context=context, config=config, ns=ns)
     if context.offline:
         yield backend
         return
@@ -101,9 +102,12 @@ async def create_backend(
 class SynologyBackend:
     """One Synology Drive server, serving the mounts assigned to it."""
 
-    def __init__(self, *, context: BackendContext, config: SynologyConfig) -> None:
+    def __init__(
+        self, *, context: BackendContext, config: SynologyConfig, ns: BackendNamespace
+    ) -> None:
         self._context = context
         self._config = config
+        self._ns = ns
         self._local_path = map_by_prefix(config.local_paths)
         self._webhook_queue = create_webhook_queue()
         self._scan_done = asyncio.Event()
@@ -167,7 +171,8 @@ class SynologyBackend:
     async def connect(self) -> AsyncGenerator[_Connection, None]:
         """Log in and resolve the mount roots."""
         async with create_synology_client(self._config) as drive_api:
-            store = SynologyStore(mirror=self._context.core.mirror)
+            core = self._context.core
+            store = SynologyStore(mirror=core.mirror, ns=self._ns)
             registry = await create_mount_registry(
                 self._context.mounts, drive_api=drive_api
             )
@@ -175,7 +180,9 @@ class SynologyBackend:
                 drive_api=drive_api,
                 store=store,
                 registry=registry,
-                syno_paths=SynologyPathService(registry=registry, store=store),
+                syno_paths=SynologyPathService(
+                    registry=registry, store=store, ids=core.ids
+                ),
             )
 
     @asynccontextmanager

@@ -3,6 +3,7 @@ import secrets
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
+from dataclasses import dataclass
 from functools import partial
 from typing import Concatenate, Protocol
 
@@ -22,7 +23,7 @@ from wcpan.drive.sqlite import (
 
 from ..lib.root import SERVER_ROOT_ID
 from ..types import BackendLocator, NodeObservation
-from ._schema import DDL, MIGRATE_3_TO_4, SCHEMA_VERSION
+from ._schema import DDL, SCHEMA_VERSION
 from .off_main import OffMainService
 
 
@@ -33,27 +34,55 @@ class SchemaVersionError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class BackendNamespace:
+    """Names of one backend instance's tables and indexes.
+
+    Built only from the instance's registry key (``[0-9a-f]``), never from
+    config strings, so the names are safe to interpolate into SQL.
+    """
+
+    key: str
+
+    def table(self, name: str) -> str:
+        """The instance's name for table or index *name*."""
+        return f"{name}_{self.key}"
+
+
 class BackendSchema(Protocol):
     """Backend-owned tables, maintained on the core's connection and transaction.
 
-    Hooks must not commit, roll back, or open connections.
+    Each backend instance gets its own tables, named through its namespace, so
+    its lookups cannot see another instance's rows. Rows stay keyed by public
+    node ID. Hooks must not commit, roll back, or open connections.
     """
 
-    def ensure_schema(self, con: sqlite3.Connection) -> None:
-        """Create or migrate the backend tables."""
+    @property
+    def version(self) -> int:
+        """Version of the tables; a database with another version is refused."""
+        ...
+
+    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
+        """Create the instance's tables."""
         ...
 
     def bind_locator(
-        self, con: sqlite3.Connection, node_id: NodeId, locator: BackendLocator
+        self,
+        con: sqlite3.Connection,
+        ns: BackendNamespace,
+        node_id: NodeId,
+        locator: BackendLocator,
     ) -> None:
         """Persist the locator of *node_id* alongside its observation."""
         ...
 
-    def forget_nodes(self, con: sqlite3.Connection, node_ids: Sequence[str]) -> None:
+    def forget_nodes(
+        self, con: sqlite3.Connection, ns: BackendNamespace, node_ids: Sequence[str]
+    ) -> None:
         """Drop backend state of removed nodes."""
         ...
 
-    def forget_orphans(self, con: sqlite3.Connection) -> None:
+    def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         """Drop backend state of nodes no longer in ``nodes``."""
         ...
 
@@ -151,31 +180,35 @@ def _node_row_values(
     )
 
 
-type Schemas = Mapping[str, BackendSchema]
-"""Persistence hooks by backend instance name."""
+@dataclass(frozen=True)
+class _Instance:
+    """A registered backend instance; *schema* is set once its factory registers it."""
+
+    ns: BackendNamespace
+    schema: BackendSchema | None = None
 
 
-def _distinct(schemas: Schemas) -> list[BackendSchema]:
-    """Each schema once; instances of one backend type share their tables."""
-    unique: dict[int, BackendSchema] = {}
-    for schema in schemas.values():
-        unique.setdefault(id(schema), schema)
-    return list(unique.values())
+type _Instances = Mapping[str, _Instance]
+"""Registered backend instances by name."""
 
 
-def _schema_for(schemas: Schemas, backend: str | None) -> BackendSchema | None:
+def _with_schema(instances: _Instances) -> list[_Instance]:
+    return [i for i in instances.values() if i.schema is not None]
+
+
+def _instance_for(instances: _Instances, backend: str | None) -> _Instance | None:
     if backend is not None:
-        return schemas.get(backend)
+        return instances.get(backend)
     # An untagged observation is unambiguous with a single backend schema.
-    distinct = _distinct(schemas)
-    return distinct[0] if len(distinct) == 1 else None
+    candidates = _with_schema(instances)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _new_epoch() -> str:
     return secrets.token_hex(8)
 
 
-def _ensure_schema(dsn: str, schemas: Schemas) -> str:
+def _ensure_schema(dsn: str) -> str:
     """Create or check the schema, and return the change history's epoch."""
     initialize_database(dsn)
     with _read_write(dsn) as con:
@@ -187,25 +220,17 @@ def _ensure_schema(dsn: str, schemas: Schemas) -> str:
             )
         }
         has_user_tables = bool(existing_tables - {"sqlite_sequence"})
-        if version == 0 and has_user_tables:
-            raise SchemaVersionError(
-                f"database schema version mismatch: expected {SCHEMA_VERSION}, got 0"
-            )
-        if version == 3:
-            con.executescript(MIGRATE_3_TO_4)
-            con.execute("PRAGMA user_version = 4")
-            version = 4
-        if version not in (0, SCHEMA_VERSION):
+        if version != SCHEMA_VERSION and (version != 0 or has_user_tables):
             raise SchemaVersionError(
                 "database schema version mismatch: "
-                f"expected {SCHEMA_VERSION}, got {version}"
+                f"expected {SCHEMA_VERSION}, got {version}. "
+                "Older databases are not migrated: move this one aside and the "
+                "server builds a new one by initial discovery (clients "
+                "resynchronize)."
             )
         con.executescript(DDL)
         if version == 0:
             con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        for schema in _distinct(schemas):
-            schema.ensure_schema(con)
-        # Databases created before the epoch existed get one on first open.
         con.execute(
             "INSERT OR IGNORE INTO metadata (key, value) VALUES ('epoch', ?)",
             (_new_epoch(),),
@@ -236,14 +261,95 @@ def _run_write[R](
         return fn(con, *args, **kwargs)
 
 
-def _register_schema(dsn: str, schema: BackendSchema) -> None:
-    """Create a backend's tables and drop rows whose nodes went away meanwhile.
+def _register_backend(dsn: str, name: str, type_: str) -> str:
+    """The registry key of instance *name*, registering it on first sight.
 
-    Offline ``gc`` runs without loading backends, so it cannot clean their rows.
+    Raises:
+        SchemaVersionError: If *name* was registered with another backend type.
     """
     with _read_write(dsn) as con:
-        schema.ensure_schema(con)
-        schema.forget_orphans(con)
+        with closing(
+            con.execute("SELECT key, type FROM backends WHERE name = ?", (name,))
+        ) as cur:
+            row = cur.fetchone()
+        if row is not None:
+            if type_ and row["type"] and row["type"] != type_:
+                raise SchemaVersionError(
+                    f"backend {name!r} was registered as {row['type']!r},"
+                    f" not {type_!r}; a backend cannot change type"
+                )
+            if type_ and not row["type"]:
+                con.execute(
+                    "UPDATE backends SET type = ? WHERE name = ?", (type_, name)
+                )
+            return str(row["key"])
+        while True:
+            key = secrets.token_hex(4)
+            cur = con.execute(
+                "INSERT OR IGNORE INTO backends (name, key, type) VALUES (?, ?, ?)",
+                (name, key, type_),
+            )
+            if cur.rowcount:
+                return key
+
+
+def _register_schema(
+    dsn: str, name: str, ns: BackendNamespace, schema: BackendSchema
+) -> None:
+    """Create an instance's tables and drop rows whose nodes went away meanwhile.
+
+    Offline ``gc`` runs without loading backends, so it cannot clean their rows.
+
+    Raises:
+        SchemaVersionError: If the instance's tables have another version.
+    """
+    with _read_write(dsn) as con:
+        with closing(
+            con.execute("SELECT schema_version FROM backends WHERE name = ?", (name,))
+        ) as cur:
+            version = int(cur.fetchone()["schema_version"])
+        if version not in (0, schema.version):
+            raise SchemaVersionError(
+                f"backend {name!r} schema version mismatch: expected"
+                f" {schema.version}, got {version}. Its tables are not migrated:"
+                " move the database aside to rebuild it."
+            )
+        schema.ensure_schema(con, ns)
+        if version == 0:
+            con.execute(
+                "UPDATE backends SET schema_version = ? WHERE name = ?",
+                (schema.version, name),
+            )
+        schema.forget_orphans(con, ns)
+
+
+def _registered_backends(dsn: str) -> list[str]:
+    with _read_only(dsn) as con:
+        with closing(con.execute("SELECT name FROM backends ORDER BY name")) as cur:
+            return [str(row["name"]) for row in cur]
+
+
+def _owner_of(dsn: str, node_id: NodeId) -> str | None:
+    with _read_only(dsn) as con:
+        with closing(
+            con.execute(
+                """
+                SELECT b.name FROM node_ids i JOIN backends b ON b.key = i.backend
+                WHERE i.id = ?
+                """,
+                (str(node_id),),
+            )
+        ) as cur:
+            row = cur.fetchone()
+    return str(row["name"]) if row is not None else None
+
+
+def _claim_id(con: sqlite3.Connection, node_id: NodeId, instance: _Instance) -> None:
+    """Give a node minted by its backend (``NodeIdMap.mint``) its map row."""
+    con.execute(
+        "INSERT OR IGNORE INTO node_ids (id, backend, native) VALUES (?, ?, ?)",
+        (str(node_id), instance.ns.key, str(node_id)),
+    )
 
 
 def _upsert_node_and_emit_change(dsn: str, record: NodeRecord) -> None:
@@ -258,7 +364,7 @@ def _upsert_node_and_emit_change(dsn: str, record: NodeRecord) -> None:
 def _delete_subtree_on_connection(
     con: sqlite3.Connection,
     node_id: NodeId,
-    schemas: Schemas,
+    instances: _Instances,
 ) -> None:
     """Delete node and all descendants; emit remove-changes for each.
 
@@ -285,8 +391,9 @@ def _delete_subtree_on_connection(
     # Delete from nodes and insert into changes in bulk.
     placeholders = ",".join("?" * len(to_delete))
     con.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", to_delete)
-    for schema in _distinct(schemas):
-        schema.forget_nodes(con, to_delete)
+    for instance in _with_schema(instances):
+        assert instance.schema is not None
+        instance.schema.forget_nodes(con, instance.ns, to_delete)
     con.execute(
         f"DELETE FROM pending_enrichment WHERE node_id IN ({placeholders})", to_delete
     )
@@ -297,10 +404,10 @@ def _delete_subtree_on_connection(
 
 
 def _delete_subtree_and_emit_changes(
-    dsn: str, node_id: NodeId, schemas: Schemas
+    dsn: str, node_id: NodeId, instances: _Instances
 ) -> None:
     with _read_write(dsn) as con:
-        _delete_subtree_on_connection(con, node_id, schemas)
+        _delete_subtree_on_connection(con, node_id, instances)
 
 
 def _node_exists(con: sqlite3.Connection, node_id: NodeId) -> bool:
@@ -321,7 +428,7 @@ def _select_node_row(
 
 
 def _apply_observations(
-    dsn: str, observations: list[NodeObservation], schemas: Schemas
+    dsn: str, observations: list[NodeObservation], instances: _Instances
 ) -> set[NodeId]:
     """Upsert nodes and their locators in order, skipping any whose parent is gone.
 
@@ -346,9 +453,19 @@ def _apply_observations(
                     "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
                     (str(record.id),),
                 )
-            schema = _schema_for(schemas, observation.backend)
-            if observation.locator is not None and schema is not None:
-                schema.bind_locator(con, record.id, observation.locator)
+            if observation.backend is not None:
+                owner = instances.get(observation.backend)
+                if owner is not None:
+                    _claim_id(con, record.id, owner)
+            instance = _instance_for(instances, observation.backend)
+            if (
+                observation.locator is not None
+                and instance is not None
+                and instance.schema is not None
+            ):
+                instance.schema.bind_locator(
+                    con, instance.ns, record.id, observation.locator
+                )
             con.execute(
                 "DELETE FROM pending_enrichment WHERE node_id = ?", (str(record.id),)
             )
@@ -356,8 +473,14 @@ def _apply_observations(
     return applied
 
 
-def _mark_enrichment_pending(dsn: str, node_id: NodeId, backend: str | None) -> None:
+def _mark_enrichment_pending(
+    dsn: str, node_id: NodeId, backend: str | None, instances: _Instances
+) -> None:
     with _read_write(dsn) as con:
+        # A withheld node keeps its ID, and stays routable, before it is published.
+        owner = instances.get(backend) if backend is not None else None
+        if owner is not None:
+            _claim_id(con, node_id, owner)
         con.execute(
             """
             INSERT INTO pending_enrichment (node_id, backend) VALUES (?, ?)
@@ -587,25 +710,46 @@ def row_to_record(row: sqlite3.Row) -> NodeRecord:
 
 _GC_CREATE_SQL = """
     CREATE TEMP TABLE _dangling AS
-    WITH RECURSIVE reachable(node_id) AS (
-        SELECT ?
+    WITH RECURSIVE reachable(node_id, owner) AS (
+        SELECT ?, NULL
         UNION ALL
-        SELECT n.id FROM nodes n
+        SELECT n.id,
+               CASE WHEN r.node_id = ?
+                    THEN (SELECT o.key FROM temp._owners o WHERE o.name = n.name)
+                    ELSE r.owner END
+        FROM nodes n
         JOIN reachable r ON n.parent_id = r.node_id
+        WHERE r.owner IS NULL
+           OR EXISTS (
+               SELECT 1 FROM node_ids i WHERE i.id = n.id AND i.backend = r.owner
+           )
     )
     SELECT id AS node_id FROM nodes
     WHERE id NOT IN (SELECT node_id FROM reachable)
 """
 
 
-def cleanup_dangling_nodes(dsn: str, *, schemas: Schemas) -> int:
-    """Delete nodes not reachable from the server root; emit removal changes.
+def cleanup_dangling_nodes(dsn: str, *, mounts: Mapping[str, str] | None = None) -> int:
+    """Delete unreachable nodes and emit removal changes; returns how many.
 
-    Returns the number of nodes removed.
+    A node is reachable from the server root through its parents. *mounts* maps
+    each configured mount to the backend instance serving it: under those, only
+    that instance's nodes are reachable, so a subtree left by a backend that no
+    longer serves the mount is removed. Mounts not listed keep everything below
+    them. Then ID map rows with no node and no pending enrichment are pruned.
     """
-    _ensure_schema(dsn, schemas)
+    _ensure_schema(dsn)
     with _read_write(dsn) as con:
-        con.execute(_GC_CREATE_SQL, (str(SERVER_ROOT_ID),))
+        con.execute("CREATE TEMP TABLE _owners (name TEXT PRIMARY KEY, key TEXT)")
+        # An instance never registered owns no node, so its mounts lose theirs.
+        con.executemany(
+            """
+            INSERT INTO temp._owners (name, key) VALUES
+                (?, COALESCE((SELECT key FROM backends WHERE name = ?), ''))
+            """,
+            list((mounts or {}).items()),
+        )
+        con.execute(_GC_CREATE_SQL, (str(SERVER_ROOT_ID), str(SERVER_ROOT_ID)))
         with closing(con.execute("SELECT COUNT(*) AS n FROM temp._dangling")) as cur:
             count = int(cur.fetchone()["n"])
         if count > 0:
@@ -616,19 +760,29 @@ def cleanup_dangling_nodes(dsn: str, *, schemas: Schemas) -> int:
             con.execute(
                 "DELETE FROM nodes WHERE id IN (SELECT node_id FROM temp._dangling)"
             )
-        for schema in _distinct(schemas):
-            schema.forget_orphans(con)
-        con.execute("DROP TABLE IF EXISTS temp._dangling")
+            con.execute(
+                "DELETE FROM pending_enrichment"
+                " WHERE node_id IN (SELECT node_id FROM temp._dangling)"
+            )
+        con.execute(
+            """
+            DELETE FROM node_ids
+            WHERE id NOT IN (SELECT id FROM nodes)
+              AND id NOT IN (SELECT node_id FROM pending_enrichment)
+            """
+        )
+        con.execute("DROP TABLE temp._dangling")
+        con.execute("DROP TABLE temp._owners")
     return count
 
 
-def reset_change_history(dsn: str, *, schemas: Schemas) -> int:
+def reset_change_history(dsn: str) -> int:
     """Clear changes and insert one update row per node except the server root.
 
     Also replaces the epoch, so consumers holding a cursor from the old history
     are told to start over. Returns the number of change records inserted.
     """
-    _ensure_schema(dsn, schemas)
+    _ensure_schema(dsn)
     with _read_write(dsn) as con:
         con.execute(
             "UPDATE metadata SET value = ? WHERE key = 'epoch'", (_new_epoch(),)
@@ -709,11 +863,14 @@ class MirrorStore:
         dsn: str,
         *,
         off_main: OffMainService,
-        schemas: Schemas | None = None,
+        schemas: Mapping[str, BackendSchema] | None = None,
     ) -> None:
+        """*schemas* are registered by ``ensure_schema``, for instances that
+        are not entered through a factory."""
         self._dsn = dsn
         self._off_main = off_main
-        self._schemas = dict(schemas or {})
+        self._initial_schemas = dict(schemas or {})
+        self._instances: dict[str, _Instance] = {}
         self._epoch = ""
 
     @property
@@ -726,12 +883,50 @@ class MirrorStore:
         return self._epoch
 
     async def ensure_schema(self) -> None:
-        self._epoch = await self._off_main(_ensure_schema, self._dsn, self._schemas)
+        self._epoch = await self._off_main(_ensure_schema, self._dsn)
+        for backend, schema in self._initial_schemas.items():
+            await self.register_schema(backend, schema)
 
-    async def register_schema(self, backend: str, schema: BackendSchema) -> None:
-        """Persist backend instance *backend*'s state through *schema* from now on."""
-        await self._off_main(_register_schema, self._dsn, schema)
-        self._schemas[backend] = schema
+    async def register_backend(self, backend: str, type_: str = "") -> str:
+        """Register instance *backend* of backend *type_*; returns its key.
+
+        Raises:
+            SchemaVersionError: If *backend* was registered with another type.
+        """
+        instance = self._instances.get(backend)
+        if instance is not None:
+            return instance.ns.key
+        key = await self._off_main(_register_backend, self._dsn, backend, type_)
+        self._instances[backend] = _Instance(ns=BackendNamespace(key))
+        return key
+
+    async def register_schema(
+        self, backend: str, schema: BackendSchema
+    ) -> BackendNamespace:
+        """Persist instance *backend*'s state through *schema* from now on.
+
+        Returns the namespace that names the instance's tables.
+
+        Raises:
+            SchemaVersionError: If the instance's tables have another version.
+        """
+        await self.register_backend(backend)
+        ns = self._instances[backend].ns
+        await self._off_main(_register_schema, self._dsn, backend, ns, schema)
+        self._instances[backend] = _Instance(ns=ns, schema=schema)
+        return ns
+
+    def namespace(self, backend: str) -> BackendNamespace:
+        """The namespace of registered instance *backend*."""
+        return self._instances[backend].ns
+
+    async def registered_backends(self) -> list[str]:
+        """Names of every instance this database has seen, configured or not."""
+        return await self._off_main(_registered_backends, self._dsn)
+
+    async def owner_of(self, node_id: NodeId) -> str | None:
+        """The instance whose node *node_id* is; ``None`` for core nodes."""
+        return await self._off_main(_owner_of, self._dsn, node_id)
 
     async def read[**A, R](
         self,
@@ -764,20 +959,22 @@ class MirrorStore:
 
     async def delete_subtree_and_emit_changes(self, node_id: NodeId) -> None:
         await self._off_main(
-            _delete_subtree_and_emit_changes, self._dsn, node_id, self._schemas
+            _delete_subtree_and_emit_changes, self._dsn, node_id, self._instances
         )
 
     async def apply_observations(
         self, observations: list[NodeObservation]
     ) -> set[NodeId]:
         return await self._off_main(
-            _apply_observations, self._dsn, observations, self._schemas
+            _apply_observations, self._dsn, observations, self._instances
         )
 
     async def mark_enrichment_pending(
         self, node_id: NodeId, backend: str | None = None
     ) -> None:
-        await self._off_main(_mark_enrichment_pending, self._dsn, node_id, backend)
+        await self._off_main(
+            _mark_enrichment_pending, self._dsn, node_id, backend, self._instances
+        )
 
     async def get_pending_enrichment(self, backend: str | None = None) -> list[NodeId]:
         return await self._off_main(_get_pending_enrichment, self._dsn, backend)
@@ -834,22 +1031,22 @@ class MirrorStore:
     ) -> tuple[list[tuple[NodeId, bool, NodeRecord | None]], int, bool]:
         return await self._off_main(_get_changes_since, self._dsn, cursor, max_size)
 
-    async def cleanup_dangling_nodes(self) -> int:
+    async def cleanup_dangling_nodes(
+        self, *, mounts: Mapping[str, str] | None = None
+    ) -> int:
         return await self._off_main(
-            partial(cleanup_dangling_nodes, schemas=self._schemas), self._dsn
+            partial(cleanup_dangling_nodes, mounts=mounts), self._dsn
         )
 
     async def reset_change_history(self) -> int:
-        return await self._off_main(
-            partial(reset_change_history, schemas=self._schemas), self._dsn
-        )
+        return await self._off_main(reset_change_history, self._dsn)
 
 
 async def create_mirror_store(
     database_url: str,
     *,
     off_main: OffMainService,
-    schemas: Schemas | None = None,
+    schemas: Mapping[str, BackendSchema] | None = None,
 ) -> MirrorStore:
     mirror = MirrorStore(database_url, off_main=off_main, schemas=schemas)
     _L.info("initializing database: %s", database_url)

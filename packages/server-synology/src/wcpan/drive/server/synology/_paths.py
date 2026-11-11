@@ -1,8 +1,17 @@
-"""Bridge between mirror node IDs and Synology Drive API references."""
+"""Bridge between mirror node IDs and Synology Drive API references.
+
+The native ID of a Synology node is its permanent link; the public ID is minted
+by the core. Every conversion of API data goes through ``convert`` so records
+leave the backend with public IDs.
+"""
+
+from collections.abc import Sequence
+from dataclasses import replace
 
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.names import normalize_name
+from wcpan.drive.server.services.ids import NodeIdMap, UnknownNodeError
 from wcpan.drive.server.services.operations import LocateUndecidedError
 from wcpan.drive.server.types import NodeObservation
 from wcpan.synology import (
@@ -35,9 +44,48 @@ class SynologyPathService:
         *,
         registry: MountRegistry,
         store: SynologyStore,
+        ids: NodeIdMap,
     ) -> None:
         self._registry = registry
         self._store = store
+        self._ids = ids
+
+    @property
+    def ids(self) -> NodeIdMap:
+        return self._ids
+
+    async def convert(
+        self, items: Sequence[SynologyFileInfo], parent_id: NodeId | None
+    ) -> list[tuple[SynologyFileInfo, NodeObservation]]:
+        """Observations of *items* under *parent_id*, with public IDs.
+
+        Items without a permanent link are skipped.
+        """
+        converted = [
+            (item, o)
+            for item in items
+            if (o := convert_file_info(item, parent_id)) is not None
+        ]
+        ids = await self._ids.public([o.record.id for _, o in converted])
+        return [
+            (item, replace(o, record=replace(o.record, id=node_id)))
+            for (item, o), node_id in zip(converted, ids, strict=True)
+        ]
+
+    async def convert_one(
+        self, info: SynologyFileInfo, parent_id: NodeId | None
+    ) -> NodeObservation | None:
+        """``convert`` for one item; ``None`` without a permanent link."""
+        converted = await self.convert([info], parent_id)
+        return converted[0][1] if converted else None
+
+    async def permanent_link(self, node_id: NodeId) -> SynologyPermanentLink:
+        """The stable API reference of *node_id*.
+
+        Raises:
+            UnknownNodeError: If *node_id* is not a node of this instance.
+        """
+        return SynologyPermanentLink(await self._ids.native_of(node_id))
 
     @property
     def mounts(self) -> Mounts:
@@ -81,7 +129,11 @@ class SynologyPathService:
         since the error for a missing node is not established.
         """
         try:
-            info = await drive_api.get_file(SynologyPermanentLink(node_id))
+            link = await self.permanent_link(node_id)
+        except UnknownNodeError:
+            return None
+        try:
+            info = await drive_api.get_file(link)
         except SynologyNetworkError as e:
             raise LocateUndecidedError(str(e)) from e
         except SynologyError:
@@ -91,7 +143,7 @@ class SynologyPathService:
         parent_id = await self.resolve_parent(SynologyFileId(info["parent_id"]))
         if parent_id is None:
             return None
-        return convert_file_info(info, parent_id)
+        return await self.convert_one(info, parent_id)
 
     async def list_children(
         self,

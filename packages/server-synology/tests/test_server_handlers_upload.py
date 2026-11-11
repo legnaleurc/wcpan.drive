@@ -59,7 +59,7 @@ from wcpan.synology import (
     SynologyUploadError,
 )
 
-from ._lib import DecoyTestCase, make_request
+from ._lib import DecoyTestCase, IdentityIds, make_request
 
 
 _P1 = SynologyFileId(file_id="p1")
@@ -107,6 +107,7 @@ class _UploadTestCase(DecoyTestCase):
             {NodeId("p1"): SynologyLocator("p1")}
         )
         syno_paths = SynologyPathService(
+            ids=IdentityIds(),
             registry=MountRegistry(
                 mounts=Mounts.from_sources({"tmp": "/team-folders/download"}),
                 root_ids={},

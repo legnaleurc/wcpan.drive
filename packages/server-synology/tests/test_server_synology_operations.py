@@ -50,12 +50,17 @@ class TestDownload(DecoyTestCase):
         response = self.decoy.mock(cls=ClientResponse)
         self.decoy.when(response.content).then_return(make_stream(b"abc"))
         drive_api = self.decoy.mock(cls=SynologyClient)
+        # The public ID is translated to the node's permanent link.
+        syno_paths = self.decoy.mock(cls=SynologyPathService)
+        self.decoy.when(await syno_paths.permanent_link(NodeId("f1"))).then_return(
+            SynologyPermanentLink("link-1")
+        )
         self.decoy.when(
-            drive_api.download(SynologyPermanentLink("f1"), range_=None)
+            drive_api.download(SynologyPermanentLink("link-1"), range_=None)
         ).then_return(_wrapping_errors(response))
         self.operations = SynologyNodeOperations(
             drive_api=drive_api,
-            syno_paths=self.decoy.mock(cls=SynologyPathService),
+            syno_paths=syno_paths,
             node_sync=self.decoy.mock(cls=NodeSyncService),
         )
 

@@ -25,7 +25,7 @@ from wcpan.synology import (
     SynologyPath,
 )
 
-from ._lib import DecoyTestCase, mounts_of
+from ._lib import DecoyTestCase, IdentityIds, mounts_of
 
 
 def _info(**fields: object) -> SynologyFileInfo:
@@ -42,6 +42,7 @@ class _PathTestCase(DecoyTestCase):
 
     def _service(self, mounts: dict[str, SynologyPath] | None = None):
         return SynologyPathService(
+            ids=IdentityIds(),
             registry=MountRegistry(mounts=mounts_of(mounts or {}), root_ids={}),
             store=self.store,
         )

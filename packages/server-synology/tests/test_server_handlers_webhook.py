@@ -23,7 +23,7 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, IdentityIds
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -82,21 +82,24 @@ class _WebhookTestCase(DecoyTestCase):
         self.mirror = self.decoy.mock(cls=MirrorStore)
         self.store = self.decoy.mock(cls=SynologyStore)
         self.node_sync = self.decoy.mock(cls=NodeSyncService)
-        self.syno_paths = self.decoy.mock(cls=SynologyPathService)
         self.pending = self.decoy.mock(cls=TaskIdDebouncer)
         self.decoy.when(self.node_sync.observe()).then_enter_with(_READ)
 
     def _create_service(
         self, mount_registry: MountRegistry | None = None
     ) -> WebhookService:
+        registry = mount_registry or MountRegistry(
+            mounts=Mounts.from_sources({}), root_ids={}
+        )
         return WebhookService(
             drive_api=self.drive_api,
             mirror=self.mirror,
             store=self.store,
             node_sync=self.node_sync,
-            syno_paths=self.syno_paths,
-            mount_registry=mount_registry
-            or MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
+            syno_paths=SynologyPathService(
+                registry=registry, store=self.store, ids=IdentityIds()
+            ),
+            mount_registry=registry,
         )
 
     async def _stub_source(self, node: NodeRecord) -> None:
@@ -261,7 +264,7 @@ class TestClassifyWebhookItem(_WebhookTestCase):
         self.assertEqual(plan.file_ref.file_id, "")
         self.assertTrue(plan.schedule_delayed_upsert)
 
-    async def test_file_removed_returns_delete_id(self):
+    async def test_file_removed_returns_delete_link(self):
         # given
         service = self._create_service()
         # when
@@ -275,7 +278,7 @@ class TestClassifyWebhookItem(_WebhookTestCase):
             },
         )
         # then
-        self.assertEqual(plan.delete_id, "f1")
+        self.assertEqual(plan.delete_link, "f1")
         self.assertFalse(plan.schedule_delayed_upsert)
 
     async def test_file_modified_file_schedules_delayed(self):
@@ -309,7 +312,7 @@ class TestClassifyWebhookItem(_WebhookTestCase):
             },
         )
         # then
-        self.assertIsNone(plan.delete_id)
+        self.assertIsNone(plan.delete_link)
         self.assertFalse(plan.fetch_immediately)
         self.assertFalse(plan.schedule_delayed_upsert)
 
@@ -381,7 +384,7 @@ class TestClassifyWebhookItem(_WebhookTestCase):
             },
         )
         # then
-        self.assertIsNone(plan.delete_id)
+        self.assertIsNone(plan.delete_link)
         self.assertTrue(plan.schedule_delayed_upsert)
 
     async def test_unknown_event_type_is_noop(self):
@@ -398,7 +401,7 @@ class TestClassifyWebhookItem(_WebhookTestCase):
             },
         )
         # then
-        self.assertIsNone(plan.delete_id)
+        self.assertIsNone(plan.delete_link)
         self.assertFalse(plan.fetch_immediately)
         self.assertFalse(plan.schedule_delayed_upsert)
 

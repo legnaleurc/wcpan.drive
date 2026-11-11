@@ -79,14 +79,13 @@ a file; it raises `UnsupportedHashAlgorithmError` instead of guessing. The clien
 service API version is 6. Existing client SQLite caches (schema 6) are
 rejected and must be rebuilt or migrated manually to schema 7.
 
-The server database is at schema 4 and migrates schema 3 databases
-automatically at startup: existing Synology digests are marked `md4`, and each
-node's Synology `file_id` moves out of the public node table into
-backend-owned locator storage.
-Node IDs and the change feed are preserved. The
-migration cannot be undone in place, so stop the server and copy the database
-file, together with any `-wal` and `-shm` files, before upgrading; restore that
-copy to roll back.
+The server database is at schema 5 and is not migrated from older schemas.
+Schema 5 mints node IDs in the server and gives each backend instance its own
+tables, so every node ID changes. To upgrade, stop the server and move the
+database file, together with any `-wal` and `-shm` files, aside; the server
+creates a new database and runs initial discovery. Clients resynchronize on
+their own: their old cursors are stale. Consumers that store node IDs must
+look them up again. Keep the old file to roll back.
 
 Node payloads no longer expose the Synology `file_id` or the `mutable_id` key.
 Clients from before this migration require that key and cannot read current
@@ -196,6 +195,11 @@ wcpan.drive.server --config server.yaml backend nas --help
 argument errors never connect to its source. `gc`, `squash`, and backend
 commands write the same database without coordinating with a running server.
 
+`gc` removes nodes no longer reachable from the server root, and nodes left
+under a mount by a backend instance that no longer serves it (after the mount
+was assigned to another instance); each removal is published to clients. It
+then forgets the IDs of nodes that are gone.
+
 Change cursors are opaque strings bound to the database's change history. `"0"`
 starts from the beginning. `squash` replaces the history, so cursors issued
 before it, cursors from another database, cursors past the current end (a
@@ -249,8 +253,14 @@ backend named `synology`.
 Backend settings are checked against the backend factory before it starts:
 unknown, missing, or mistyped settings are errors.
 
-Node IDs from different backends share one namespace: filesystem IDs are random
-hex and Synology IDs are its permanent links, so collisions are not expected.
+Node IDs are minted by the server and are unique across backend instances,
+including several instances of one backend. They are opaque: a Synology node's
+ID is not its permanent link. Each instance keeps its state in its own tables,
+so two Synology servers or two filesystem instances over one disk never see each
+other's nodes. An instance is identified by its name; renaming it in the config
+makes it a new instance, and its backend type cannot change. An instance
+removed from the config keeps its nodes in the mirror, with a warning at
+startup; reading or changing them returns 503.
 
 #### Synology backend
 

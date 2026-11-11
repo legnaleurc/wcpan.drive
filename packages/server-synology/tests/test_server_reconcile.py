@@ -32,7 +32,7 @@ from wcpan.drive.server.workers import (
 )
 from wcpan.synology import SynologyClient, SynologyPath
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, IdentityIds
 
 
 _TS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp())
@@ -59,13 +59,14 @@ async def _reconcile_with_worker(
             metadata_queue=mq,
         )
         syno_paths = SynologyPathService(
+            ids=IdentityIds(),
             registry=MountRegistry(mounts=Mounts.from_sources(mounts), root_ids={}),
-            store=SynologyStore(mirror=mirror),
+            store=SynologyStore(mirror=mirror, ns=mirror.namespace("synology")),
         )
         bf = BackfillService(
             drive_api=drive_api,
             mirror=mirror,
-            store=SynologyStore(mirror=mirror),
+            store=SynologyStore(mirror=mirror, ns=mirror.namespace("synology")),
             syno_paths=syno_paths,
             node_sync=cs,
         )

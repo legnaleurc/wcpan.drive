@@ -84,7 +84,10 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         con = sqlite3.connect(self.db_path)
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master")}
         con.close()
-        self.assertIn("fake_backend", tables)
+        # each instance gets its own tables
+        for name in ("fake", "other"):
+            ns = self.backend.context.core.mirror.namespace(name)
+            self.assertIn(ns.table("fake_backend"), tables)
 
     async def ready(self) -> None:
         self.backend.discovered.set()

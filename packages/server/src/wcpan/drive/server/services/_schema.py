@@ -44,24 +44,30 @@ CREATE TABLE IF NOT EXISTS metadata (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-"""
 
-SCHEMA_VERSION = 4
-
-# Version 4 adds per-node hash algorithms and moves the Synology locator out of
-# the public node table into synology_locators, now owned by the Synology
-# backend (``BackendSchema``). Before version 4 every stored digest came from
-# Synology Drive. pending_enrichment is created by ``DDL``.
-MIGRATE_3_TO_4 = """
-ALTER TABLE nodes ADD COLUMN hash_algorithm TEXT NOT NULL DEFAULT '';
-UPDATE nodes SET hash = '' WHERE is_directory = 1;
-UPDATE nodes SET hash_algorithm = 'md4' WHERE is_directory = 0 AND hash != '';
-CREATE TABLE synology_locators (
-    node_id TEXT PRIMARY KEY,
-    file_id TEXT NOT NULL
+-- Backend instances seen by this database. ``key`` is assigned on first sight
+-- and names the instance's tables and ID map rows; renaming an instance in the
+-- config makes it a new one. ``schema_version`` is that of its tables, 0 until
+-- they are created.
+CREATE TABLE IF NOT EXISTS backends (
+    name           TEXT PRIMARY KEY,
+    key            TEXT NOT NULL UNIQUE,
+    type           TEXT NOT NULL DEFAULT '',
+    schema_version INTEGER NOT NULL DEFAULT 0
 );
-INSERT INTO synology_locators (node_id, file_id)
-    SELECT id, mutable_id FROM nodes WHERE mutable_id != '';
-DROP INDEX IF EXISTS ix_nodes_mutable_id;
-ALTER TABLE nodes DROP COLUMN mutable_id;
+
+-- Public node ID of each native ID of a backend instance (by key). The root and
+-- mount nodes belong to the core and have no row. Rows outlive their nodes, so
+-- a late observation of a deleted node keeps its ID; offline gc prunes them.
+CREATE TABLE IF NOT EXISTS node_ids (
+    id      TEXT PRIMARY KEY,
+    backend TEXT NOT NULL,
+    native  TEXT NOT NULL,
+    UNIQUE (backend, native)
+);
 """
+
+SCHEMA_VERSION = 5
+"""Version 5 mints public node IDs in the core (``node_ids``) and gives each
+backend instance its own tables (``backends``). Older databases are not migrated:
+the server refuses them, and a new one is built by initial discovery."""

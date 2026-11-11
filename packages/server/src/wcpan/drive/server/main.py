@@ -64,7 +64,9 @@ def _parser(config: ServerConfig | None) -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("serve", help="Run the mirror server")
     subparsers.add_parser(
-        "gc", help="Remove dangling nodes unreachable from the server root"
+        "gc",
+        help="Remove nodes unreachable from the server root or left under a mount"
+        " by a backend that no longer serves it, and prune unused node IDs",
     )
     subparsers.add_parser(
         "squash", help="[DANGER] Reset change history to a single update per node"
@@ -173,13 +175,16 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     try:
         if args.command == "gc":
-            count = cleanup_dangling_nodes(config.database_url, schemas={})
+            count = cleanup_dangling_nodes(
+                config.database_url,
+                mounts={name: m.backend for name, m in config.mounts.items()},
+            )
             print(f"Removed {count} dangling node(s).")
             return
 
         if args.command == "squash":
             print("WARNING: squash resets all consumer cursors.", file=sys.stderr)
-            count = reset_change_history(config.database_url, schemas={})
+            count = reset_change_history(config.database_url)
             print(f"Reset change history: {count} update record(s) written.")
             return
 

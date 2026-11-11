@@ -36,13 +36,23 @@ class BackendRouter:
         self._files = files
 
     async def backend_of(self, node_id: NodeId) -> str:
-        """The backend instance serving the mount that contains *node_id*."""
+        """The backend instance serving *node_id*.
+
+        A mount is served by its configured backend, as create, upload, and move
+        destinations usually are mounts; any other node by the instance whose
+        ID map row it has, which also covers nodes not published yet.
+        """
         if node_id == self._mounts.root_id:
             raise OperationNotSupportedError("Cannot change the server root")
-        mount = await self._mounts.containing(node_id, mirror=self._mirror)
-        backend = self._mount_backends.get(mount.name) if mount is not None else None
+        mount = self._mounts.by_id(node_id)
+        if mount is not None:
+            backend = self._mount_backends.get(mount.name)
+        else:
+            backend = await self._mirror.owner_of(node_id)
         if backend is None:
-            raise OperationUnavailableError(f"{node_id} is not in a configured mount")
+            raise OperationUnavailableError(f"{node_id} is not served by a backend")
+        if backend not in self._operations:
+            raise OperationUnavailableError(f"backend {backend!r} is not running")
         return backend
 
     async def create_folder(self, parent_id: NodeId, name: str) -> NodeRecord:

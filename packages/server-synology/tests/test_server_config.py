@@ -24,7 +24,7 @@ from wcpan.drive.server.synology._config import (
 from wcpan.drive.server.synology._mounts import MountRegistry, create_mount_registry
 from wcpan.synology import SynologyClient
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, IdentityIds
 
 
 def _settings(**overrides):
@@ -104,6 +104,7 @@ def _context(
             mirror=decoy.mock(cls=MirrorStore),
             node_sync=decoy.mock(cls=NodeSyncService),
             off_main=decoy.mock(cls=OffMainService),
+            ids=IdentityIds(),
         ),
         routes=BackendRoutes(name="nas"),
         offline=offline,

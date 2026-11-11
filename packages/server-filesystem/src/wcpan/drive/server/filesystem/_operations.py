@@ -44,7 +44,7 @@ from ._mutation import (
 )
 from ._paths import NodePaths
 from ._reading import STAGING_PREFIX, Entry, open_verified, stat_entry
-from ._scan import FilesystemScanner, new_node_id
+from ._scan import FilesystemScanner
 from ._store import FilesystemStore
 
 
@@ -201,7 +201,7 @@ class FilesystemOperations(_Writes):
                 else:
                     entry = await self._entry(path)
                     observation = FilesystemScanner.observation(
-                        entry, new_node_id(), parent_id, ""
+                        entry, self._scanner.new_node_id(), parent_id, ""
                     )
                     return await self._record(observation, read, folders=[parent_id])
         raise OperationConflictError(
@@ -419,7 +419,7 @@ class FilesystemUploader(_Writes):
             async with self._node_sync.observe() as read:
                 renamed_before = await self._blocking(file.staged.is_at, destination)
                 if renamed_before or await self._place(file, folder):
-                    node_id = new_node_id()
+                    node_id = self._scanner.new_node_id()
                     if renamed_before:
                         # A scan may have mirrored it since the earlier attempt;
                         # read the mirror only, as a scan here would deadlock.

@@ -17,7 +17,6 @@ import asyncio
 import os
 import stat
 import time
-import uuid
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -28,6 +27,7 @@ from wcpan.drive.protocol.lib import guess_mime_type
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.bfs import parallel_bfs
+from wcpan.drive.server.services.ids import NodeIdMap
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.operations import LocateUndecidedError
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
@@ -61,10 +61,6 @@ class Previous:
 
     record: NodeRecord
     state: EntryState
-
-
-def new_node_id() -> NodeId:
-    return NodeId(uuid.uuid4().hex)
 
 
 def _same_public_metadata(a: NodeRecord, b: NodeRecord) -> bool:
@@ -129,6 +125,7 @@ class FilesystemScanner:
         mirror: MirrorStore,
         store: FilesystemStore,
         node_sync: NodeSyncService,
+        ids: NodeIdMap,
         paths: NodePaths,
         blocking: Blocking,
         watcher: DirectoryWatcher | None = None,
@@ -140,6 +137,7 @@ class FilesystemScanner:
         self._mirror = mirror
         self._store = store
         self._node_sync = node_sync
+        self._ids = ids
         self._paths = paths
         self._blocking = blocking
         self._watcher = watcher
@@ -150,6 +148,10 @@ class FilesystemScanner:
     @property
     def mounts(self) -> Mounts:
         return self._paths.mounts
+
+    def new_node_id(self) -> NodeId:
+        """An ID for an object seen for the first time; the core mints it."""
+        return self._ids.mint()
 
     def hold_staging(self, name: str) -> None:
         """Keep the staging file *name* from being swept while an upload uses it."""
@@ -455,7 +457,7 @@ class FilesystemScanner:
                 claimed.add(candidate)
                 return candidate, previous
 
-        node_id = new_node_id()
+        node_id = self.new_node_id()
         claimed.add(node_id)
         return node_id, None
 

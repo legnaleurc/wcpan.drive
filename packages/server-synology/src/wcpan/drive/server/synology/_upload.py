@@ -23,7 +23,6 @@ from wcpan.synology import (
     SynologyUploadError,
 )
 
-from ._convert import convert_file_info
 from ._paths import SynologyPathService
 
 
@@ -48,7 +47,7 @@ class SynologyUploader:
         )
         if existing is None:
             return None
-        conflict = convert_file_info(existing, parent_id)
+        conflict = await self._syno_paths.convert_one(existing, parent_id)
         if conflict is None:
             _L.warning(
                 "Conflict detected for %r under %r but existing node lacks permanent_link; proceeding",
@@ -112,7 +111,7 @@ class SynologyUploader:
                 f"Name conflict for {name!r} but existing node could not be resolved",
                 file_name=name,
             )
-        observation = convert_file_info(info, parent_id)
+        observation = await self._syno_paths.convert_one(info, parent_id)
         if observation is None:
             raise SynologyUploadConflictError(
                 f"Name conflict for {name!r} but existing node lacks permanent_link",
@@ -128,7 +127,7 @@ class SynologyUploader:
         media_info: MediaInfo | None,
         read: ReadSeq,
     ) -> NodeRecord:
-        observation = convert_file_info(info, parent_id)
+        observation = await self._syno_paths.convert_one(info, parent_id)
         if observation is None:
             raise SynologyUploadError(
                 f"Uploaded node {info.get('name', '?')!r} lacks permanent_link in API response",

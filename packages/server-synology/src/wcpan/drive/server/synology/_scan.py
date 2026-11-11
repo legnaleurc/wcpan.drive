@@ -13,7 +13,6 @@ from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation, ReadSeq
 from wcpan.synology import SynologyClient, SynologyFileId, SynologyPath
 
-from ._convert import convert_file_info
 from ._paths import SynologyPathService
 from ._store import SynologyStore
 
@@ -68,29 +67,20 @@ class StartupScanService:
         db_children = await self._mirror.get_children(mid)
         db_child_ids = {n.id for n in db_children}
 
-        acc.session.saw(
-            o.record.id
-            for item in items
-            if (o := convert_file_info(item, parent_id=mid)) is not None
-        )
+        listed = await self._syno_paths.convert(items, mid)
+        acc.session.saw(o.record.id for _, o in listed)
 
         pre_scan_max_id = max(
             (item.get("max_id", item.get("sync_id", 0)) for item in items),
             default=last_max_id,
         )
-        highest = last_max_id
+        highest = max([last_max_id, *(item.get("sync_id", 0) for item in items)])
         subfolders: list[tuple[NodeId, int, bool]] = []
         pending_upserts: list[NodeObservation] = []
 
-        for item in items:
+        for item, observation in listed:
             sync_id = item.get("sync_id", 0)
             max_id = item.get("max_id", sync_id)
-            if sync_id > highest:
-                highest = sync_id
-
-            observation = convert_file_info(item, parent_id=mid)
-            if observation is None:
-                continue
             node_id = observation.record.id
             is_new = node_id not in db_child_ids
             if sync_id > last_max_id or is_new:
@@ -182,11 +172,8 @@ class StartupScanService:
                 acc.session.preserve(folder_id)
                 return []
 
-            acc.session.saw(
-                o.record.id
-                for item in items
-                if (o := convert_file_info(item, parent_id=folder_id)) is not None
-            )
+            listed = await self._syno_paths.convert(items, folder_id)
+            acc.session.saw(o.record.id for _, o in listed)
 
             db_children = await self._mirror.get_children(folder_id)
             db_child_ids = {n.id for n in db_children}
@@ -195,15 +182,12 @@ class StartupScanService:
             pending_file_records: list[NodeObservation] = []
             children: list[tuple[NodeId, int, bool]] = []
 
-            for item in items:
+            acc.highest = max(
+                [acc.highest, *(item.get("sync_id", 0) for item in items)]
+            )
+            for item, observation in listed:
                 sync_id = item.get("sync_id", 0)
                 max_id = item.get("max_id", sync_id)
-                if sync_id > acc.highest:
-                    acc.highest = sync_id
-
-                observation = convert_file_info(item, parent_id=folder_id)
-                if observation is None:
-                    continue
                 node_id = observation.record.id
                 is_new = node_id not in db_child_ids
                 if sync_id > last_max_id or is_new:
