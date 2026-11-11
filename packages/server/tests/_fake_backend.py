@@ -19,11 +19,12 @@ from wcpan.drive.server.types import BackendLocator
 
 
 class FakeSchema:
+    name = "fake"
     version = 1
 
-    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
         con.execute(
-            f"CREATE TABLE IF NOT EXISTS {ns.table('fake_backend')} (x INTEGER)"
+            "CREATE TABLE IF NOT EXISTS fake_backend (backend TEXT NOT NULL, x INTEGER)"
         )
 
     def bind_locator(

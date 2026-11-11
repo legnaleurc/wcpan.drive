@@ -528,7 +528,8 @@ paths. Synology webhooks use the per-instance route
 
 Not done: an explicit policy when a mount changes backend or source beyond the
 existing checkpoint and filesystem-identity checks. Node IDs are minted by the
-core and each instance has its own tables (see Core-minted node identity).
+core and each instance's backend rows are scoped by its key (see Core-minted
+node identity).
 
 - Preserve existing client imports, HTTP routes, error behavior, and CLI behavior
   during the internal refactor unless a separately reviewed migration requires change.
@@ -571,8 +572,8 @@ Two changes fix this separately:
 
 - Public node IDs are minted by the core and mapped to `(backend, native ID)`,
   so they are unique by construction and carry no backend spelling.
-- Each backend instance gets its own tables for backend-owned state, so its
-  lookups cannot see another instance's rows.
+- Backend-owned state is scoped by backend instance, so its lookups cannot see
+  another instance's rows.
 
 The HTTP feed stays one stream with one cursor and one total order of changes.
 
@@ -651,27 +652,32 @@ The README note "collisions are not expected" becomes a guarantee.
 
 ### Backend tables
 
-Per backend instance, the backend-owned tables (`BackendSchema`: locators,
-entries, checkpoints) and their indexes are created under names derived from
-the instance's registry key. The registry records, per instance: name, type,
-key (an opaque `[a-z0-9]` token assigned the first time the instance is seen,
-as mount IDs are), and backend schema version. Renaming an instance in the
-config makes it a new backend. SQL object names are built only from registry
-keys, never from config strings, so interpolating them is safe.
+Backend-owned tables (`BackendSchema`: locators, entries, checkpoints) have
+fixed names and are shared by every instance of the backend. Each carries a
+`backend` column holding the instance's registry key. The registry records, per
+instance: name, type, and key (an opaque `[0-9a-f]` token assigned the first
+time the instance is seen, as mount IDs are). Renaming an instance in the config
+makes it a new backend.
 
-- `BackendSchema.ensure_schema` and the hooks (`bind_locator`, `forget_nodes`,
-  `forget_orphans`) receive the instance's namespace; backend stores are
-  already built per instance, so they hold it.
-- Backend rows stay keyed by public node ID. Since public IDs are unique, the
-  backend joins to `nodes` (`_get_node_by_locator`, `_nodes_by_identity`) and
-  orphan cleanup (`NOT IN (SELECT id FROM nodes)`) need no instance filter.
-- Lookups by `file_id` and `identity` read only the instance's own table.
-- Backend schema versions are per instance, checked at startup like the core
-  `user_version`; a mismatch requires a rebuild of that instance.
+- The hooks (`bind_locator`, `forget_nodes`, `forget_orphans`) receive the
+  instance's namespace (its key); backend stores are built per instance, so
+  they hold it and bind it into every query.
+- Backend rows stay keyed by public node ID, which is unique across instances.
+  Lookups by `file_id` and `identity` and mount checkpoints are keyed by
+  `(backend, ...)`, so they read only the instance's own rows.
+- Backend schema versions are per backend (`BackendSchema.name`, recorded in
+  `backend_schemas`), since its instances share the tables; they are checked at
+  startup like the core `user_version`, and a mismatch requires a new database.
+- The core finds backend tables without loading backends: every non-core table
+  with a `backend` column. `drop` and `rebuild` delete the instance's rows from
+  them.
 
-Per-instance tables were chosen over an instance column on shared tables: with
-a column, every backend key, index, and query must carry the instance, and a
-missed filter silently reads another instance's rows.
+Per-instance tables (`<name>_<key>`) were implemented first and replaced: they
+needed SQL built by string interpolation everywhere, migrations per instance,
+and table discovery by name suffix, and allowed instances of one backend to sit
+at different table versions. A missed instance filter is the risk of shared
+tables; it is contained by keeping every query in the backend store, which
+holds the key.
 
 ### Cursor
 
@@ -714,11 +720,10 @@ to descendants (`inner_delete_node_by_id` only unlinks the node), so every
 removal is one tombstone per node, which the change log expresses directly.
 
 - `backend NAME drop`: write one tombstone per node of the instance, delete its
-  nodes, pending enrichment, and map rows, drop its tables, and remove its
+  nodes, pending enrichment, map rows, and backend table rows, and remove its
   registry entry, in one transaction.
 - `backend NAME rebuild`: the same tombstones and deletions, keeping the map
-  rows and registry entry and emptying its tables. Initial discovery runs on
-  next start; items whose native ID is stable (Synology permanent links) come
+  rows and registry entry. Initial discovery runs on next start; items whose native ID is stable (Synology permanent links) come
   back under their old public IDs. Map rows left unused are pruned by a later
   `gc`, so a rebuild that does not finish discovery before `gc` loses only ID
   continuity, not data.
@@ -762,8 +767,8 @@ state where two Synology instances already collide.
 2. Identity and isolation, in one release with the database rebuild: the
    registry, `node_ids` with `public`, `lookup`, `native_of`, and `mint`,
    Synology and filesystem conversion sites, routing by mount owner and map
-   row, per-instance backend tables and indexes with the namespace passed to
-   `BackendSchema`, per-instance schema versions, and per-backend `gc`. Shipping
+   row, backend rows scoped by instance key with the namespace passed to
+   `BackendSchema`, per-backend schema versions, and per-backend `gc`. Shipping
    identity without table isolation would leave the `file_id` and `identity`
    collisions in place. Implemented as schema 5 (older databases are refused
    with a message to move them aside). Differences from the design above:
@@ -774,9 +779,8 @@ state where two Synology instances already collide.
      observation or withheld enrichment record, in that transaction
      (`_claim_id`), so a filesystem scan does not pay one transaction per new
      file.
-   - The registry key is 8 hex characters and names tables as
-     `<name>_<key>` (`BackendNamespace.table`); `register_schema` returns the
-     namespace. The registry also refuses a change of an instance's backend
+   - The registry key is 8 hex characters and fills the `backend` column of
+     backend tables; `register_schema` returns the namespace holding it. The registry also refuses a change of an instance's backend
      type.
    - `gc` is one pass: reachability carries the owner of each configured mount,
      and a mount not in the config keeps everything below it. Backend rows of
@@ -789,10 +793,10 @@ state where two Synology instances already collide.
      before the backend sees its arguments, so they work without loading the
      backend; instances registered but not configured are valid names. `drop`
      refuses a configured instance and `rebuild` an unconfigured one.
-   - The instance's tables are found by their namespace suffix and dropped by
-     both commands. `rebuild` resets the registered table version, so it also
-     recovers from a backend schema version mismatch; the tables are recreated
-     when the backend registers on the next start.
+   - Both commands delete the instance's rows from every backend table (a
+     non-core table with a `backend` column). Backend tables are shared, so
+     `rebuild` cannot recover from a backend schema version mismatch; that
+     needs a new database.
    - Mount reassignment runs at every start, before backends are entered:
      children of a mount owned by another instance are removed with their
      subtrees and tombstones. `gc` still covers deeper leftovers.
@@ -811,7 +815,7 @@ minting; a delayed observation after deletion keeping its ID and being rejected
 by ordering; Synology operations, `locate`, webhook deletions, and moves through
 `native_of` and `lookup`; Synology moves not deleting an unchanged node;
 routing to mounts, ordinary nodes, withheld nodes, unknown IDs, and stopped
-backends; orphan cleanup in one instance leaving the other's rows; per-instance
+backends; orphan cleanup in one instance leaving the other's rows; per-backend
 schema version mismatch; drop emitting one tombstone per node; rebuild
 restoring Synology nodes under their old IDs; `gc` pruning unused map rows;
 moves between mounts of one backend.
@@ -820,7 +824,7 @@ moves between mounts of one backend.
 
 Giving each backend its own SQLite file (with a small core database for the
 root, mounts, registry, and identity map) was designed and reviewed, then
-deferred. The identity map and per-instance tables already give the isolation
+deferred. The identity map and per-instance rows already give the isolation
 the split would, so the split would only add: containment of a corrupt or
 oversized file, no shared writer, and restore of one backend from a file copy.
 

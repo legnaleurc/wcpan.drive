@@ -422,14 +422,13 @@ class TestPerBackendGc(IsolatedAsyncioTestCase):
 
 
 class _Schema:
-    """Backend tables named through the instance's namespace."""
+    """A backend table shared by instances, tagged by instance key."""
 
-    def __init__(self, version: int = 1) -> None:
-        self.version = version
+    name = "state"
+    version = 1
 
-    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
-        con.execute(f"CREATE TABLE IF NOT EXISTS {ns.table('state')} (x INTEGER)")
-        con.execute(f"INSERT INTO {ns.table('state')} (x) VALUES (1)")
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
+        con.execute("CREATE TABLE IF NOT EXISTS state (backend TEXT NOT NULL)")
 
     def bind_locator(self, *_: object) -> None:
         pass
@@ -437,8 +436,9 @@ class _Schema:
     def forget_nodes(self, *_: object) -> None:
         pass
 
-    def forget_orphans(self, *_: object) -> None:
-        pass
+    def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
+        # stands in for backend state written while serving
+        con.execute("INSERT INTO state (backend) VALUES (?)", (ns.key,))
 
 
 class TestLifecycle(IsolatedAsyncioTestCase):
@@ -485,11 +485,8 @@ class TestLifecycle(IsolatedAsyncioTestCase):
         finally:
             con.close()
 
-    def _tables(self) -> set[str]:
-        return {
-            str(row[0])
-            for row in self._query("SELECT name FROM sqlite_master WHERE type='table'")
-        }
+    def _state(self) -> list[str]:
+        return sorted(str(row[0]) for row in self._query("SELECT backend FROM state"))
 
     async def _removed(self) -> set[str]:
         changes, _, _ = await self.mirror.get_changes_since(self.cursor, 1000)
@@ -506,8 +503,7 @@ class TestLifecycle(IsolatedAsyncioTestCase):
         self.assertIsNotNone(await self.mirror.get_node_by_id(self.b_file))
         self.assertIsNotNone(await self.mirror.get_node_by_id("m-docs"))
         self.assertEqual(registered_backends(self.db_path), ["b"])
-        self.assertNotIn(self.ns["a"].table("state"), self._tables())
-        self.assertIn(self.ns["b"].table("state"), self._tables())
+        self.assertEqual(self._state(), [self.ns["b"].key])
         self.assertEqual(await self.mirror.get_pending_enrichment("a"), [])
         self.assertEqual(
             self._query(
@@ -524,16 +520,15 @@ class TestLifecycle(IsolatedAsyncioTestCase):
         self.assertEqual(count, 2)
         self.assertEqual(await self._removed(), {self.a_dir, self.a_file})
         self.assertEqual(registered_backends(self.db_path), ["a", "b"])
-        self.assertNotIn(self.ns["a"].table("state"), self._tables())
+        self.assertEqual(self._state(), [self.ns["b"].key])
 
-        # when: the instance starts again, at a newer table version
+        # when: the instance starts again
         mirror = _make_mirror(self.db_path, self.pool)
         await mirror.ensure_schema()
-        ns = await mirror.register_schema("a", _Schema(version=2))
+        ns = await mirror.register_schema("a", _Schema())
 
-        # then: same namespace, fresh tables, and stable items keep their IDs
+        # then: same namespace, and stable items keep their IDs
         self.assertEqual(ns, self.ns["a"])
-        self.assertEqual(self._query(f"SELECT x FROM {ns.table('state')}"), [(1,)])
         again = NodeIds(mirror=mirror, key=ns.key)
         self.assertEqual(await again.public(["dir", "file"]), [self.a_dir, self.a_file])
 

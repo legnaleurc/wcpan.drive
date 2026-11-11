@@ -46,14 +46,19 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- Backend instances seen by this database. ``key`` is assigned on first sight
--- and names the instance's tables and ID map rows; renaming an instance in the
--- config makes it a new one. ``schema_version`` is that of its tables, 0 until
--- they are created.
+-- and tags the instance's rows in backend tables and the ID map; renaming an
+-- instance in the config makes it a new one.
 CREATE TABLE IF NOT EXISTS backends (
-    name           TEXT PRIMARY KEY,
-    key            TEXT NOT NULL UNIQUE,
-    type           TEXT NOT NULL DEFAULT '',
-    schema_version INTEGER NOT NULL DEFAULT 0
+    name TEXT PRIMARY KEY,
+    key  TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL DEFAULT ''
+);
+
+-- Version of each backend's tables (``BackendSchema.name``), shared by all of
+-- its instances; recorded when the tables are first created.
+CREATE TABLE IF NOT EXISTS backend_schemas (
+    name    TEXT PRIMARY KEY,
+    version INTEGER NOT NULL
 );
 
 -- Public node ID of each native ID of a backend instance (by key). The root and
@@ -67,7 +72,22 @@ CREATE TABLE IF NOT EXISTS node_ids (
 );
 """
 
+CORE_TABLES = frozenset(
+    {
+        "nodes",
+        "changes",
+        "pending_enrichment",
+        "metadata",
+        "backends",
+        "backend_schemas",
+        "node_ids",
+    }
+)
+"""Tables owned by the core; every other table with a ``backend`` column is a
+backend table."""
+
 SCHEMA_VERSION = 5
-"""Version 5 mints public node IDs in the core (``node_ids``) and gives each
-backend instance its own tables (``backends``). Older databases are not migrated:
-the server refuses them, and a new one is built by initial discovery."""
+"""Version 5 mints public node IDs in the core (``node_ids``) and registers
+backend instances (``backends``), whose rows backend tables tag by key. Older
+databases are not migrated: the server refuses them, and a new one is built by
+initial discovery."""

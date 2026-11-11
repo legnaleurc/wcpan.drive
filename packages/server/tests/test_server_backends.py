@@ -30,11 +30,13 @@ from wcpan.drive.server.workers import (
 
 
 class _RecordingSchema:
+    name = "recording"
+
     def __init__(self, version: int = 1) -> None:
         self.version = version
         self.bound: list[tuple[str, str]] = []
 
-    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
         pass
 
     def bind_locator(
@@ -205,8 +207,8 @@ class TestBackendViews(IsolatedAsyncioTestCase):
     async def test_instances_have_their_own_namespaces(self) -> None:
         a = self.mirror.namespace("a")
         b = self.mirror.namespace("b")
-        self.assertNotEqual(a.table("t"), b.table("t"))
-        self.assertRegex(a.table("t"), r"^t_[0-9a-f]+$")
+        self.assertNotEqual(a.key, b.key)
+        self.assertRegex(a.key, r"^[0-9a-f]+$")
 
     async def test_registrations_survive_restart(self) -> None:
         # given
@@ -223,6 +225,13 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         await mirror.ensure_schema()
         with self.assertRaises(SchemaVersionError):
             await mirror.register_schema("a", _RecordingSchema(version=2))
+
+    async def test_schema_version_is_shared_by_instances(self) -> None:
+        # a new instance uses the tables the backend already has
+        mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
+        await mirror.ensure_schema()
+        with self.assertRaises(SchemaVersionError):
+            await mirror.register_schema("c", _RecordingSchema(version=2))
 
     async def test_rejects_another_backend_type(self) -> None:
         # given

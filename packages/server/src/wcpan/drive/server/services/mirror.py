@@ -24,7 +24,7 @@ from wcpan.drive.sqlite import (
 
 from ..lib.root import SERVER_ROOT_ID
 from ..types import BackendLocator, NodeObservation
-from ._schema import DDL, SCHEMA_VERSION
+from ._schema import CORE_TABLES, DDL, SCHEMA_VERSION
 from .off_main import OffMainService
 
 
@@ -37,34 +37,38 @@ class SchemaVersionError(RuntimeError):
 
 @dataclass(frozen=True)
 class BackendNamespace:
-    """Names of one backend instance's tables and indexes.
+    """The rows of one backend instance in the shared backend tables.
 
-    Built only from the instance's registry key (``[0-9a-f]``), never from
-    config strings, so the names are safe to interpolate into SQL.
+    ``key`` is the instance's registry key; backend tables store it in their
+    ``backend`` column, and every lookup filters by it.
     """
 
     key: str
-
-    def table(self, name: str) -> str:
-        """The instance's name for table or index *name*."""
-        return f"{name}_{self.key}"
 
 
 class BackendSchema(Protocol):
     """Backend-owned tables, maintained on the core's connection and transaction.
 
-    Each backend instance gets its own tables, named through its namespace, so
-    its lookups cannot see another instance's rows. Rows stay keyed by public
-    node ID. Hooks must not commit, roll back, or open connections.
+    The tables are shared by every instance of the backend. Each has a
+    ``backend`` column holding the instance key (``BackendNamespace.key``), which
+    every query filters by, so an instance never sees another's rows; ``drop``
+    and ``rebuild`` delete an instance's rows through that column without loading
+    the backend. Rows stay keyed by public node ID. Hooks must not commit, roll
+    back, or open connections.
     """
+
+    @property
+    def name(self) -> str:
+        """Names the set of tables; its version is recorded under this name."""
+        ...
 
     @property
     def version(self) -> int:
         """Version of the tables; a database with another version is refused."""
         ...
 
-    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
-        """Create the instance's tables."""
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
+        """Create the tables, shared by every instance."""
         ...
 
     def bind_locator(
@@ -294,32 +298,33 @@ def _register_backend(dsn: str, name: str, type_: str) -> str:
                 return key
 
 
-def _register_schema(
-    dsn: str, name: str, ns: BackendNamespace, schema: BackendSchema
-) -> None:
-    """Create an instance's tables and drop rows whose nodes went away meanwhile.
+def _register_schema(dsn: str, ns: BackendNamespace, schema: BackendSchema) -> None:
+    """Create a backend's tables and drop an instance's rows whose nodes went
+    away meanwhile.
 
     Offline ``gc`` runs without loading backends, so it cannot clean their rows.
 
     Raises:
-        SchemaVersionError: If the instance's tables have another version.
+        SchemaVersionError: If the backend's tables have another version.
     """
     with _read_write(dsn) as con:
         with closing(
-            con.execute("SELECT schema_version FROM backends WHERE name = ?", (name,))
-        ) as cur:
-            version = int(cur.fetchone()["schema_version"])
-        if version not in (0, schema.version):
-            raise SchemaVersionError(
-                f"backend {name!r} schema version mismatch: expected"
-                f" {schema.version}, got {version}. Its tables are not migrated:"
-                " move the database aside to rebuild it."
-            )
-        schema.ensure_schema(con, ns)
-        if version == 0:
             con.execute(
-                "UPDATE backends SET schema_version = ? WHERE name = ?",
-                (schema.version, name),
+                "SELECT version FROM backend_schemas WHERE name = ?", (schema.name,)
+            )
+        ) as cur:
+            row = cur.fetchone()
+        if row is not None and int(row["version"]) != schema.version:
+            raise SchemaVersionError(
+                f"backend schema {schema.name!r} version mismatch: expected"
+                f" {schema.version}, got {row['version']}. Its tables are not"
+                " migrated: move the database aside to rebuild it."
+            )
+        schema.ensure_schema(con)
+        if row is None:
+            con.execute(
+                "INSERT INTO backend_schemas (name, version) VALUES (?, ?)",
+                (schema.name, schema.version),
             )
         schema.forget_orphans(con, ns)
 
@@ -797,17 +802,27 @@ def _instance_key(con: sqlite3.Connection, name: str) -> str:
     return str(row["key"])
 
 
-def _instance_tables(con: sqlite3.Connection, key: str) -> list[str]:
-    """Tables named through the namespace with *key* (see ``BackendNamespace``)."""
+def _backend_tables(con: sqlite3.Connection) -> list[str]:
+    """Backend tables: those outside the core with a ``backend`` column (see
+    ``BackendSchema``)."""
     with closing(
-        con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        con.execute(
+            """
+            SELECT m.name FROM sqlite_master m
+            WHERE m.type = 'table'
+              AND EXISTS (
+                SELECT 1 FROM pragma_table_info(m.name) WHERE name = 'backend'
+              )
+            ORDER BY m.name
+            """
+        )
     ) as cur:
         names = [str(row["name"]) for row in cur]
-    return [n for n in names if n.endswith(f"_{key}")]
+    return [n for n in names if n not in CORE_TABLES]
 
 
 def _forget_instance(con: sqlite3.Connection, name: str, key: str) -> int:
-    """Tombstone and delete the instance's nodes and drop its tables.
+    """Tombstone and delete the instance's nodes and its backend table rows.
 
     Returns the number of nodes removed. Clients do not cascade removals, so
     each node gets its own tombstone.
@@ -829,14 +844,15 @@ def _forget_instance(con: sqlite3.Connection, name: str, key: str) -> int:
         f"DELETE FROM pending_enrichment WHERE backend = ? OR node_id IN ({owned_sql})",
         (name, key),
     )
-    for table in _instance_tables(con, key):
-        con.execute(f'DROP TABLE "{table}"')
+    for table in _backend_tables(con):
+        quoted = table.replace('"', '""')
+        con.execute(f'DELETE FROM "{quoted}" WHERE backend = ?', (key,))
     return count
 
 
 def drop_backend(dsn: str, name: str) -> int:
-    """Remove instance *name*: its nodes (with tombstones), IDs, tables, and
-    registration, in one transaction. Returns the number of nodes removed.
+    """Remove instance *name*: its nodes (with tombstones), IDs, backend table
+    rows, and registration, in one transaction. Returns the number of nodes removed.
 
     Raises:
         ValueError: If *name* is not registered.
@@ -851,12 +867,12 @@ def drop_backend(dsn: str, name: str) -> int:
 
 
 def rebuild_backend(dsn: str, name: str) -> int:
-    """Remove instance *name*'s nodes (with tombstones) and tables, keeping its
-    registration and IDs, so initial discovery on the next start rebuilds it.
+    """Remove instance *name*'s nodes (with tombstones) and backend table rows,
+    keeping its registration and IDs, so initial discovery on the next start
+    rebuilds it.
 
     Items whose native IDs are stable come back under their old public IDs; IDs
-    left unused are pruned by a later ``gc``. The tables are recreated at the
-    backend's current version. Returns the number of nodes removed.
+    left unused are pruned by a later ``gc``. Returns the number of nodes removed.
 
     Raises:
         ValueError: If *name* is not registered.
@@ -864,9 +880,7 @@ def rebuild_backend(dsn: str, name: str) -> int:
     _ensure_schema(dsn)
     with _read_write(dsn) as con:
         key = _instance_key(con, name)
-        count = _forget_instance(con, name, key)
-        con.execute("UPDATE backends SET schema_version = 0 WHERE name = ?", (name,))
-    return count
+        return _forget_instance(con, name, key)
 
 
 def _release_reassigned_mounts(
@@ -1026,14 +1040,14 @@ class MirrorStore:
     ) -> BackendNamespace:
         """Persist instance *backend*'s state through *schema* from now on.
 
-        Returns the namespace that names the instance's tables.
+        Returns the namespace that scopes the instance's rows.
 
         Raises:
-            SchemaVersionError: If the instance's tables have another version.
+            SchemaVersionError: If the backend's tables have another version.
         """
         await self.register_backend(backend)
         ns = self._instances[backend].ns
-        await self._off_main(_register_schema, self._dsn, backend, ns, schema)
+        await self._off_main(_register_schema, self._dsn, ns, schema)
         self._instances[backend] = _Instance(ns=ns, schema=schema)
         return ns
 

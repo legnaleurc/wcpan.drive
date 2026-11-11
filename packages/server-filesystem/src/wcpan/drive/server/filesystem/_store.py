@@ -2,9 +2,10 @@
 
 ``fs_entries`` binds each public node to the identity of the object it names and
 the stat signature its checksum was computed from. Hard links share an identity,
-so the identity column is indexed but not unique. Each instance has its own
-tables, so two instances over one host filesystem never match each other's
-entries by identity. ``fs_mounts`` records which
+so the identity column is indexed but not unique. Instances share the tables;
+every query filters by the instance key, so two instances over one host
+filesystem never match each other's entries by identity. ``fs_mounts`` records
+which
 filesystem each mount was scanned on, so an unmounted source is not mistaken for
 an empty directory.
 """
@@ -19,7 +20,7 @@ from wcpan.drive.server.services.mirror import BackendNamespace, MirrorStore
 from wcpan.drive.server.types import BackendLocator
 
 from ._handles import FileIdentity
-from ._schema import SCHEMA_VERSION, ddl
+from ._schema import DDL, SCHEMA_NAME, SCHEMA_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,10 +46,11 @@ class EntryState:
 class FilesystemSchema:
     """``BackendSchema`` hooks for the filesystem tables."""
 
+    name = SCHEMA_NAME
     version = SCHEMA_VERSION
 
-    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
-        con.executescript(ddl(ns))
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
+        con.executescript(DDL)
 
     def bind_locator(
         self,
@@ -59,17 +61,25 @@ class FilesystemSchema:
     ) -> None:
         state = EntryState.from_locator(locator)
         con.execute(
-            f"""
-            INSERT INTO {ns.table("fs_entries")}
-                (node_id, identity, size, mtime_ns, ctime_ns)
-            VALUES (?, ?, ?, ?, ?)
+            """
+            INSERT INTO fs_entries
+                (node_id, backend, identity, size, mtime_ns, ctime_ns)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(node_id) DO UPDATE SET
+                backend = excluded.backend,
                 identity = excluded.identity,
                 size = excluded.size,
                 mtime_ns = excluded.mtime_ns,
                 ctime_ns = excluded.ctime_ns
             """,
-            (str(node_id), state.identity, state.size, state.mtime_ns, state.ctime_ns),
+            (
+                str(node_id),
+                ns.key,
+                state.identity,
+                state.size,
+                state.mtime_ns,
+                state.ctime_ns,
+            ),
         )
 
     def forget_nodes(
@@ -77,14 +87,15 @@ class FilesystemSchema:
     ) -> None:
         placeholders = ",".join("?" * len(node_ids))
         con.execute(
-            f"DELETE FROM {ns.table('fs_entries')} WHERE node_id IN ({placeholders})",
-            list(node_ids),
+            f"DELETE FROM fs_entries WHERE backend = ? AND node_id IN ({placeholders})",
+            [ns.key, *node_ids],
         )
 
     def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         con.execute(
-            f"DELETE FROM {ns.table('fs_entries')}"
-            " WHERE node_id NOT IN (SELECT id FROM nodes)"
+            "DELETE FROM fs_entries"
+            " WHERE backend = ? AND node_id NOT IN (SELECT id FROM nodes)",
+            (ns.key,),
         )
 
 
@@ -121,8 +132,8 @@ def _get_entries(
     with closing(
         con.execute(
             "SELECT node_id, identity, size, mtime_ns, ctime_ns"
-            f" FROM {ns.table('fs_entries')} WHERE node_id IN ({placeholders})",
-            [str(_) for _ in node_ids],
+            f" FROM fs_entries WHERE backend = ? AND node_id IN ({placeholders})",
+            [ns.key, *(str(_) for _ in node_ids)],
         )
     ) as cur:
         rows = cur.fetchall()
@@ -142,13 +153,13 @@ def _nodes_by_identity(
 ) -> list[NodeId]:
     with closing(
         con.execute(
-            f"""
-            SELECT e.node_id FROM {ns.table("fs_entries")} e
+            """
+            SELECT e.node_id FROM fs_entries e
             JOIN nodes n ON n.id = e.node_id
-            WHERE e.identity = ?
+            WHERE e.backend = ? AND e.identity = ?
             ORDER BY e.node_id
             """,
-            (identity,),
+            (ns.key, identity),
         )
     ) as cur:
         return [NodeId(row["node_id"]) for row in cur.fetchall()]
@@ -159,7 +170,8 @@ def _get_mount_fsid(
 ) -> str | None:
     with closing(
         con.execute(
-            f"SELECT path, fsid FROM {ns.table('fs_mounts')} WHERE name = ?", (name,)
+            "SELECT path, fsid FROM fs_mounts WHERE backend = ? AND name = ?",
+            (ns.key, name),
         )
     ) as cur:
         row = cur.fetchone()
@@ -172,9 +184,11 @@ def _set_mount_fsid(
     con: sqlite3.Connection, ns: BackendNamespace, name: str, path: str, fsid: str
 ) -> None:
     con.execute(
-        f"""
-        INSERT INTO {ns.table("fs_mounts")} (name, path, fsid) VALUES (?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET path = excluded.path, fsid = excluded.fsid
+        """
+        INSERT INTO fs_mounts (backend, name, path, fsid) VALUES (?, ?, ?, ?)
+        ON CONFLICT(backend, name) DO UPDATE SET
+            path = excluded.path,
+            fsid = excluded.fsid
         """,
-        (name, path, fsid),
+        (ns.key, name, path, fsid),
     )

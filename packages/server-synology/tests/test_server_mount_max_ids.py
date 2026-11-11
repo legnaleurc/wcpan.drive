@@ -37,14 +37,15 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
         os.unlink(self.db_path)
 
     def _write_mount(self, name: str, max_id: int, path: str) -> None:
-        table = self.mirror.namespace("synology").table("synology_mounts")
+        key = self.mirror.namespace("synology").key
         con = sqlite3.connect(self.db_path)
         con.execute(
-            f"INSERT INTO {table} (name, max_id, path) VALUES (?, ?, ?)"
-            " ON CONFLICT(name) DO UPDATE SET"
+            "INSERT INTO synology_mounts (backend, name, max_id, path)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(backend, name) DO UPDATE SET"
             " max_id = excluded.max_id,"
             " path = excluded.path",
-            (name, max_id, path),
+            (key, name, max_id, path),
         )
         con.commit()
         con.close()
@@ -112,9 +113,10 @@ class TestSetMountState(IsolatedAsyncioTestCase):
 
     def _read_mount(self, name: str) -> tuple[int, str] | None:
         con = sqlite3.connect(self.db_path)
-        table = self.mirror.namespace("synology").table("synology_mounts")
+        key = self.mirror.namespace("synology").key
         row = con.execute(
-            f"SELECT max_id, path FROM {table} WHERE name = ?", (name,)
+            "SELECT max_id, path FROM synology_mounts WHERE backend = ? AND name = ?",
+            (key, name),
         ).fetchone()
         con.close()
         if row is None:

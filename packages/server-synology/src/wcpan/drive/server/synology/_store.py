@@ -1,8 +1,9 @@
 """Synology state in the mirror database: node locators and mount checkpoints.
 
 The tables are created and maintained through ``BackendSchema`` hooks on the
-core's connection, so locators commit together with their nodes. Each instance
-has its own tables, so a ``file_id`` lookup never finds another NAS's node.
+core's connection, so locators commit together with their nodes. Instances
+share the tables; every query filters by the instance key, so a ``file_id``
+lookup never finds another NAS's node.
 """
 
 import sqlite3
@@ -19,16 +20,17 @@ from wcpan.drive.server.types import BackendLocator
 from wcpan.synology import SynologyPath
 
 from ._convert import SynologyLocator
-from ._schema import SCHEMA_VERSION, ddl
+from ._schema import DDL, SCHEMA_NAME, SCHEMA_VERSION
 
 
 class SynologySchema:
     """``BackendSchema`` hooks for the Synology tables."""
 
+    name = SCHEMA_NAME
     version = SCHEMA_VERSION
 
-    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
-        con.executescript(ddl(ns))
+    def ensure_schema(self, con: sqlite3.Connection) -> None:
+        con.executescript(DDL)
 
     def bind_locator(
         self,
@@ -38,12 +40,14 @@ class SynologySchema:
         locator: BackendLocator,
     ) -> None:
         con.execute(
-            f"""
-            INSERT INTO {ns.table("synology_locators")} (node_id, file_id)
-            VALUES (?, ?)
-            ON CONFLICT(node_id) DO UPDATE SET file_id = excluded.file_id
+            """
+            INSERT INTO synology_locators (node_id, backend, file_id)
+            VALUES (?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                backend = excluded.backend,
+                file_id = excluded.file_id
             """,
-            (str(node_id), locator),
+            (str(node_id), ns.key, locator),
         )
 
     def forget_nodes(
@@ -51,15 +55,16 @@ class SynologySchema:
     ) -> None:
         placeholders = ",".join("?" * len(node_ids))
         con.execute(
-            f"DELETE FROM {ns.table('synology_locators')}"
-            f" WHERE node_id IN ({placeholders})",
-            list(node_ids),
+            "DELETE FROM synology_locators"
+            f" WHERE backend = ? AND node_id IN ({placeholders})",
+            [ns.key, *node_ids],
         )
 
     def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         con.execute(
-            f"DELETE FROM {ns.table('synology_locators')}"
-            " WHERE node_id NOT IN (SELECT id FROM nodes)"
+            "DELETE FROM synology_locators"
+            " WHERE backend = ? AND node_id NOT IN (SELECT id FROM nodes)",
+            (ns.key,),
         )
 
 
@@ -101,9 +106,9 @@ def _get_mount_max_ids(
     placeholders = ",".join("?" * len(names))
     with closing(
         con.execute(
-            f"SELECT name, max_id, path FROM {ns.table('synology_mounts')}"
-            f" WHERE name IN ({placeholders})",
-            names,
+            "SELECT name, max_id, path FROM synology_mounts"
+            f" WHERE backend = ? AND name IN ({placeholders})",
+            [ns.key, *names],
         )
     ) as cur:
         by_name = {
@@ -127,13 +132,13 @@ def _set_mount_state(
 ) -> None:
     """Save per-mount last_max_id and syno_path atomically."""
     con.execute(
-        f"""
-        INSERT INTO {ns.table("synology_mounts")} (name, max_id, path) VALUES (?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
+        """
+        INSERT INTO synology_mounts (backend, name, max_id, path) VALUES (?, ?, ?, ?)
+        ON CONFLICT(backend, name) DO UPDATE SET
             max_id = excluded.max_id,
             path = excluded.path
         """,
-        (name, value, path),
+        (ns.key, name, value, path),
     )
 
 
@@ -142,12 +147,12 @@ def _get_node_by_locator(
 ) -> NodeRecord | None:
     with closing(
         con.execute(
-            f"""
-            SELECT n.* FROM {ns.table("synology_locators")} l
+            """
+            SELECT n.* FROM synology_locators l
             JOIN nodes n ON n.id = l.node_id
-            WHERE l.file_id = ?
+            WHERE l.backend = ? AND l.file_id = ?
             """,
-            (locator,),
+            (ns.key, locator),
         )
     ) as cur:
         row = cur.fetchone()
@@ -162,9 +167,9 @@ def _get_locators(
     placeholders = ",".join("?" * len(node_ids))
     with closing(
         con.execute(
-            f"SELECT node_id, file_id FROM {ns.table('synology_locators')}"
-            f" WHERE node_id IN ({placeholders})",
-            [str(_) for _ in node_ids],
+            "SELECT node_id, file_id FROM synology_locators"
+            f" WHERE backend = ? AND node_id IN ({placeholders})",
+            [ns.key, *(str(_) for _ in node_ids)],
         )
     ) as cur:
         rows = cur.fetchall()
