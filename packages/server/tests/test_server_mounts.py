@@ -1,17 +1,37 @@
 """Mount lookup by name and node ID, and routing by containing mount."""
 
+import asyncio
+import os
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
+from dataclasses import replace
+from pathlib import Path
 from typing import cast
 from unittest import IsolatedAsyncioTestCase, TestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, is_structural
 from wcpan.drive.server.services.mirror import MirrorStore
-from wcpan.drive.server.services.mounts import Mounts
+from wcpan.drive.server.services.mounts import (
+    Mounts,
+    ensure_mount_nodes,
+    load_mounts,
+)
+from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.operations import (
     NodeOperations,
     OperationNotSupportedError,
     OperationUnavailableError,
 )
 from wcpan.drive.server.services.routing import BackendRouter
+from wcpan.drive.server.services.sync import NodeSyncService
+from wcpan.drive.server.workers import (
+    create_metadata_queue,
+    create_write_queue,
+    noop_after_write,
+    write_worker,
+)
 
 
 def _dir(node_id: str, parent_id: str | None) -> NodeRecord:
@@ -176,3 +196,152 @@ class TestBackendOf(IsolatedAsyncioTestCase):
             await self.router.backend_of(NodeId("photo"))
         with self.assertRaises(OperationUnavailableError):
             await self.router.backend_of(NodeId("unknown"))
+
+
+class TestMountNodes(IsolatedAsyncioTestCase):
+    """Mount nodes are found by name and recognized by position, not by ID."""
+
+    async def asyncSetUp(self) -> None:
+        fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.pool = ThreadPoolExecutor(2)
+        self.mirror = MirrorStore(
+            self.db_path, off_main=OffMainService(pool=self.pool), schemas={}
+        )
+        await self.mirror.ensure_schema()
+        # An opaque mount ID, and a real node whose ID looks like the old grammar.
+        await self.mirror.bulk_upsert_nodes(
+            [
+                _dir(SERVER_ROOT_ID, None),
+                replace(_dir("m1", SERVER_ROOT_ID), name="docs"),
+                _dir("_folder", "m1"),
+                _dir("file", "_folder"),
+            ]
+        )
+
+    async def asyncTearDown(self) -> None:
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        for suffix in ("", "-wal", "-shm"):
+            with suppress(FileNotFoundError):
+                Path(self.db_path + suffix).unlink()
+
+    async def test_existing_mount_keeps_its_node_and_new_ones_get_ids(self) -> None:
+        # when
+        mounts = await load_mounts(
+            {"docs": "/docs", "new": "/new", "other": "/other"}, mirror=self.mirror
+        )
+        # then
+        self.assertEqual(mounts["docs"].id, "m1")
+        new_ids = {mounts["new"].id, mounts["other"].id}
+        self.assertEqual(len(new_ids), 2)
+        self.assertNotIn("m1", new_ids)
+        self.assertNotIn(SERVER_ROOT_ID, new_ids)
+
+    async def test_ancestors_stop_below_the_mount_node(self) -> None:
+        # when
+        chain = await self.mirror.get_ancestors(NodeId("file"))
+        # then
+        self.assertEqual([r.id for r in chain], ["file", "_folder"])
+        mounts = await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+        self.assertIs(mounts.of_chain(chain), mounts["docs"])
+
+    async def test_removal_roots_exclude_nothing_by_id_prefix(self) -> None:
+        # when
+        roots = await self.mirror.deferred_removal_roots(set(), {NodeId("m1")})
+        # then
+        self.assertEqual(roots, ["_folder"])
+
+    async def test_duplicate_mount_nodes_are_rejected(self) -> None:
+        # given
+        await self.mirror.bulk_upsert_nodes(
+            [replace(_dir("m2", SERVER_ROOT_ID), name="docs")]
+        )
+        # when / then
+        with self.assertRaisesRegex(ValueError, "docs"):
+            await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+
+    async def test_duplicates_of_unconfigured_names_are_ignored(self) -> None:
+        # given
+        await self.mirror.bulk_upsert_nodes(
+            [
+                replace(_dir("o1", SERVER_ROOT_ID), name="old"),
+                replace(_dir("o2", SERVER_ROOT_ID), name="old"),
+            ]
+        )
+        # when
+        mounts = await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+        # then
+        self.assertEqual(mounts["docs"].id, "m1")
+
+    async def test_root_and_mounts_are_structural(self) -> None:
+        # given
+        records = await self.mirror.get_nodes_by_ids(
+            [SERVER_ROOT_ID, NodeId("m1"), NodeId("_folder")]
+        )
+        # then
+        self.assertTrue(is_structural(records[SERVER_ROOT_ID]))
+        self.assertTrue(is_structural(records[NodeId("m1")]))
+        self.assertFalse(is_structural(records[NodeId("_folder")]))
+
+
+class TestMountRestart(IsolatedAsyncioTestCase):
+    """A new mount keeps its assigned ID once its node is written."""
+
+    async def asyncSetUp(self) -> None:
+        fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.pool = ThreadPoolExecutor(2)
+        self.mirror = MirrorStore(
+            self.db_path, off_main=OffMainService(pool=self.pool), schemas={}
+        )
+        await self.mirror.ensure_schema()
+        write_queue = create_write_queue()
+        self.node_sync = NodeSyncService(
+            mirror=self.mirror,
+            write_queue=write_queue,
+            off_main=OffMainService(pool=self.pool),
+            mounts={},
+            metadata_queue=create_metadata_queue(),
+        )
+        self.writer = asyncio.create_task(write_worker(write_queue, noop_after_write))
+
+    async def asyncTearDown(self) -> None:
+        self.writer.cancel()
+        with suppress(asyncio.CancelledError):
+            await self.writer
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        for suffix in ("", "-wal", "-shm"):
+            with suppress(FileNotFoundError):
+                Path(self.db_path + suffix).unlink()
+
+    async def _start(self, sources: dict[str, str]) -> Mounts:
+        mounts = await load_mounts(sources, mirror=self.mirror)
+        await ensure_mount_nodes(mounts, mirror=self.mirror, node_sync=self.node_sync)
+        return mounts
+
+    async def test_restart_keeps_ids_and_publishes_nothing(self) -> None:
+        # given
+        first = await self._start({"docs": "/docs", "pics": "/pics"})
+        cursor = await self.mirror.get_cursor()
+        # when
+        second = await self._start({"docs": "/docs", "pics": "/pics"})
+        # then
+        self.assertEqual(second["docs"].id, first["docs"].id)
+        self.assertEqual(second["pics"].id, first["pics"].id)
+        self.assertEqual(await self.mirror.get_cursor(), cursor)
+
+    async def test_loading_alone_writes_nothing(self) -> None:
+        # given
+        cursor = await self.mirror.get_cursor()
+        # when
+        unwritten = await load_mounts({"docs": "/docs"}, mirror=self.mirror)
+        # then
+        self.assertIsNone(await self.mirror.get_node_by_id(unwritten["docs"].id))
+        self.assertEqual(await self.mirror.get_cursor(), cursor)
+
+        # when
+        started = await self._start({"docs": "/docs"})
+        # then
+        self.assertNotEqual(started["docs"].id, unwritten["docs"].id)

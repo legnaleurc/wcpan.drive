@@ -425,10 +425,11 @@ def _collect_subtree_node_ids(dsn: str, root_id: NodeId) -> set[NodeId]:
 
 
 def _get_ancestors(dsn: str, node_id: NodeId) -> list[NodeRecord]:
-    """Fetch the ancestor chain starting from *node_id*, stopping before virtual nodes.
+    """Fetch the ancestor chain starting from *node_id*, stopping before the mount.
 
-    Returns all nodes from *node_id* up to (but not including) the first virtual
-    ancestor (node_id starting with '_'). Single query via recursive CTE.
+    Returns all nodes from *node_id* up to (but not including) the first
+    structural ancestor: a mount node (a child of the root) or the root itself.
+    Single query via recursive CTE.
     """
     sql = """
     WITH RECURSIVE ancestors AS (
@@ -436,12 +437,12 @@ def _get_ancestors(dsn: str, node_id: NodeId) -> list[NodeRecord]:
         UNION ALL
         SELECT n.* FROM nodes n
         JOIN ancestors a ON n.id = a.parent_id
-        WHERE a.parent_id IS NOT NULL AND a.parent_id NOT GLOB '_*'
+        WHERE n.parent_id IS NOT NULL AND n.parent_id != ?
     )
     SELECT * FROM ancestors
     """
     with _read_only(dsn) as con:
-        with closing(con.execute(sql, (str(node_id),))) as cur:
+        with closing(con.execute(sql, (str(node_id), str(SERVER_ROOT_ID)))) as cur:
             return [row_to_record(r) for r in cur.fetchall()]
 
 
@@ -458,8 +459,8 @@ def _deferred_removal_roots(
         return []
 
     placeholders = ",".join("?" * len(scope))
-    # Collect all non-virtual descendants of the scope nodes together with their
-    # parent_ids so we can compute deletion roots in one transaction.
+    # Collect all descendants of the scope nodes except mount nodes, together
+    # with their parent_ids, so we can compute deletion roots in one transaction.
     sql = f"""
     WITH RECURSIVE descendants(node_id, parent_id) AS (
         SELECT id, parent_id FROM nodes WHERE parent_id IN ({placeholders})
@@ -467,10 +468,11 @@ def _deferred_removal_roots(
         SELECT n.id, n.parent_id FROM nodes n
         JOIN descendants d ON n.parent_id = d.node_id
     )
-    SELECT node_id, parent_id FROM descendants WHERE node_id NOT GLOB '_*'
+    SELECT node_id, parent_id FROM descendants WHERE parent_id != ?
     """
+    params = tuple(str(_) for _ in scope) + (str(SERVER_ROOT_ID),)
     with _read_only(dsn) as con:
-        with closing(con.execute(sql, tuple(str(_) for _ in scope))) as cur:
+        with closing(con.execute(sql, params)) as cur:
             rows = cur.fetchall()
 
     parent_by_id: dict[NodeId, NodeId | None] = {

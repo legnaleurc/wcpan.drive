@@ -1,11 +1,16 @@
-"""Mounts, and the virtual root and mount nodes owned by the core."""
+"""Mounts, and the virtual root and mount nodes owned by the core.
+
+A mount's node is the root's child named after the mount. Its ID is assigned
+when the mount is first seen and is opaque; renaming a mount in the config
+makes it a new mount.
+"""
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from ..lib.mounts import SERVER_ROOT_ID, mount_id, virtual_directory
+from ..lib.mounts import SERVER_ROOT_ID, mount_id, new_mount_id, virtual_directory
 from ..types import NodeObservation
 from .mirror import MirrorStore
 from .sync import NodeSyncService
@@ -34,7 +39,11 @@ class Mounts(Mapping[str, Mount]):
 
     @classmethod
     def from_sources(cls, sources: Mapping[str, str]) -> "Mounts":
-        """Mounts named by the keys of *sources*."""
+        """Mounts named by the keys of *sources*, with IDs derived from the names.
+
+        For mounts that never meet a mirror, such as test fixtures; the server
+        uses ``load_mounts``.
+        """
         return cls(
             Mount(name=name, id=mount_id(name), source=source)
             for name, source in sources.items()
@@ -80,6 +89,27 @@ class Mounts(Mapping[str, Mount]):
         if mount is not None:
             return mount
         return self.of_chain(await mirror.get_ancestors(node_id))
+
+
+async def load_mounts(sources: Mapping[str, str], *, mirror: MirrorStore) -> Mounts:
+    """Mounts named by the keys of *sources*, with the IDs of their mirrored nodes.
+
+    A mount without a node gets a new ID; ``ensure_mount_nodes`` creates it.
+
+    Raises:
+        ValueError: If several root children are named after one mount.
+    """
+    existing: dict[str, NodeId] = {}
+    for record in await mirror.get_children(SERVER_ROOT_ID):
+        if record.name in sources and record.name in existing:
+            raise ValueError(
+                f"Mount {record.name!r} matches several nodes under the root"
+            )
+        existing[record.name] = record.id
+    return Mounts(
+        Mount(name=name, id=existing.get(name) or new_mount_id(), source=source)
+        for name, source in sources.items()
+    )
 
 
 async def ensure_mount_nodes(

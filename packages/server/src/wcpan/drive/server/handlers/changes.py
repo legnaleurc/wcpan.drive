@@ -5,7 +5,7 @@ from typing import Any
 from aiohttp import web
 
 from ..keys import MIRROR_KEY
-from ..services.paths import SERVER_ROOT_ID
+from ..lib.mounts import SERVER_ROOT_ID
 from .lib import record_to_response, require_ready
 
 

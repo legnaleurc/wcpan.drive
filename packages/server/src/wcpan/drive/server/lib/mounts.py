@@ -1,31 +1,31 @@
-"""Virtual-ID grammar and mount-node helpers; private to the core."""
+"""The server root and mount nodes; private to the core.
+
+The root is the only node without a parent, and mounts are its only children,
+so both are recognized by position in the tree, never by their IDs.
+"""
+
+import uuid
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE, utc_now
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 
-VIRTUAL_ID_PREFIX = "_"
-SERVER_ROOT_ID = NodeId(VIRTUAL_ID_PREFIX)
+SERVER_ROOT_ID = NodeId("_")
 
 
-def is_virtual(node_id: NodeId) -> bool:
-    return str(node_id).startswith(VIRTUAL_ID_PREFIX)
+def is_structural(record: NodeRecord) -> bool:
+    """Whether *record* is the server root or a mount node."""
+    return record.parent_id is None or record.parent_id == SERVER_ROOT_ID
 
 
-def is_mount_node_id(node_id: NodeId) -> bool:
-    """True for mount directory ids; false for the bare root ``_``."""
-    return len(str(node_id)) > 1 and str(node_id).startswith(VIRTUAL_ID_PREFIX)
+def new_mount_id() -> NodeId:
+    """An ID for a mount seen for the first time."""
+    return NodeId(uuid.uuid4().hex)
 
 
 def mount_id(name: str) -> NodeId:
-    return NodeId(f"{VIRTUAL_ID_PREFIX}{name}")
-
-
-def mount_name(node_id: NodeId) -> str | None:
-    """Return the mount config key for ``node_id``, or None if not a mount node."""
-    if not is_mount_node_id(node_id):
-        return None
-    return str(node_id)[1:]
+    """A fixed ID derived from *name*, for mounts built without the mirror."""
+    return NodeId(f"_{name}")
 
 
 def virtual_directory(

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from ..lib.mounts import SERVER_ROOT_ID, is_virtual
+from ..lib.mounts import SERVER_ROOT_ID
 from ..types import VirtualPath
 from .mirror import MirrorStore
 
@@ -67,7 +67,11 @@ class LocalPathService:
         if not self._mounts:
             return None
         node_cache: dict[str, NodeRecord | None]
-        if not record.parent_id or is_virtual(record.parent_id):
+        if (
+            not record.parent_id
+            or record.parent_id == SERVER_ROOT_ID
+            or record.parent_id in self._mounts
+        ):
             node_cache = {}
         else:
             ancestors = await self._mirror.get_ancestors(record.parent_id)
@@ -138,7 +142,7 @@ def _resolve_local_path(
     parts: list[str] = [record.name]
     current = record
 
-    while current.parent_id and not is_virtual(current.parent_id):
+    while current.parent_id and current.parent_id not in mounts:
         parent = node_cache.get(current.parent_id)
         if parent is None:
             return None

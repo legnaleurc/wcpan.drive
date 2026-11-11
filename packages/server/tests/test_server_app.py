@@ -106,13 +106,24 @@ class TestCreateApp(IsolatedAsyncioTestCase):
             while (await self.client.get("/readyz")).status != 200:
                 await asyncio.sleep(0.01)
 
+    def _mount_id(self, name: str) -> str:
+        for backend in (self.backend, self.other):
+            mount = backend.context.mounts.get(name)
+            if mount is not None:
+                return mount.id
+        raise KeyError(name)
+
     async def test_core_creates_root_and_mount_nodes(self) -> None:
         # when
         await self.ready()
         # then
         mirror = self.app[MIRROR_KEY]
-        for node_id in ("_", "_docs", "_pics"):
-            self.assertIsNotNone(await mirror.get_node_by_id(NodeId(node_id)))
+        root = await mirror.get_node_by_id(NodeId("_"))
+        self.assertIsNotNone(root)
+        for name in ("docs", "pics"):
+            node = await mirror.get_node_by_id(NodeId(self._mount_id(name)))
+            assert node is not None
+            self.assertEqual((node.name, node.parent_id), (name, "_"))
 
     async def test_operations_go_to_the_mount_backend(self) -> None:
         # given
@@ -126,7 +137,7 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         await self.ready()
         # when
         resp = await self.client.post(
-            "/api/v1/nodes", json={"name": "x", "parent_id": "_pics"}
+            "/api/v1/nodes", json={"name": "x", "parent_id": self._mount_id("pics")}
         )
         # then
         self.assertEqual(resp.status, 400)
@@ -142,7 +153,7 @@ class TestCreateApp(IsolatedAsyncioTestCase):
 
         # when
         resp = await self.client.post(
-            "/api/v1/nodes", json={"name": "x", "parent_id": "_docs"}
+            "/api/v1/nodes", json={"name": "x", "parent_id": self._mount_id("docs")}
         )
 
         # then
@@ -157,7 +168,7 @@ class TestCreateApp(IsolatedAsyncioTestCase):
 
         # when
         resp = await self.client.post(
-            "/api/v1/nodes", json={"name": "x", "parent_id": "_docs"}
+            "/api/v1/nodes", json={"name": "x", "parent_id": self._mount_id("docs")}
         )
 
         # then

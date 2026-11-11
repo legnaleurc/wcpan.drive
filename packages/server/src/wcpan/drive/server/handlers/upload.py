@@ -4,7 +4,7 @@ from aiohttp import web
 from wcpan.drive.protocol.types import MediaInfo, NodeId
 
 from ..keys import READY_KEY, UPLOAD_SERVICE_KEY
-from ..services.paths import SERVER_ROOT_ID
+from ..lib.mounts import SERVER_ROOT_ID
 from ..services.upload import (
     UploadAccepted,
     UploadBusyError,

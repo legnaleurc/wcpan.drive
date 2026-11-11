@@ -85,6 +85,21 @@ class TestResolveLocalPath(TestCase):
         # then
         self.assertIsNone(path)
 
+    def test_opaque_mount_and_underscore_folder(self):
+        # given
+        file_rec = _node("fid", "f.txt", "_folder")
+        folder_rec = _node("_folder", "sub", "m1", is_directory=True)
+        cache = {"_folder": folder_rec}
+        mounts = {
+            NodeId("m1"): MountSource(
+                source="/vol/share", local_path=map_by_prefix({"/vol": "/mnt"})
+            )
+        }
+        # when
+        path = resolve_local_path(mounts, file_rec, cache)
+        # then
+        self.assertEqual(path, Path("/mnt/share/sub/f.txt"))
+
     def test_picks_longest_local_paths_prefix(self):
         # given
         file_rec = _node("fid", "f.txt", "folder_id")

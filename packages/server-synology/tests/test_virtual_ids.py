@@ -1,4 +1,4 @@
-"""Tests for virtual node_id grammar and mount registry helpers."""
+"""Tests for mount registry and Synology path helpers."""
 
 from pathlib import PurePosixPath
 from typing import cast
@@ -7,13 +7,7 @@ from unittest import TestCase
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.backend import Mounts
-from wcpan.drive.server.lib.mounts import (
-    SERVER_ROOT_ID,
-    is_mount_node_id,
-    is_virtual,
-    mount_id,
-    mount_name,
-)
+from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID, mount_id
 from wcpan.drive.server.synology._convert import SynologyLocator
 from wcpan.drive.server.synology._mounts import (
     MountRegistry,
@@ -35,86 +29,6 @@ from ._lib import DecoyTestCase, mounts_of
 
 def _info(**fields: object) -> SynologyFileInfo:
     return cast(SynologyFileInfo, fields)
-
-
-class TestIsVirtual(TestCase):
-    def test_root_is_virtual(self):
-        # given
-        node_id = SERVER_ROOT_ID
-        # when
-        result = is_virtual(node_id)
-        # then
-        self.assertTrue(result)
-
-    def test_mount_is_virtual(self):
-        # given
-        node_id = NodeId("_photos")
-        # when
-        result = is_virtual(node_id)
-        # then
-        self.assertTrue(result)
-
-    def test_synology_id_not_virtual(self):
-        # given
-        node_id = NodeId("12345")
-        # when
-        result = is_virtual(node_id)
-        # then
-        self.assertFalse(result)
-
-
-class TestIsMountNodeId(TestCase):
-    def test_bare_root_not_mount(self):
-        # given
-        node_id = NodeId("_")
-        # when
-        result = is_mount_node_id(node_id)
-        # then
-        self.assertFalse(result)
-
-    def test_named_mount_is_mount(self):
-        # given
-        node_id = NodeId("_share-a")
-        # when
-        result = is_mount_node_id(node_id)
-        # then
-        self.assertTrue(result)
-
-
-class TestMountId(TestCase):
-    def test_prefixes_name(self):
-        # given
-        name = "my-share"
-        # when
-        result = mount_id(name)
-        # then
-        self.assertEqual(result, "_my-share")
-
-
-class TestMountName(TestCase):
-    def test_returns_key_for_mount(self):
-        # given
-        node_id = NodeId("_foo")
-        # when
-        result = mount_name(node_id)
-        # then
-        self.assertEqual(result, "foo")
-
-    def test_root_returns_none(self):
-        # given
-        node_id = NodeId("_")
-        # when
-        result = mount_name(node_id)
-        # then
-        self.assertIsNone(result)
-
-    def test_real_id_returns_none(self):
-        # given
-        node_id = NodeId("999")
-        # when
-        result = mount_name(node_id)
-        # then
-        self.assertIsNone(result)
 
 
 class _PathTestCase(DecoyTestCase):

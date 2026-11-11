@@ -30,6 +30,7 @@ from wcpan.drive.server.keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
+from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
 from wcpan.drive.server.services.spool import (
     SpoolArea,
     SpooledFiles,
@@ -493,12 +494,12 @@ class TestUpdateNode(_NodesTestCase):
 
     async def test_virtual_node_forbidden(self):
         # given
-        self.mirror._nodes["_root"] = _make_node(node_id="_root")
+        self.mirror._nodes["root"] = _make_dir("root")
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
             # when
             resp = await client.patch(
-                "/api/v1/nodes/_root",
+                "/api/v1/nodes/root",
                 json={"name": "new"},
             )
             # then
@@ -559,13 +560,27 @@ class TestDeleteNode(_NodesTestCase):
             # then
             self.assertEqual(resp.status, 404)
 
-    async def test_virtual_node_forbidden(self):
+    async def test_underscore_id_is_an_ordinary_node(self):
         # given
-        self.mirror._nodes["_mount"] = _make_node(node_id="_mount")
+        self.mirror._nodes["_n1"] = _make_node(node_id="_n1")
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
             # when
-            resp = await client.delete("/api/v1/nodes/_mount")
+            resp = await client.delete("/api/v1/nodes/_n1")
+            # then
+            self.assertEqual(resp.status, 204)
+        self.decoy.verify(
+            await self.drive_api.delete(SynologyPermanentLink(permanent_link="_n1")),
+            times=1,
+        )
+
+    async def test_virtual_node_forbidden(self):
+        # given
+        self.mirror._nodes["mount"] = _make_dir("mount", SERVER_ROOT_ID)
+        app = self._make_app()
+        async with TestClient(TestServer(app)) as client:
+            # when
+            resp = await client.delete("/api/v1/nodes/mount")
             # then
             self.assertEqual(resp.status, 403)
 

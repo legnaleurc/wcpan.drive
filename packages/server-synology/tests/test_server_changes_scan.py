@@ -15,7 +15,6 @@ from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.mounts import (
     SERVER_ROOT_ID,
     mount_id,
-    mount_name,
 )
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
@@ -114,10 +113,9 @@ class TestDeferredScan(DecoyTestCase):
         mute_tree_log_exception: bool = False,
     ) -> None:
         async def api_children(_self_svc: object, _net: object, parent_id: str) -> list:
-            mkey = mount_name(parent_id)
-            if mkey is not None:
-                mounts = _self_svc.mounts  # type: ignore[union-attr]
-                return await by_path(_net, mounts[mkey].source)
+            mount = _self_svc.mounts.by_id(parent_id)  # type: ignore[union-attr]
+            if mount is not None:
+                return await by_path(_net, mount.source)
             if list_all is None:
                 raise AssertionError(f"unexpected deep listing for {parent_id!r}")
             return await list_all(_net, parent_id)

@@ -7,9 +7,9 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from wcpan.drive.protocol.types import NodeId
 
 from ..keys import MIRROR_KEY, NODE_OPERATIONS_KEY, UPLOAD_SERVICE_KEY
+from ..lib.mounts import SERVER_ROOT_ID, is_structural
 from ..lib.names import normalize_name
 from ..services.operations import OperationConflictError, OperationUnavailableError
-from ..services.paths import SERVER_ROOT_ID, is_virtual
 from ..services.upload import (
     UploadConflictError,
     UploadNameTooLongError,
@@ -101,12 +101,11 @@ async def update_node(request: web.Request) -> web.Response:
     operations = request.app[NODE_OPERATIONS_KEY]
     node_id = NodeId(request.match_info["id"])
 
-    if is_virtual(node_id):
-        raise web.HTTPForbidden(reason="Cannot modify virtual nodes")
-
     record = await mirror.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
+    if is_structural(record):
+        raise web.HTTPForbidden(reason="Cannot modify virtual nodes")
 
     body = await request.json()
     new_name: str | None = body.get("name")
@@ -133,12 +132,11 @@ async def delete_node(request: web.Request) -> web.Response:
     operations = request.app[NODE_OPERATIONS_KEY]
     node_id = NodeId(request.match_info["id"])
 
-    if is_virtual(node_id):
-        raise web.HTTPForbidden(reason="Cannot delete virtual nodes")
-
     record = await mirror.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
+    if is_structural(record):
+        raise web.HTTPForbidden(reason="Cannot delete virtual nodes")
 
     await operations.delete(record)
     return web.Response(status=204)

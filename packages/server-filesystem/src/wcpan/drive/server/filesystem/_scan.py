@@ -64,7 +64,6 @@ class Previous:
 
 
 def new_node_id() -> NodeId:
-    # Hex never starts with the virtual ID prefix.
     return NodeId(uuid.uuid4().hex)
 
 

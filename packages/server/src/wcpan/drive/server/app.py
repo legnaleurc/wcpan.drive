@@ -55,7 +55,7 @@ from .keys import (
     WRITE_QUEUE_KEY,
 )
 from .services.mirror import MirrorStore, create_mirror_store
-from .services.mounts import Mounts, ensure_mount_nodes
+from .services.mounts import Mounts, ensure_mount_nodes, load_mounts
 from .services.off_main import OffMainService
 from .services.operations import OperationInvalidError, OperationNotSupportedError
 from .services.paths import MountSource
@@ -130,7 +130,9 @@ async def managed_core(
     write_queue = create_write_queue()
     metadata_queue = create_metadata_queue()
     local_paths = LazyLocalPaths({n: m.backend for n, m in config.mounts.items()})
-    mounts = Mounts.from_sources({n: m.source for n, m in config.mounts.items()})
+    mounts = await load_mounts(
+        {n: m.source for n, m in config.mounts.items()}, mirror=mirror
+    )
     node_sync = NodeSyncService(
         mirror=mirror,
         write_queue=write_queue,
