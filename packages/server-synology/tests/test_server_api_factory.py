@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from wcpan.drive.server.synology.config import SynologyConfig, create_synology_client
+from wcpan.drive.server.synology._config import SynologyConfig, create_synology_client
 from wcpan.synology import SynologyClient, create_client
 
 from ._lib import DecoyTestCase
@@ -30,7 +30,7 @@ class TestCreateSynologyClient(DecoyTestCase):
             )
         ).then_enter_with(client)
         # when
-        with patch("wcpan.drive.server.synology.config.create_client", create):
+        with patch("wcpan.drive.server.synology._config.create_client", create):
             async with create_synology_client(_config()) as api:
                 # then
                 self.assertIs(api, client)

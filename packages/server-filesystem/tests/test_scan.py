@@ -8,8 +8,8 @@ from unittest import skipIf
 from unittest.mock import patch
 
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.drive.server.filesystem.blocking import Blocking
-from wcpan.drive.server.filesystem.scan import FilesystemScanner
+from wcpan.drive.server.filesystem._blocking import Blocking
+from wcpan.drive.server.filesystem._scan import FilesystemScanner
 from wcpan.drive.server.services.mounts import ensure_mount_nodes
 from wcpan.drive.server.services.operations import (
     OperationNotSupportedError,
@@ -51,7 +51,7 @@ class TestDiscovery(ScanTestCase):
 
         # when
         with patch(
-            "wcpan.drive.server.filesystem.scan.hash_file",
+            "wcpan.drive.server.filesystem._scan.hash_file",
             side_effect=AssertionError("unchanged files are not rehashed"),
         ):
             await self.scan()
@@ -256,7 +256,7 @@ class TestCoverage(ScanTestCase):
         # An unmounted source leaves an empty directory on the parent filesystem.
         os.unlink(self.source / "f.txt")
         with patch(
-            "wcpan.drive.server.filesystem.scan.filesystem_id",
+            "wcpan.drive.server.filesystem._scan.filesystem_id",
             return_value="other",
         ):
             await self.scan()
@@ -274,7 +274,7 @@ class TestCoverage(ScanTestCase):
         # when
         with open(path, "wb") as f:
             f.write(b"newer")
-        with patch("wcpan.drive.server.filesystem.scan.hash_file", return_value=None):
+        with patch("wcpan.drive.server.filesystem._scan.hash_file", return_value=None):
             await self.scan()
 
         # then

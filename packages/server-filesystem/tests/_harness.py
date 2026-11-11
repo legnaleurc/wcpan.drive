@@ -10,15 +10,15 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.filesystem.blocking import Blocking
-from wcpan.drive.server.filesystem.operations import (
+from wcpan.drive.server.filesystem._blocking import Blocking
+from wcpan.drive.server.filesystem._operations import (
     FilesystemOperations,
     FilesystemUploader,
 )
-from wcpan.drive.server.filesystem.paths import NodePaths
-from wcpan.drive.server.filesystem.scan import FilesystemScanner
-from wcpan.drive.server.filesystem.store import FILESYSTEM_SCHEMA, FilesystemStore
-from wcpan.drive.server.filesystem.watch import DirectoryWatcher
+from wcpan.drive.server.filesystem._paths import NodePaths
+from wcpan.drive.server.filesystem._scan import FilesystemScanner
+from wcpan.drive.server.filesystem._store import FILESYSTEM_SCHEMA, FilesystemStore
+from wcpan.drive.server.filesystem._watch import DirectoryWatcher
 from wcpan.drive.server.lib.mounts import mount_id
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.mounts import ensure_mount_nodes

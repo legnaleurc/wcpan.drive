@@ -6,8 +6,8 @@ import stat
 from dataclasses import dataclass
 from typing import BinaryIO
 
-from .handles import FileIdentity, filesystem_id, identify
-from .store import EntryState
+from ._handles import FileIdentity, filesystem_id, identify
+from ._store import EntryState
 
 
 HASH_ALGORITHM = "md5"

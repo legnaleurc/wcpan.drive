@@ -18,10 +18,10 @@ from wcpan.synology import (
     SynologyWebhookEvent,
 )
 
-from .convert import SynologyLocator, convert_file_info
-from .mounts import MountRegistry
-from .paths import SynologyPathService
-from .store import SynologyStore
+from ._convert import SynologyLocator, convert_file_info
+from ._mounts import MountRegistry
+from ._paths import SynologyPathService
+from ._store import SynologyStore
 
 
 _L = getLogger(__name__)

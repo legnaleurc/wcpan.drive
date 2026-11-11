@@ -12,14 +12,14 @@ from wcpan.drive.server.backend import BackendContext, CoreServices
 from wcpan.drive.server.services.paths import map_by_prefix
 from wcpan.drive.server.services.upload import UPLOAD_SESSION_TTL
 
-from .blocking import Blocking
-from .commands import command_parser, rebind_mount
-from .config import FilesystemConfig, check_mounts
-from .operations import FilesystemOperations, FilesystemUploader
-from .paths import NodePaths
-from .scan import FilesystemScanner
-from .store import FILESYSTEM_SCHEMA, FilesystemStore
-from .watch import DirectoryWatcher
+from ._blocking import Blocking
+from ._commands import command_parser, rebind_mount
+from ._config import FilesystemConfig, check_mounts
+from ._operations import FilesystemOperations, FilesystemUploader
+from ._paths import NodePaths
+from ._scan import FilesystemScanner
+from ._store import FILESYSTEM_SCHEMA, FilesystemStore
+from ._watch import DirectoryWatcher
 
 
 _L = getLogger(__name__)

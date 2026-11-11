@@ -4,7 +4,7 @@ import asyncio
 from unittest import IsolatedAsyncioTestCase
 
 from aiohttp import web
-from wcpan.drive.server.synology.handlers import webhook_handler
+from wcpan.drive.server.synology._handlers import webhook_handler
 
 from ._lib import make_request
 

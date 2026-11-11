@@ -14,9 +14,9 @@ from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import ReadSeq, VirtualPath
 from wcpan.synology import SynologyClient
 
-from .convert import convert_file_info
-from .paths import SynologyPathService
-from .store import SynologyStore
+from ._convert import convert_file_info
+from ._paths import SynologyPathService
+from ._store import SynologyStore
 
 
 _L = logging.getLogger(__name__)

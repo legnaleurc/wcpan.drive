@@ -24,11 +24,11 @@ from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.operations import LocateUndecidedError
 from wcpan.drive.server.services.reconcile import reconcile_session
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology.backfill import BackfillService
-from wcpan.drive.server.synology.convert import SynologyLocator
-from wcpan.drive.server.synology.mounts import MountRegistry
-from wcpan.drive.server.synology.paths import SynologyPathService
-from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.synology._backfill import BackfillService
+from wcpan.drive.server.synology._convert import SynologyLocator
+from wcpan.drive.server.synology._mounts import MountRegistry
+from wcpan.drive.server.synology._paths import SynologyPathService
+from wcpan.drive.server.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.types import (
     NodeObservation,
     ReadSeq,

@@ -21,8 +21,8 @@ from wcpan.synology import (
     SynologyUploadConflictError,
 )
 
-from .convert import SYNOLOGY_HASH_ALGORITHM, SynologyLocator, convert_file_info
-from .paths import SynologyPathService
+from ._convert import SYNOLOGY_HASH_ALGORITHM, SynologyLocator, convert_file_info
+from ._paths import SynologyPathService
 
 
 _L = getLogger(__name__)

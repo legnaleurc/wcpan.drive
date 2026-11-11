@@ -16,11 +16,11 @@ from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology import create_backend
-from wcpan.drive.server.synology.config import (
+from wcpan.drive.server.synology._config import (
     SynologyConfig,
     create_synology_client,
 )
-from wcpan.drive.server.synology.mounts import MountRegistry, create_mount_registry
+from wcpan.drive.server.synology._mounts import MountRegistry, create_mount_registry
 from wcpan.synology import SynologyClient
 
 from ._lib import DecoyTestCase
@@ -193,4 +193,4 @@ class TestFactory(DecoyTestCase):
         )
 
 
-_BACKEND = "wcpan.drive.server.synology.backend"
+_BACKEND = "wcpan.drive.server.synology._backend"

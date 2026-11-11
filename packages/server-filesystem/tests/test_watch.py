@@ -8,9 +8,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.server.backend import CoreServices
-from wcpan.drive.server.filesystem import scan as scan_module
-from wcpan.drive.server.filesystem.backend import FilesystemRuntime
-from wcpan.drive.server.filesystem.inotify import IN_Q_OVERFLOW, Event
+from wcpan.drive.server.filesystem import _scan as scan_module
+from wcpan.drive.server.filesystem._backend import FilesystemRuntime
+from wcpan.drive.server.filesystem._inotify import IN_Q_OVERFLOW, Event
 
 from ._harness import ScanTestCase
 

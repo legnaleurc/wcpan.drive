@@ -34,8 +34,8 @@ from wcpan.drive.server.services.upload import (
 )
 from wcpan.drive.server.types import NodeObservation, ReadSeq
 
-from .blocking import Blocking
-from .mutation import (
+from ._blocking import Blocking
+from ._mutation import (
     StagedFile,
     create_staging,
     discard_new_staging,
@@ -43,10 +43,10 @@ from .mutation import (
     remove,
     rename_no_replace,
 )
-from .paths import NodePaths
-from .reading import STAGING_PREFIX, Entry, open_verified, stat_entry
-from .scan import FilesystemScanner, new_node_id
-from .store import FilesystemStore
+from ._paths import NodePaths
+from ._reading import STAGING_PREFIX, Entry, open_verified, stat_entry
+from ._scan import FilesystemScanner, new_node_id
+from ._store import FilesystemStore
 
 
 _L = getLogger(__name__)

@@ -34,11 +34,11 @@ from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_se
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation
 
-from .blocking import Blocking
-from .handles import filesystem_id
-from .mutation import remove_stale_staging
-from .paths import NodePaths
-from .reading import (
+from ._blocking import Blocking
+from ._handles import filesystem_id
+from ._mutation import remove_stale_staging
+from ._paths import NodePaths
+from ._reading import (
     HASH_ALGORITHM,
     Entry,
     hash_file,
@@ -46,8 +46,8 @@ from .reading import (
     same_content,
     stat_entry,
 )
-from .store import EntryState, FilesystemStore
-from .watch import DirectoryWatcher
+from ._store import EntryState, FilesystemStore
+from ._watch import DirectoryWatcher
 
 
 _L = getLogger(__name__)

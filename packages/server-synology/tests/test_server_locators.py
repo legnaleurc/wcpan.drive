@@ -13,8 +13,8 @@ from wcpan.drive.server.services.mirror import (
     cleanup_dangling_nodes,
 )
 from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.synology.convert import SynologyLocator
-from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.synology._convert import SynologyLocator
+from wcpan.drive.server.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.types import NodeObservation
 
 

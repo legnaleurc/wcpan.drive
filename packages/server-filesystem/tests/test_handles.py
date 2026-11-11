@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from wcpan.drive.server.filesystem.handles import filesystem_id, identify
+from wcpan.drive.server.filesystem._handles import filesystem_id, identify
 
 
 def _identity(path: Path) -> str:
@@ -52,7 +52,7 @@ class TestIdentify(TestCase):
         path = self.tmp / "a"
         path.write_bytes(b"x")
         # when
-        with patch("wcpan.drive.server.filesystem.handles._handle", return_value=None):
+        with patch("wcpan.drive.server.filesystem._handles._handle", return_value=None):
             identity = _identity(path)
         # then
         self.assertTrue(identity.endswith(f":ino:{os.lstat(path).st_ino}"))

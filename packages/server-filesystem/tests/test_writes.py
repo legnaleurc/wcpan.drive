@@ -11,8 +11,8 @@ from typing import Any
 from unittest.mock import patch
 
 from wcpan.drive.protocol.types import MediaInfo, NodeRecord
-from wcpan.drive.server.filesystem.operations import FilesystemFile
-from wcpan.drive.server.filesystem.reading import STAGING_PREFIX
+from wcpan.drive.server.filesystem._operations import FilesystemFile
+from wcpan.drive.server.filesystem._reading import STAGING_PREFIX
 from wcpan.drive.server.lib.mounts import SERVER_ROOT_ID
 from wcpan.drive.server.services.operations import (
     OperationConflictError,
@@ -97,7 +97,7 @@ class TestRenameAndMove(_WriteTestCase):
 
         # when
         with patch(
-            "wcpan.drive.server.filesystem.scan.hash_file",
+            "wcpan.drive.server.filesystem._scan.hash_file",
             side_effect=AssertionError("a rename does not change content"),
         ):
             updated = await self.operations.update(record, name="g.txt", parent_id=None)

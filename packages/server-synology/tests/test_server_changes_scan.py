@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, suppress
 from unittest.mock import patch
 
-import wcpan.drive.server.synology.scan as startup_scan_mod
+import wcpan.drive.server.synology._scan as startup_scan_mod
 from decoy import matchers
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
@@ -19,11 +19,11 @@ from wcpan.drive.server.lib.mounts import (
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology.convert import SynologyLocator
-from wcpan.drive.server.synology.mounts import MountRegistry
-from wcpan.drive.server.synology.paths import SynologyPathService
-from wcpan.drive.server.synology.scan import StartupScanService
-from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.synology._convert import SynologyLocator
+from wcpan.drive.server.synology._mounts import MountRegistry
+from wcpan.drive.server.synology._paths import SynologyPathService
+from wcpan.drive.server.synology._scan import StartupScanService
+from wcpan.drive.server.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.types import (
     NodeObservation,
     WriteQueue,

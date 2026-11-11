@@ -34,11 +34,11 @@ from wcpan.drive.server.services.upload import (
     UploadService,
     UploadSessionStore,
 )
-from wcpan.drive.server.synology.convert import SynologyLocator
-from wcpan.drive.server.synology.mounts import MountRegistry
-from wcpan.drive.server.synology.operations import SynologyNodeOperations
-from wcpan.drive.server.synology.paths import SynologyPathService
-from wcpan.drive.server.synology.upload import SynologyUploader
+from wcpan.drive.server.synology._convert import SynologyLocator
+from wcpan.drive.server.synology._mounts import MountRegistry
+from wcpan.drive.server.synology._operations import SynologyNodeOperations
+from wcpan.drive.server.synology._paths import SynologyPathService
+from wcpan.drive.server.synology._upload import SynologyUploader
 from wcpan.drive.server.types import NodeObservation
 from wcpan.drive.server.workers import create_write_queue
 from wcpan.synology import (

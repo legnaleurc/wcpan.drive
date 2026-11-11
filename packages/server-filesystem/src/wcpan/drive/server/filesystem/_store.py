@@ -16,8 +16,8 @@ from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.types import BackendLocator
 
+from ._handles import FileIdentity
 from ._schema import DDL
-from .handles import FileIdentity
 
 
 @dataclass(frozen=True, slots=True)

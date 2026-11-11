@@ -17,7 +17,7 @@ from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import LocalPathService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology.convert import (
+from wcpan.drive.server.synology._convert import (
     SynologyLocator,
     convert_file_info,
 )

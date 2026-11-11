@@ -11,7 +11,7 @@ from logging import getLogger
 
 from wcpan.drive.protocol.types import NodeId
 
-from .inotify import IN_IGNORED, IN_Q_OVERFLOW, Inotify
+from ._inotify import IN_IGNORED, IN_Q_OVERFLOW, Inotify
 
 
 _L = getLogger(__name__)

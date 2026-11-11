@@ -4,7 +4,7 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from wcpan.synology import SynologyWebhookEvent
 
-from .webhook import WebhookQueue
+from ._webhook import WebhookQueue
 
 
 def webhook_handler(queue: WebhookQueue) -> Handler:

@@ -13,17 +13,17 @@ from wcpan.drive.server.services.paths import map_by_prefix
 from wcpan.drive.server.services.spool import SpooledFiles, create_spool_area
 from wcpan.synology import SynologyClient, SynologyPath
 
-from .backfill import BackfillService
-from .commands import command_parser, print_stats
-from .config import DEFAULT_WEBHOOK_APP_ID, SynologyConfig, create_synology_client
-from .handlers import webhook_handler
-from .mounts import MountRegistry, create_mount_registry
-from .operations import SynologyNodeOperations
-from .paths import SynologyPathService
-from .scan import StartupScanService
-from .store import SYNOLOGY_SCHEMA, SynologyStore
-from .upload import SynologyUploader
-from .webhook import WebhookService, create_webhook_queue
+from ._backfill import BackfillService
+from ._commands import command_parser, print_stats
+from ._config import DEFAULT_WEBHOOK_APP_ID, SynologyConfig, create_synology_client
+from ._handlers import webhook_handler
+from ._mounts import MountRegistry, create_mount_registry
+from ._operations import SynologyNodeOperations
+from ._paths import SynologyPathService
+from ._scan import StartupScanService
+from ._store import SYNOLOGY_SCHEMA, SynologyStore
+from ._upload import SynologyUploader
+from ._webhook import WebhookService, create_webhook_queue
 
 
 _L = getLogger(__name__)

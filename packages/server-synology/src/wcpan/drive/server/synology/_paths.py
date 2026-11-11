@@ -17,9 +17,9 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from .convert import SynologyLocator, convert_file_info
-from .mounts import MountRegistry
-from .store import SynologyStore
+from ._convert import SynologyLocator, convert_file_info
+from ._mounts import MountRegistry
+from ._store import SynologyStore
 
 
 class SynologyPathService:

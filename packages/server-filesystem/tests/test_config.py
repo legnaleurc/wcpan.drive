@@ -14,8 +14,8 @@ from wcpan.drive.server.backend import (
     enter_backend,
 )
 from wcpan.drive.server.filesystem import create_backend
-from wcpan.drive.server.filesystem.config import FilesystemConfig, check_mounts
-from wcpan.drive.server.filesystem.handles import filesystem_id
+from wcpan.drive.server.filesystem._config import FilesystemConfig, check_mounts
+from wcpan.drive.server.filesystem._handles import filesystem_id
 
 
 class TestFilesystemSettings(TestCase):
@@ -117,7 +117,7 @@ class TestFactory(IsolatedAsyncioTestCase):
             context = _context({"docs": tmp})
             with (
                 patch(
-                    "wcpan.drive.server.filesystem.commands.FilesystemStore.set_mount_fsid",
+                    "wcpan.drive.server.filesystem._commands.FilesystemStore.set_mount_fsid",
                     AsyncMock(),
                 ) as record,
                 redirect_stdout(io.StringIO()),

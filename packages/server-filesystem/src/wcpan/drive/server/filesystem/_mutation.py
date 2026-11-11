@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from typing import Any, BinaryIO
 
-from .reading import STAGING_PREFIX, new_digest
+from ._reading import STAGING_PREFIX, new_digest
 
 
 _AT_FDCWD = -100

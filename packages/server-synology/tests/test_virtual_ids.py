@@ -13,13 +13,13 @@ from wcpan.drive.server.lib.mounts import (
     mount_id,
     mount_name,
 )
-from wcpan.drive.server.synology.convert import SynologyLocator
-from wcpan.drive.server.synology.mounts import (
+from wcpan.drive.server.synology._convert import SynologyLocator
+from wcpan.drive.server.synology._mounts import (
     MountRegistry,
     create_mount_registry,
 )
-from wcpan.drive.server.synology.paths import SynologyPathService
-from wcpan.drive.server.synology.store import SynologyStore
+from wcpan.drive.server.synology._paths import SynologyPathService
+from wcpan.drive.server.synology._store import SynologyStore
 from wcpan.synology import (
     SynologyApiError,
     SynologyChildRef,

@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, patch
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology.mounts import MountRegistry
-from wcpan.drive.server.synology.paths import SynologyPathService
-from wcpan.drive.server.synology.scan import StartupScanService
-from wcpan.drive.server.synology.store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.synology._mounts import MountRegistry
+from wcpan.drive.server.synology._paths import SynologyPathService
+from wcpan.drive.server.synology._scan import StartupScanService
+from wcpan.drive.server.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.types import WriteQueue
 from wcpan.drive.server.workers import create_write_queue
 from wcpan.synology import SynologyClient, SynologyPath

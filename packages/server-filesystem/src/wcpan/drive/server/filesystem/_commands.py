@@ -9,8 +9,8 @@ from collections.abc import Mapping
 
 from wcpan.drive.server.services.mirror import MirrorStore
 
-from .handles import filesystem_id
-from .store import FilesystemStore
+from ._handles import filesystem_id
+from ._store import FilesystemStore
 
 
 def command_parser(name: str) -> argparse.ArgumentParser:

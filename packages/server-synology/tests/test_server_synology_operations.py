@@ -7,8 +7,8 @@ from aiohttp import ClientResponse
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.services.operations import OperationUnavailableError
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology.operations import SynologyNodeOperations
-from wcpan.drive.server.synology.paths import SynologyPathService
+from wcpan.drive.server.synology._operations import SynologyNodeOperations
+from wcpan.drive.server.synology._paths import SynologyPathService
 from wcpan.synology import SynologyClient, SynologyNetworkError, SynologyPermanentLink
 
 from ._lib import DecoyTestCase, make_stream

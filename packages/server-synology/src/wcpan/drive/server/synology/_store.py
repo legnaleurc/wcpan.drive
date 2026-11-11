@@ -13,8 +13,8 @@ from wcpan.drive.server.services.mirror import MirrorStore, row_to_record
 from wcpan.drive.server.types import BackendLocator
 from wcpan.synology import SynologyPath
 
+from ._convert import SynologyLocator
 from ._schema import DDL
-from .convert import SynologyLocator
 
 
 class SynologySchema:

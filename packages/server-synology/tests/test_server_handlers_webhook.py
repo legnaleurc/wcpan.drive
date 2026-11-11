@@ -9,11 +9,11 @@ from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.debounce import TaskIdDebouncer
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.sync import NodeSyncService
-from wcpan.drive.server.synology.convert import SynologyLocator
-from wcpan.drive.server.synology.mounts import MountRegistry
-from wcpan.drive.server.synology.paths import SynologyPathService
-from wcpan.drive.server.synology.store import SynologyStore
-from wcpan.drive.server.synology.webhook import WebhookService
+from wcpan.drive.server.synology._convert import SynologyLocator
+from wcpan.drive.server.synology._mounts import MountRegistry
+from wcpan.drive.server.synology._paths import SynologyPathService
+from wcpan.drive.server.synology._store import SynologyStore
+from wcpan.drive.server.synology._webhook import WebhookService
 from wcpan.drive.server.types import NodeObservation, ReadSeq
 from wcpan.synology import (
     SynologyClient,
