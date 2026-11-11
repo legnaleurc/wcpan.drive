@@ -784,7 +784,18 @@ state where two Synology instances already collide.
      (`forget_orphans`), since offline `gc` does not load backends.
    - From Lifecycle: an instance registered but no longer configured is
      reported at startup, and routing to it gives 503.
-3. Lifecycle commands: `drop`, `rebuild`, and mount reassignment.
+3. Lifecycle commands: `drop`, `rebuild`, and mount reassignment. Implemented:
+   - `backend NAME drop` and `backend NAME rebuild` are handled by the core
+     before the backend sees its arguments, so they work without loading the
+     backend; instances registered but not configured are valid names. `drop`
+     refuses a configured instance and `rebuild` an unconfigured one.
+   - The instance's tables are found by their namespace suffix and dropped by
+     both commands. `rebuild` resets the registered table version, so it also
+     recovers from a backend schema version mismatch; the tables are recreated
+     when the backend registers on the next start.
+   - Mount reassignment runs at every start, before backends are entered:
+     children of a mount owned by another instance are removed with their
+     subtrees and tombstones. `gc` still covers deeper leftovers.
 
 Not part of this work: a separate `NodeSyncService` per backend. Today the
 `for_backend` views share the write and metadata queues, `ObservationOrder`,

@@ -8,10 +8,15 @@ from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.server.services.ids import NodeIds
 from wcpan.drive.server.services.mirror import (
+    BackendNamespace,
     MirrorStore,
     SchemaVersionError,
     cleanup_dangling_nodes,
+    drop_backend,
+    rebuild_backend,
+    registered_backends,
     reset_change_history,
 )
 from wcpan.drive.server.services.off_main import OffMainService
@@ -414,3 +419,161 @@ class TestPerBackendGc(IsolatedAsyncioTestCase):
         # then
         self.assertEqual(count, 0)
         self.assertNotIn("a-unused", self._mapped())
+
+
+class _Schema:
+    """Backend tables named through the instance's namespace."""
+
+    def __init__(self, version: int = 1) -> None:
+        self.version = version
+
+    def ensure_schema(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
+        con.execute(f"CREATE TABLE IF NOT EXISTS {ns.table('state')} (x INTEGER)")
+        con.execute(f"INSERT INTO {ns.table('state')} (x) VALUES (1)")
+
+    def bind_locator(self, *_: object) -> None:
+        pass
+
+    def forget_nodes(self, *_: object) -> None:
+        pass
+
+    def forget_orphans(self, *_: object) -> None:
+        pass
+
+
+class TestLifecycle(IsolatedAsyncioTestCase):
+    """``drop``, ``rebuild``, and mounts that change backend."""
+
+    async def asyncSetUp(self) -> None:
+        fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        self.addCleanup(os.unlink, self.db_path)
+        self.pool = self.enterContext(ThreadPoolExecutor())
+        self.mirror = _make_mirror(self.db_path, self.pool)
+        await self.mirror.ensure_schema()
+        self.ns = {
+            name: await self.mirror.register_schema(name, _Schema())
+            for name in ("a", "b")
+        }
+        self.ids = {
+            name: NodeIds(mirror=self.mirror, key=ns.key)
+            for name, ns in self.ns.items()
+        }
+        await self.mirror.bulk_upsert_nodes(
+            [
+                _make_node(SERVER_ROOT_ID, parent_id=None, is_directory=True),
+                _make_node("m-docs", name="docs", is_directory=True),
+                _make_node("m-pics", name="pics", is_directory=True),
+            ]
+        )
+        (self.a_dir, self.a_file) = await self.ids["a"].public(["dir", "file"])
+        (self.b_file,) = await self.ids["b"].public(["file"])
+        await self.mirror.bulk_upsert_nodes(
+            [
+                _make_node(self.a_dir, parent_id="m-docs", is_directory=True),
+                _make_node(self.a_file, parent_id=self.a_dir),
+                _make_node(self.b_file, parent_id="m-pics"),
+            ]
+        )
+        await self.mirror.mark_enrichment_pending("a-withheld", "a")
+        self.cursor = await self.mirror.get_cursor()
+
+    def _query(self, sql: str) -> list[tuple[object, ...]]:
+        con = sqlite3.connect(self.db_path)
+        try:
+            return list(con.execute(sql))
+        finally:
+            con.close()
+
+    def _tables(self) -> set[str]:
+        return {
+            str(row[0])
+            for row in self._query("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+
+    async def _removed(self) -> set[str]:
+        changes, _, _ = await self.mirror.get_changes_since(self.cursor, 1000)
+        return {c[0] for c in changes if c[1]}
+
+    async def test_drop_removes_the_instance_with_one_tombstone_per_node(self) -> None:
+        # when
+        count = drop_backend(self.db_path, "a")
+
+        # then
+        self.assertEqual(count, 2)
+        self.assertEqual(await self._removed(), {self.a_dir, self.a_file})
+        self.assertIsNone(await self.mirror.get_node_by_id(self.a_dir))
+        self.assertIsNotNone(await self.mirror.get_node_by_id(self.b_file))
+        self.assertIsNotNone(await self.mirror.get_node_by_id("m-docs"))
+        self.assertEqual(registered_backends(self.db_path), ["b"])
+        self.assertNotIn(self.ns["a"].table("state"), self._tables())
+        self.assertIn(self.ns["b"].table("state"), self._tables())
+        self.assertEqual(await self.mirror.get_pending_enrichment("a"), [])
+        self.assertEqual(
+            self._query(
+                f"SELECT COUNT(*) FROM node_ids WHERE backend = '{self.ns['a'].key}'"
+            ),
+            [(0,)],
+        )
+
+    async def test_rebuild_keeps_ids_for_rediscovery(self) -> None:
+        # when
+        count = rebuild_backend(self.db_path, "a")
+
+        # then
+        self.assertEqual(count, 2)
+        self.assertEqual(await self._removed(), {self.a_dir, self.a_file})
+        self.assertEqual(registered_backends(self.db_path), ["a", "b"])
+        self.assertNotIn(self.ns["a"].table("state"), self._tables())
+
+        # when: the instance starts again, at a newer table version
+        mirror = _make_mirror(self.db_path, self.pool)
+        await mirror.ensure_schema()
+        ns = await mirror.register_schema("a", _Schema(version=2))
+
+        # then: same namespace, fresh tables, and stable items keep their IDs
+        self.assertEqual(ns, self.ns["a"])
+        self.assertEqual(self._query(f"SELECT x FROM {ns.table('state')}"), [(1,)])
+        again = NodeIds(mirror=mirror, key=ns.key)
+        self.assertEqual(await again.public(["dir", "file"]), [self.a_dir, self.a_file])
+
+    async def test_unregistered_instances_are_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            drop_backend(self.db_path, "missing")
+        with self.assertRaises(ValueError):
+            rebuild_backend(self.db_path, "missing")
+
+    async def test_reassigned_mount_loses_the_old_backends_nodes(self) -> None:
+        # when: docs moves from a to b; pics stays with b
+        count = await self.mirror.release_reassigned_mounts(
+            {"m-docs": "b", "m-pics": "b"}
+        )
+
+        # then
+        self.assertEqual(count, 1)
+        self.assertEqual(await self._removed(), {self.a_dir, self.a_file})
+        self.assertIsNotNone(await self.mirror.get_node_by_id("m-docs"))
+        self.assertIsNotNone(await self.mirror.get_node_by_id(self.b_file))
+
+    async def test_mount_given_to_a_new_backend_is_emptied(self) -> None:
+        # when
+        count = await self.mirror.release_reassigned_mounts({"m-pics": "new"})
+
+        # then
+        self.assertEqual(count, 1)
+        self.assertEqual(await self._removed(), {self.b_file})
+
+    async def test_unchanged_mounts_are_left_alone(self) -> None:
+        # when
+        count = await self.mirror.release_reassigned_mounts(
+            {"m-docs": "a", "m-pics": "b"}
+        )
+
+        # then
+        self.assertEqual(count, 0)
+        self.assertEqual(await self._removed(), set())
+
+    def test_registered_backends_of_a_missing_database(self) -> None:
+        missing = self.db_path + ".missing"
+        self.assertEqual(registered_backends(missing), [])
+        self.assertFalse(os.path.exists(missing))

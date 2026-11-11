@@ -1,8 +1,10 @@
 """The ``wcpan.drive.server`` command loads backend factories named in the config."""
 
+import asyncio
 import io
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from importlib.metadata import EntryPoint
 from pathlib import Path
@@ -11,6 +13,8 @@ from unittest.mock import patch
 import yaml
 from wcpan.drive.server.config import parse_config
 from wcpan.drive.server.main import main
+from wcpan.drive.server.services.mirror import MirrorStore, registered_backends
+from wcpan.drive.server.services.off_main import OffMainService
 
 from . import _fake_backend
 
@@ -43,6 +47,80 @@ def _run_main(argv: list[str]) -> tuple[int | None, str, str]:
         except SystemExit as e:
             code = e.code if isinstance(e.code, int) else 1
     return code, stdout.getvalue(), stderr.getvalue()
+
+
+def _register(tmp: str, *names: str) -> str:
+    """Register instances *names* in the config's database; returns its path."""
+    db = str(Path(tmp) / "mirror.db")
+
+    async def register() -> None:
+        with ThreadPoolExecutor() as pool:
+            mirror = MirrorStore(db, off_main=OffMainService(pool=pool))
+            await mirror.ensure_schema()
+            for name in names:
+                await mirror.register_backend(name)
+
+    asyncio.run(register())
+    return db
+
+
+class TestLifecycleCommands(unittest.TestCase):
+    def test_rebuild_a_configured_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _config(tmp)
+            db = _register(tmp, "one")
+            # when
+            code, out, _ = _run_main(["--config", path, "backend", "one", "rebuild"])
+            # then
+            self.assertIsNone(code)
+            self.assertIn("rediscovered on the next start", out)
+            self.assertEqual(registered_backends(db), ["one"])
+
+    def test_drop_refuses_a_configured_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _config(tmp)
+            db = _register(tmp, "one")
+            # when
+            code, _, err = _run_main(["--config", path, "backend", "one", "drop"])
+            # then
+            self.assertEqual(code, 1)
+            self.assertIn("remove it from the config first", err)
+            self.assertEqual(registered_backends(db), ["one"])
+
+    def test_drop_an_instance_no_longer_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _config(tmp)
+            db = _register(tmp, "one", "gone")
+            # when
+            code, out, _ = _run_main(["--config", path, "backend", "gone", "drop"])
+            # then
+            self.assertIsNone(code)
+            self.assertIn("Dropped backend 'gone'", out)
+            self.assertEqual(registered_backends(db), ["one"])
+
+    def test_unconfigured_instance_accepts_only_drop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _config(tmp)
+            _register(tmp, "gone")
+            for argv in (["backfill", "/"], ["rebuild"]):
+                with self.subTest(argv=argv):
+                    # when
+                    code, _, err = _run_main(
+                        ["--config", path, "backend", "gone", *argv]
+                    )
+                    # then
+                    self.assertEqual(code, 1)
+                    self.assertIn("drop", err)
+
+    def test_help_lists_instances_no_longer_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _config(tmp)
+            _register(tmp, "gone")
+            # when
+            code, out, _ = _run_main(["--config", path, "backend", "--help"])
+        # then
+        self.assertEqual(code, 0)
+        self.assertIn("gone (not configured)", " ".join(out.split()))
 
 
 class TestMain(unittest.TestCase):

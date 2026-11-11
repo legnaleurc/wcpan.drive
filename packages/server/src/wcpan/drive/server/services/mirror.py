@@ -1,4 +1,5 @@
 import logging
+import os
 import secrets
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
@@ -321,12 +322,6 @@ def _register_schema(
                 (schema.version, name),
             )
         schema.forget_orphans(con, ns)
-
-
-def _registered_backends(dsn: str) -> list[str]:
-    with _read_only(dsn) as con:
-        with closing(con.execute("SELECT name FROM backends ORDER BY name")) as cur:
-            return [str(row["name"]) for row in cur]
 
 
 def _owner_of(dsn: str, node_id: NodeId) -> str | None:
@@ -776,6 +771,132 @@ def cleanup_dangling_nodes(dsn: str, *, mounts: Mapping[str, str] | None = None)
     return count
 
 
+def registered_backends(dsn: str) -> list[str]:
+    """Names of the instances registered in database *dsn*; none if it is new.
+
+    Reads without creating or checking the schema, so command-line parsing can
+    offer instances that are no longer configured.
+    """
+    if not os.path.exists(dsn):
+        return []
+    try:
+        with _read_only(dsn) as con:
+            with closing(con.execute("SELECT name FROM backends ORDER BY name")) as cur:
+                return [str(row["name"]) for row in cur]
+    except sqlite3.Error:
+        return []
+
+
+def _instance_key(con: sqlite3.Connection, name: str) -> str:
+    with closing(
+        con.execute("SELECT key FROM backends WHERE name = ?", (name,))
+    ) as cur:
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"backend {name!r} is not registered in this database")
+    return str(row["key"])
+
+
+def _instance_tables(con: sqlite3.Connection, key: str) -> list[str]:
+    """Tables named through the namespace with *key* (see ``BackendNamespace``)."""
+    with closing(
+        con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    ) as cur:
+        names = [str(row["name"]) for row in cur]
+    return [n for n in names if n.endswith(f"_{key}")]
+
+
+def _forget_instance(con: sqlite3.Connection, name: str, key: str) -> int:
+    """Tombstone and delete the instance's nodes and drop its tables.
+
+    Returns the number of nodes removed. Clients do not cascade removals, so
+    each node gets its own tombstone.
+    """
+    owned_sql = "SELECT id FROM node_ids WHERE backend = ?"
+    with closing(
+        con.execute(
+            f"SELECT COUNT(*) AS n FROM nodes WHERE id IN ({owned_sql})", (key,)
+        )
+    ) as cur:
+        count = int(cur.fetchone()["n"])
+    con.execute(
+        "INSERT INTO changes (node_id, is_removed)"
+        f" SELECT id, 1 FROM nodes WHERE id IN ({owned_sql})",
+        (key,),
+    )
+    con.execute(f"DELETE FROM nodes WHERE id IN ({owned_sql})", (key,))
+    con.execute(
+        f"DELETE FROM pending_enrichment WHERE backend = ? OR node_id IN ({owned_sql})",
+        (name, key),
+    )
+    for table in _instance_tables(con, key):
+        con.execute(f'DROP TABLE "{table}"')
+    return count
+
+
+def drop_backend(dsn: str, name: str) -> int:
+    """Remove instance *name*: its nodes (with tombstones), IDs, tables, and
+    registration, in one transaction. Returns the number of nodes removed.
+
+    Raises:
+        ValueError: If *name* is not registered.
+    """
+    _ensure_schema(dsn)
+    with _read_write(dsn) as con:
+        key = _instance_key(con, name)
+        count = _forget_instance(con, name, key)
+        con.execute("DELETE FROM node_ids WHERE backend = ?", (key,))
+        con.execute("DELETE FROM backends WHERE name = ?", (name,))
+    return count
+
+
+def rebuild_backend(dsn: str, name: str) -> int:
+    """Remove instance *name*'s nodes (with tombstones) and tables, keeping its
+    registration and IDs, so initial discovery on the next start rebuilds it.
+
+    Items whose native IDs are stable come back under their old public IDs; IDs
+    left unused are pruned by a later ``gc``. The tables are recreated at the
+    backend's current version. Returns the number of nodes removed.
+
+    Raises:
+        ValueError: If *name* is not registered.
+    """
+    _ensure_schema(dsn)
+    with _read_write(dsn) as con:
+        key = _instance_key(con, name)
+        count = _forget_instance(con, name, key)
+        con.execute("UPDATE backends SET schema_version = 0 WHERE name = ?", (name,))
+    return count
+
+
+def _release_reassigned_mounts(
+    dsn: str, mounts: Mapping[NodeId, str], instances: _Instances
+) -> int:
+    """Remove subtrees under each mount owned by another instance than its own.
+
+    *mounts* maps mount node IDs to the instance now serving them. Returns the
+    number of subtrees removed.
+    """
+    removed = 0
+    with _read_write(dsn) as con:
+        for mount, backend in mounts.items():
+            with closing(
+                con.execute(
+                    """
+                    SELECT n.id FROM nodes n JOIN node_ids i ON i.id = n.id
+                    WHERE n.parent_id = ? AND i.backend IS NOT
+                        (SELECT key FROM backends WHERE name = ?)
+                    """,
+                    (str(mount), backend),
+                )
+            ) as cur:
+                foreign = [NodeId(row["id"]) for row in cur]
+            for node_id in foreign:
+                _delete_subtree_on_connection(con, node_id, instances)
+            removed += len(foreign)
+    return removed
+
+
 def reset_change_history(dsn: str) -> int:
     """Clear changes and insert one update row per node except the server root.
 
@@ -922,7 +1043,18 @@ class MirrorStore:
 
     async def registered_backends(self) -> list[str]:
         """Names of every instance this database has seen, configured or not."""
-        return await self._off_main(_registered_backends, self._dsn)
+        return await self._off_main(registered_backends, self._dsn)
+
+    async def release_reassigned_mounts(self, mounts: Mapping[NodeId, str]) -> int:
+        """Remove what other instances left under mounts now served by another.
+
+        *mounts* maps mount node IDs to their configured instance. Run before
+        backends start, so the new owner discovers the mount from scratch.
+        Returns the number of subtrees removed.
+        """
+        return await self._off_main(
+            _release_reassigned_mounts, self._dsn, mounts, self._instances
+        )
 
     async def owner_of(self, node_id: NodeId) -> str | None:
         """The instance whose node *node_id* is; ``None`` for core nodes."""

@@ -184,6 +184,8 @@ wcpan.drive.server --config server.yaml serve
 # Offline maintenance; run only while the server is stopped
 wcpan.drive.server --config server.yaml gc
 wcpan.drive.server --config server.yaml squash
+wcpan.drive.server --config server.yaml backend old-nas drop
+wcpan.drive.server --config server.yaml backend nas rebuild
 
 # Commands of one backend instance, parsed by that backend
 wcpan.drive.server --config server.yaml backend nas backfill /photos
@@ -196,9 +198,20 @@ argument errors never connect to its source. `gc`, `squash`, and backend
 commands write the same database without coordinating with a running server.
 
 `gc` removes nodes no longer reachable from the server root, and nodes left
-under a mount by a backend instance that no longer serves it (after the mount
-was assigned to another instance); each removal is published to clients. It
-then forgets the IDs of nodes that are gone.
+under a mount by a backend instance that no longer serves it; each removal is
+published to clients. It then forgets the IDs of nodes that are gone.
+
+`backend NAME drop` removes an instance that is no longer in the config: its
+nodes (each removal published to clients), node IDs, and tables. A configured
+instance cannot be dropped. `backend NAME rebuild` removes a configured
+instance's nodes and tables but keeps its node IDs; the next start discovers it
+again, and items with a stable source identity (Synology permanent links) get
+their old IDs back. Use it when a backend's tables have an older version. Both
+are handled by the server, so a backend's own commands cannot use these names.
+
+Assigning a mount to another backend instance takes effect on the next start:
+the previous instance's nodes under the mount are removed and the new instance
+discovers it with new node IDs. The mount itself keeps its ID.
 
 Change cursors are opaque strings bound to the database's change history. `"0"`
 starts from the beginning. `squash` replaces the history, so cursors issued
@@ -260,7 +273,7 @@ so two Synology servers or two filesystem instances over one disk never see each
 other's nodes. An instance is identified by its name; renaming it in the config
 makes it a new instance, and its backend type cannot change. An instance
 removed from the config keeps its nodes in the mirror, with a warning at
-startup; reading or changing them returns 503.
+startup, until it is dropped; reading or changing them returns 503.
 
 #### Synology backend
 

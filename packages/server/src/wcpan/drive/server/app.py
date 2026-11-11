@@ -236,6 +236,11 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             await ensure_mount_nodes(
                 core.mounts, mirror=core.mirror, node_sync=core.node_sync
             )
+            released = await core.mirror.release_reassigned_mounts(
+                {m.id: config.mounts[n].backend for n, m in core.mounts.items()}
+            )
+            if released:
+                _L.info("Removed %d subtree(s) left under reassigned mounts", released)
             backends = await stack.enter_async_context(
                 entered_backends(config, core, offline=False, routes=routes)
             )

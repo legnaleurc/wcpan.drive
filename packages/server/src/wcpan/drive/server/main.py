@@ -37,6 +37,9 @@ from .scaffold import create_config_scaffold
 from .services.mirror import (
     SchemaVersionError,
     cleanup_dangling_nodes,
+    drop_backend,
+    rebuild_backend,
+    registered_backends,
     reset_change_history,
 )
 from .types import ServerConfig
@@ -48,7 +51,12 @@ _L = logging.getLogger(__name__)
 _DEFAULT_CONFIG = "/data/server.yaml"
 
 
-def _parser(config: ServerConfig | None) -> argparse.ArgumentParser:
+_LIFECYCLE = ("drop", "rebuild")
+
+
+def _parser(
+    config: ServerConfig | None, registered: Sequence[str] = ()
+) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wcpan.drive.server")
     parser.add_argument(
         "--config",
@@ -88,16 +96,23 @@ def _parser(config: ServerConfig | None) -> argparse.ArgumentParser:
         "--list", action="store_true", help="List installed backend plugins"
     )
     instances = {name: b.type for name, b in config.backends.items()} if config else {}
+    unconfigured = [n for n in registered if n not in instances]
     backend = subparsers.add_parser(
         "backend",
         help="Run a maintenance command of one backend instance",
         description="Arguments after NAME are parsed by that backend; "
-        "see `backend NAME --help`.",
+        "see `backend NAME --help`. The server itself handles "
+        "`backend NAME drop` (remove an instance no longer configured, with its "
+        "nodes) and `backend NAME rebuild` (remove a configured instance's "
+        "nodes and tables, so the next start discovers them again).",
         epilog="configured instances: "
-        + (", ".join(f"{n} ({t})" for n, t in instances.items()) or "none"),
+        + (", ".join(f"{n} ({t})" for n, t in instances.items()) or "none")
+        + "".join(f"; {n} (not configured)" for n in unconfigured),
     )
     backend.add_argument(
-        "name", choices=list(instances) or None, help="Backend instance name"
+        "name",
+        choices=[*instances, *unconfigured] or None,
+        help="Backend instance name",
     )
     backend.add_argument("args", nargs=argparse.REMAINDER, help="Backend command")
     return parser
@@ -132,6 +147,49 @@ async def run_backend_command(
         )
         await backends[name].command(argv)
         await core.node_sync.wait_enrichment_drained()
+
+
+def _lifecycle_parser(name: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=f"wcpan.drive.server backend {name}")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+    subparsers.add_parser(
+        "drop",
+        help="[DANGER] Remove this instance, which is no longer configured, with "
+        "its nodes, node IDs, and tables",
+    )
+    subparsers.add_parser(
+        "rebuild",
+        help="[DANGER] Remove this instance's nodes and tables; the next start "
+        "discovers them again",
+    )
+    return parser
+
+
+def run_lifecycle_command(config: ServerConfig, name: str, argv: Sequence[str]) -> None:
+    """Drop or rebuild instance *name*; the server must be stopped.
+
+    Raises:
+        ValueError: For a configured instance to drop, or an unconfigured one
+            to rebuild.
+    """
+    action = _lifecycle_parser(name).parse_args(list(argv)).action
+    configured = name in config.backends
+    if action == "drop":
+        if configured:
+            raise ValueError(
+                f"backend {name!r} is configured; remove it from the config "
+                "first, or rebuild it"
+            )
+        count = drop_backend(config.database_url, name)
+        print(f"Dropped backend {name!r}: {count} node(s) removed.")
+        return
+    if not configured:
+        raise ValueError(f"backend {name!r} is not configured; drop it instead")
+    count = rebuild_backend(config.database_url, name)
+    print(
+        f"Backend {name!r} will be rediscovered on the next start:"
+        f" {count} node(s) removed."
+    )
 
 
 def _init(args: argparse.Namespace) -> None:
@@ -171,7 +229,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     except (ConfigVersionError, ValueError) as e:
         _fail(e)
         return
-    args = _parser(config).parse_args(argv)
+    args = _parser(config, registered_backends(config.database_url)).parse_args(argv)
 
     try:
         if args.command == "gc":
@@ -180,6 +238,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                 mounts={name: m.backend for name, m in config.mounts.items()},
             )
             print(f"Removed {count} dangling node(s).")
+            return
+
+        if args.command == "backend" and args.args[:1] and args.args[0] in _LIFECYCLE:
+            run_lifecycle_command(config, args.name, args.args)
+            return
+
+        if args.command == "backend" and args.name not in config.backends:
+            _fail(
+                f"backend {args.name!r} is not configured; only "
+                f"`backend {args.name} drop` applies"
+            )
             return
 
         if args.command == "squash":
