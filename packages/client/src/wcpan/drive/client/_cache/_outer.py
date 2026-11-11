@@ -1,10 +1,11 @@
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import PurePath
 from typing import cast
 
 from wcpan.drive.client.lib import dispatch_change
 from wcpan.drive.client.types import ChangeAction, Node, NodeQuery, NodeSummary
 from wcpan.drive.sqlite import initialize as initialize_database
+from wcpan.drive.sqlite import read_only, read_write
 
 from ..exceptions import CacheError
 from ._inner import (
@@ -15,7 +16,7 @@ from ._inner import (
     inner_set_metadata,
     node_from_query,
 )
-from ._lib import read_only, read_write, sqlite3_regexp
+from ._lib import sqlite3_regexp
 
 
 KEY_ROOT_ID = "root_id"
@@ -26,7 +27,7 @@ def initialize(dsn: str, /):
     from ._schema import CURRENT_SCHEMA_VERSION, SQL_CREATE_TABLES
 
     initialize_database(dsn)
-    with read_write(dsn) as query:
+    with read_write(dsn) as con, closing(con.cursor()) as query:
         # check the schema version
         query.execute("PRAGMA user_version;")
         rv = query.fetchone()
@@ -45,7 +46,7 @@ def initialize(dsn: str, /):
 def get_node_by_path(dsn: str, path: PurePath, /) -> Node | None:
     # the first part is "/"
     parts = path.parts[1:]
-    with read_only(dsn) as query:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
         node_id = inner_get_metadata(query, "root_id")
         if not node_id:
             return None
@@ -69,7 +70,7 @@ def get_node_by_path(dsn: str, path: PurePath, /) -> Node | None:
 
 def resolve_path_by_id(dsn: str, node_id: str, /) -> PurePath | None:
     parts: list[str] = []
-    with read_only(dsn) as query:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
         while True:
             query.execute("SELECT name FROM nodes WHERE id=?;", (node_id,))
             rv = query.fetchone()
@@ -95,7 +96,7 @@ def resolve_path_by_id(dsn: str, node_id: str, /) -> PurePath | None:
 def get_child_by_name(dsn: str, name: str, parent_id: str, /) -> Node | None:
     from ._sql import SQL_SELECT_CHILD_BY_NAME
 
-    with read_only(dsn) as query:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
         query.execute(SQL_SELECT_CHILD_BY_NAME, (parent_id, name))
         rv = query.fetchone()
         if not rv:
@@ -106,7 +107,7 @@ def get_child_by_name(dsn: str, name: str, parent_id: str, /) -> Node | None:
 def get_children_by_id(dsn: str, node_id: str, /) -> list[Node]:
     from ._sql import SQL_SELECT_CHILDREN_BY_ID
 
-    with read_only(dsn) as query:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
         query.execute(SQL_SELECT_CHILDREN_BY_ID, (node_id,))
         nodes = [node_from_query(_) for _ in query]
     return nodes
@@ -115,14 +116,14 @@ def get_children_by_id(dsn: str, node_id: str, /) -> list[Node]:
 def get_trashed_nodes(dsn: str, /) -> list[Node]:
     from ._sql import SQL_SELECT_TRASHED_NODES
 
-    with read_only(dsn) as query:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
         query.execute(SQL_SELECT_TRASHED_NODES, (True,))
         nodes = [node_from_query(_) for _ in query]
     return nodes
 
 
 def apply_changes(dsn: str, changes: list[ChangeAction], cursor: str, /) -> None:
-    with read_write(dsn) as query:
+    with read_write(dsn) as con, closing(con.cursor()) as query:
         for change in changes:
             dispatch_change(
                 change,
@@ -142,7 +143,12 @@ def _query_cursor(dsn: str, node_query: NodeQuery):
         if node_query.name_pattern is None
         else partial(sqlite3_regexp, pattern=compile(node_query.name_pattern, I))
     )
-    with read_only(dsn, regexp=fn) as query:
+    with (
+        read_only(dsn) as con,
+        closing(con.cursor()) as query,
+    ):
+        if fn is not None:
+            con.create_function("REGEXP", 2, fn, deterministic=True)
         if node_query.ancestor_id is not None:
             query.execute(
                 "SELECT 1 FROM nodes WHERE id = ?;", (node_query.ancestor_id,)
@@ -179,12 +185,12 @@ def summarize_nodes(dsn: str, node_query: NodeQuery, /) -> NodeSummary | None:
 
 
 def get_current_cursor(dsn: str, /) -> str | None:
-    with read_only(dsn) as query:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
         return inner_get_metadata(query, KEY_CURSOR)
 
 
 def get_root(dsn: str, /) -> Node | None:
-    with read_only(dsn) as query:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
         root_id = inner_get_metadata(query, KEY_ROOT_ID)
         if not root_id:
             return None
@@ -192,11 +198,11 @@ def get_root(dsn: str, /) -> Node | None:
 
 
 def set_root(dsn: str, root: Node, /) -> None:
-    with read_write(dsn) as query:
+    with read_write(dsn) as con, closing(con.cursor()) as query:
         inner_set_metadata(query, KEY_ROOT_ID, root.id)
         inner_insert_node(query, root)
 
 
 def get_node_by_id(dsn: str, node_id: str, /) -> Node | None:
-    with read_only(dsn) as query:
+    with read_only(dsn) as con, closing(con.cursor()) as query:
         return inner_get_node_by_id(query, node_id)

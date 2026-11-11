@@ -1,3 +1,4 @@
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import PurePath
@@ -6,7 +7,6 @@ from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
-from wcpan.drive.client._cache._lib import read_only, read_write
 from wcpan.drive.client._cache._outer import (
     KEY_CURSOR,
     inner_get_node_by_id,
@@ -16,6 +16,7 @@ from wcpan.drive.client._cache._outer import (
 from wcpan.drive.client._cache._service import create_cache
 from wcpan.drive.client.exceptions import CacheError, NodeNotFoundError
 from wcpan.drive.client.types import ChangeAction, Node, NodeQuery, NodeSummary
+from wcpan.drive.sqlite import read_only, read_write
 
 
 class GetCurrentCursorTestCase(IsolatedAsyncioTestCase):
@@ -32,7 +33,7 @@ class GetCurrentCursorTestCase(IsolatedAsyncioTestCase):
 
     async def testAfterInitialize(self):
         # given
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             inner_set_metadata(query, KEY_CURSOR, "42")
 
         # when
@@ -59,7 +60,7 @@ class RootTestCase(IsolatedAsyncioTestCase):
         await self._ss.set_root(node)
 
         # then
-        with read_only(self._dsn) as query:
+        with read_only(self._dsn) as con, closing(con.cursor()) as query:
             rv = inner_get_node_by_id(query, "123")
 
         self.assertIsNotNone(rv)
@@ -112,7 +113,7 @@ class GetNodeTestCase(IsolatedAsyncioTestCase):
         # given
         node = _make_root("1")
         await self._ss.set_root(node)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             node = _make_dir("2", "1", "a")
             inner_insert_node(query, node)
             node = _make_file("3", "2", "b")
@@ -144,7 +145,7 @@ class ResolvePathTestCase(IsolatedAsyncioTestCase):
         # given
         node = _make_root("1")
         await self._ss.set_root(node)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             node = _make_dir("2", "1", "a")
             inner_insert_node(query, node)
             node = _make_file("3", "2", "b")
@@ -169,7 +170,7 @@ class ResolvePathTestCase(IsolatedAsyncioTestCase):
         # given
         node = _make_root("1")
         await self._ss.set_root(node)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             node = _make_dir("2", "1", "a")
             inner_insert_node(query, node)
             node = _make_file("3", "2", "b")
@@ -190,7 +191,7 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
         # given
         root = _make_root("1")
         await self._ss.set_root(root)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             a = _make_dir("2", "1", "a")
             inner_insert_node(query, a)
             b = _make_file("3", "2", "b")
@@ -205,7 +206,7 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
         # given
         root = _make_root("1")
         await self._ss.set_root(root)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             a = _make_dir("2", "1", "a")
             inner_insert_node(query, a)
             b = _make_file("3", "2", "b")
@@ -219,7 +220,7 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
         # given
         root = _make_root("1")
         await self._ss.set_root(root)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             a = _make_dir("2", "1", "a")
             inner_insert_node(query, a)
             b = _make_file("3", "2", "b")
@@ -233,7 +234,7 @@ class GetChildrenTestCase(IsolatedAsyncioTestCase):
         # given
         root = _make_root("1")
         await self._ss.set_root(root)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             a = _make_dir("2", "1", "a")
             inner_insert_node(query, a)
             b = _make_file("3", "2", "b")
@@ -279,7 +280,7 @@ class SearchNodesTestCase(IsolatedAsyncioTestCase):
         # given
         root = _make_root("1")
         await self._ss.set_root(root)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             a = _make_dir("2", "1", "a")
             a = replace(a, is_trashed=True)
             inner_insert_node(query, a)
@@ -297,7 +298,7 @@ class SearchNodesTestCase(IsolatedAsyncioTestCase):
         # given
         root = _make_root("1")
         await self._ss.set_root(root)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             a = _make_dir("2", "1", "a")
             inner_insert_node(query, a)
             b = _make_file("3", "1", "B")
@@ -331,7 +332,7 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
         self._ss = await self.enterAsyncContext(create_cache(self._dsn))
 
         await self._ss.set_root(_make_root("1"))
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             for node in (
                 _make_dir("2", "1", "a"),
                 _make_file("3", "2", "b"),
@@ -424,7 +425,7 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
 
     async def testParentCycleTerminates(self):
         # given
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             inner_insert_node(query, _make_dir("9", "10", "x"))
             inner_insert_node(query, _make_dir("10", "9", "y"))
 
@@ -462,7 +463,7 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
         # given
         begin = datetime(2026, 1, 1, tzinfo=UTC)
         end = datetime(2026, 1, 2, tzinfo=UTC)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             inner_insert_node(
                 query,
                 replace(
@@ -490,7 +491,7 @@ class QueryNodesTestCase(IsolatedAsyncioTestCase):
 
     async def testSummaryDoesNotCountMultipleParentsTwice(self):
         # given
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             query.execute(
                 "INSERT INTO parents (id, parent_id) VALUES (?, ?)", ("3", "4")
             )
@@ -609,7 +610,7 @@ class HashAlgorithmTestCase(IsolatedAsyncioTestCase):
                 pass
 
     def _create_version_6(self) -> None:
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             query.execute(
                 "CREATE TABLE nodes (id TEXT NOT NULL, name TEXT, trashed BOOLEAN, "
                 "created_time INTEGER, modified_time INTEGER, changed_time INTEGER, "

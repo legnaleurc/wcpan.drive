@@ -1,12 +1,14 @@
 from asyncio import TaskGroup
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import closing
 from multiprocessing import Manager, get_context
 from sqlite3 import Cursor
 from tempfile import NamedTemporaryFile
 from threading import Event
 from unittest import IsolatedAsyncioTestCase, skip
 
-from wcpan.drive.client._cache._lib import OffMainProcess, read_only, read_write
+from wcpan.drive.client._cache._lib import OffMainProcess
+from wcpan.drive.sqlite import read_only, read_write
 
 
 class TransactionTestCase(IsolatedAsyncioTestCase):
@@ -17,12 +19,12 @@ class TransactionTestCase(IsolatedAsyncioTestCase):
         context = get_context("spawn")
         self._pool = self.enterContext(ProcessPoolExecutor(mp_context=context))
         self._bg = OffMainProcess(dsn=self._dsn, pool=self._pool)
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             _prepare(query)
 
     def testRead(self):
         # when
-        with read_only(self._dsn) as query:
+        with read_only(self._dsn) as con, closing(con.cursor()) as query:
             rv = _inner_select(query, "alice")
 
         # then
@@ -32,11 +34,11 @@ class TransactionTestCase(IsolatedAsyncioTestCase):
 
     def testWrite(self):
         # when
-        with read_write(self._dsn) as query:
+        with read_write(self._dsn) as con, closing(con.cursor()) as query:
             _inner_insert(query, 2, "bob")
 
         # then
-        with read_only(self._dsn) as query:
+        with read_only(self._dsn) as con, closing(con.cursor()) as query:
             rv = _inner_select(query, "bob")
 
         self.assertIsNotNone(rv)
@@ -122,7 +124,7 @@ def _inner_select(query: Cursor, name: str) -> int | None:
 
 
 def _sync_select(dsn: str, name: str, event: Event) -> int | None:
-    with read_only(dsn, timeout=0) as query:
+    with read_only(dsn, timeout=0) as con, closing(con.cursor()) as query:
         rv = _inner_select(query, name)
         event.wait()
         return rv
@@ -153,6 +155,6 @@ def _inner_update(query: Cursor, id: int, name: str) -> None:
 
 
 def _sync_update(dsn: str, id: int, name: str, event: Event) -> None:
-    with read_write(dsn, timeout=0) as query:
+    with read_write(dsn, timeout=0) as con, closing(con.cursor()) as query:
         _inner_update(query, id, name)
         event.wait()
