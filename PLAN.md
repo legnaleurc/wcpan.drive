@@ -541,6 +541,263 @@ backend minting globally unique IDs rather than an enforced namespace.
 - Update `README.md`, config scaffolds, and configuration tests together when
   installation, commands, or configuration behavior changes.
 
+## Per-backend databases
+
+Status: proposed, reviewed once by Codex. This supersedes "Backend state lives
+in the same SQLite database as the mirror" (Node identity and backend state)
+once implemented.
+
+### Goal
+
+Give each backend instance its own SQLite database for its nodes, change log,
+locators, checkpoints, and pending enrichment. The core keeps a small database
+for the server root, mount nodes, and a backend registry. The HTTP feed remains
+one stream with one opaque cursor, like a Google Drive change token spanning
+shared drives.
+
+Benefits: node IDs need only be unique within a backend; a backend can be
+rebuilt, compacted, or dropped without touching the others; a corrupt or
+oversized backend file is contained; backends no longer share a write queue or
+observation ordering.
+
+### Why cross-backend atomicity is not required
+
+No operation writes to two backends: `BackendRouter.update` refuses moves
+between backends (`services/routing.py`), and uploads, creates, and deletes are
+routed to one backend. Every transaction that must be atomic (parent check, node
+upsert, change row, locator binding, and `pending_enrichment` cleanup in
+`_apply_observations`) stays inside one backend, so it stays inside one file.
+Moves between mounts of the same backend also stay inside one file, which is why
+the split is per backend and not per mount. Each backend modifies its own source
+and database; the core only merges the results.
+
+What still crosses the boundary is listed below: mount nodes referenced as
+parents, structural reads, feed merging, and lifecycle (registry, drop, rebuild,
+restore).
+
+### Node identity: qualify at the core boundary
+
+Backend databases keep native node IDs, exactly as today. The core qualifies
+them on the wire as `<key>.<native>` and strips the qualifier on the way in.
+`<key>` is an opaque token of `[a-z0-9]` assigned to a backend instance the first
+time it is seen and recorded in the core registry, as mount IDs are; renaming an
+instance in the config makes it a new backend.
+
+Qualifying at the boundary, not in storage, is deliberate: Synology code treats
+node IDs as permanent links throughout (`_operations.py` `_stable_node_ref`,
+`_paths.py` `locate`, and the webhook's lookup and deletion IDs), so qualified
+IDs inside backends would need translation at every one of those sites.
+
+- Translation points: HTTP node and change payloads (`id` and `parent_id`), node
+  IDs in request paths and bodies, and upload sessions. `BackendRouter` routes by
+  the qualifier, replacing the ancestor walk in `backend_of`.
+- The core splits at the first `.` and never interprets the native part, which
+  may contain anything, including dots. Root and mount IDs are core IDs and stay
+  unqualified (no `.`); the core reserves IDs starting
+  with `_` (the root is `_`) and mints mount IDs in that form, and backends must
+  not mint native IDs starting with `_`. A backend's top-level nodes keep a
+  mount ID as `parent_id`, which the core emits unchanged.
+- Why `.`: node IDs are URL path segments (`/api/v1/nodes/{id}`). `.` is an
+  unreserved URI character, so qualified IDs need no escaping, and a non-empty
+  key means an ID is never the dot segment `.` or `..`. `:` was rejected as a
+  reserved character and to keep the server layer visually distinct from the
+  client's multi-source IDs (`<source>:<id>`, split at the first colon by
+  `client/_drive.py` `_parse_id`), which therefore nest as `feed:nas.abc`
+  without either side seeing the other's separator. `-` and `_` were rejected
+  because common native ID alphabets (UUIDs, Google IDs) use them.
+- The separator protects only the core's part. `client-feed` percent-encodes
+  every ID it puts in a URL (`quote(id, safe="")`; aiohttp decodes
+  `match_info`), since a backend's native IDs may contain `/`, `?`, `#`, or `%`.
+  It interpolates them raw today (`feed/service.py`, `readable.py`,
+  `writable.py`).
+- Client source names must not contain `:`; `client-config` accepts any
+  non-empty name today, which already breaks `_parse_id`.
+- The README note "collisions are not expected" becomes a guarantee.
+
+A core-side `node_id -> backend` index was rejected: it would need a write in two
+files for every node creation.
+
+Every public ID changes; this is accepted, since clients are being migrated
+anyway. Existing client caches are rebuilt (see Cursor reset), and external
+consumers that persist node IDs (duld) must be checked.
+
+### Composite cursor
+
+The cursor stays an opaque string for clients (`client-feed` already treats it
+so; only `handlers/changes.py` parses it as an integer). It encodes a format
+version and one component per shard: the core, then each backend as
+`(key, epoch, change_id)`.
+
+- `"0"` (what `client-feed` returns as its initial cursor) is a bootstrap token,
+  valid under every format: all shards from the start.
+- Progress is over raw change rows, as today: a component advances past every
+  row it consumed, including rows deduplicated away or joined to a missing node
+  (`_get_changes_since`), so a page of only such rows still makes progress.
+- `max_size` must be positive. The budget counts raw rows. A page visits shards
+  round-robin, starting after the shard that ended the previous page (recorded in
+  the cursor), so a busy backend cannot starve the others. `has_more` is true if
+  any shard has rows past its component, including shards the page did not
+  reach.
+- A backend absent from the cursor (newly registered) starts at 0.
+- A cursor is stale when it names an unregistered or unconfigured backend, its epoch differs
+  from the backend's current epoch, or its `change_id` is beyond the backend's
+  current maximum (an older database restored under the same epoch). Stale
+  cursors get 410 Gone. Legacy integer cursors other than `"0"` are stale.
+- Clients do not cascade a removal to descendants (`inner_delete_node_by_id`
+  only unlinks the node), so dropping a backend cannot be expressed as one
+  tombstone per mount; a reset is the honest answer.
+- `GET /cursor` returns the current composite position.
+
+### Cursor reset
+
+Needed by this design, and already missing today: `squash` warns that it resets
+consumer cursors, but nothing tells consumers, and old integer cursors keep
+working while missing dropped tombstones.
+
+- Server: each database stores an epoch (random, changed by `squash`, rebuild,
+  and restore). Before the split, the single database has one epoch, and the
+  integer cursor gains an epoch prefix. 410 for stale cursors.
+- `client-feed`: map 410 to a dedicated exception.
+- Client cache: a transactional reset operation for one source (the cache has
+  none today).
+- `_Source.sync`: catch the exception while holding its lock, reset that
+  source's cache, refetch the root, and restart from the initial cursor. Retry
+  at most once per sync call. `ChangeAction` has no reset event, so before
+  clearing, the reset yields a removal for every node cached for that source,
+  then the full replay; downstream consumers stay correct without a new change
+  type. The failure must not escape into the multi-source `TaskGroup` and cancel
+  sibling sources.
+
+### Database layout and ownership
+
+Core database (`server.database_url`):
+
+- The root and mount nodes, their change rows, and the backend registry
+  (instance name, key, database path). Mount ownership (which backend serves a
+  mount) is recorded with the mount.
+
+Each backend database:
+
+- `nodes`, `changes`, and `pending_enrichment` with today's columns, an epoch,
+  and the backend's own schema (`BackendSchema`: locators, checkpoints).
+- Its own `MirrorStore`, write worker, WAL checkpoint scheduler, and
+  migrations.
+- Its own `NodeSyncService`, not a `for_backend` view: today the views share the
+  write and metadata queues, `ObservationOrder`, and the enricher
+  (`services/sync.py`), and metadata jobs carry a `ReadSeq` from that ordering.
+  Each backend gets its own write queue, metadata queue and workers, ordering,
+  and enricher, so retries and stale-observation checks stay in one database.
+
+Configuration: each backend entry accepts a core-owned `database` key (like
+`type`, not passed to the factory). The default is derived from
+`server.database_url` and the instance name, for example `mirror.nas.db` next to
+`mirror.db`. Changing a backend's database path is a rebuild of that backend.
+
+### Reads across the boundary
+
+The backend-bound `MirrorStore` keeps the current internal contracts, so backend
+code does not change:
+
+- `get_ancestors` already stops before the mount (`mirror.py`), and
+  `Mounts.of_chain` identifies the mount from the last record's parent. Both
+  work unchanged inside one backend database.
+- The parent check in `_apply_observations` treats the backend's own mount IDs
+  as existing parents, inside the same transaction, in serving and offline mode.
+- Structural reads (the root, its children, and mount nodes) are answered by a
+  read facade from the core's mounts, because backend maintenance needs them:
+  Synology backfill resolves a virtual path through the mirror, requires the
+  root, and enumerates mount nodes (`_backfill.py`). The facade exposes only the
+  backend's own mounts. Path resolution handles the first segment (mount) in the
+  facade and the rest in the backend database.
+- Offline factories stay offline: the facade and backend `MirrorStore` are
+  local database reads, not source connections.
+
+Core HTTP reads: unqualified IDs from the core database, qualified ones from the
+named backend; children of a mount from its backend database.
+
+### Lifecycle
+
+- Uploads stay core-managed and in memory: a session already holds a
+  backend-bound `WritableFile` (`services/upload.py`, `routing.py`).
+- Drop, rebuild, restore, and changing a mount's backend run offline only (server
+  stopped), so no session, scan, or enrichment job is in flight.
+- Changing a mount's backend: the old backend's subtree under that mount is
+  deleted with tombstones (its `gc` sees the mount is no longer its own), and
+  the new backend discovers it with new qualified IDs. The mount node and ID
+  stay.
+- A backend removed from the config but still registered is reported at startup
+  and kept, unread and unserved, until dropped, so a config typo does not
+  discard a mirror. While it is unconfigured its mounts leave the feed and
+  cursors naming it are stale, since clients would otherwise keep its
+  descendants as orphans.
+- `backend NAME drop`: unregister the instance and delete its database; cursors
+  naming it become stale.
+- `backend NAME rebuild`: new epoch, cleared database, initial discovery on next
+  start.
+- `backend NAME restore FILE`: install a copy and give it a new epoch, so clients
+  reset. The `change_id` check above catches a restore done by copying files
+  without the command, unless the restored database has caught up past the
+  cursor; that case is documented as unsupported.
+- Crash safety: write the new epoch inside the replaced database before
+  registering it; a registry row pointing at a missing or unreadable database is
+  a startup error, not an empty backend.
+
+Readiness stays global for now: one failed initial discovery keeps the whole
+server unready (`app.py`). Per-backend readiness is a later option.
+
+### Maintenance
+
+- `gc` runs per backend: reachability starts from that backend's mount IDs, and
+  nodes under a mount no longer served by it are deleted with tombstones.
+- `squash` runs per backend (or for all) and changes that backend's epoch.
+
+### Migration
+
+Because IDs are qualified only on the wire, storage IDs are not rewritten.
+
+Stage 2 adds a `backend` column to `nodes` and `pending_enrichment` on the
+single database, filled from mount ownership for nodes and from the existing
+`pending_enrichment.backend` column, which also covers withheld nodes that were
+never published. Existing tombstones have no node row to infer ownership from,
+so the migration discards the change log, regenerates it from current nodes
+(as `squash` does), and sets a new epoch; clients reset anyway because every
+public ID changes.
+
+Offline command `split-database` (server stopped, stage 3):
+
+1. Create the core database with the root, mount nodes (IDs unchanged), and the
+   registry.
+2. For each backend, copy its rows by the `backend` column: nodes, pending
+   enrichment, locators, and checkpoints; write one change row per node and a
+   new epoch.
+3. Leave the original file in place for rollback.
+
+### Staging
+
+1. Cursor reset: epoch, 410 on stale cursors, `"0"` bootstrap, client cache
+   reset and resynchronization. Useful alone, since `squash` needs it today.
+   Also percent-encode IDs in `client-feed` URLs and reject `:` in client
+   source names; both are independent fixes.
+2. On the single database: registry, `backend` column with its migration,
+   qualified IDs on the wire, routing by qualifier, the composite cursor
+   (`changes` gains the backend column; components are per backend). Clients
+   reset once, through stage 1. Storage stays one file.
+3. Split into per-backend files: per-backend `MirrorStore`, `NodeSyncService`,
+   workers and checkpoints, the structural read facade, `split-database`, and
+   per-backend `gc` and `squash` in the same stage, so no release has broken
+   maintenance commands.
+4. Lifecycle commands: `drop`, `rebuild`, `restore`, and mount reassignment.
+
+Tests: bootstrap and stale cursors (epoch, unregistered backend, restored
+database); raw-row progress with fully deduplicated pages; round-robin fairness
+and `has_more` for unvisited shards; client reset without cancelling sibling
+sources; ID qualification on every HTTP path and in upload sessions; routing by
+qualifier, including native IDs containing `.`, `/`, and `%`; multi-source
+round trips of qualified IDs (`feed:nas.abc`) through lookup, move, and changes; mount-parent acceptance online and offline; Synology backfill and
+webhook paths through the facade; per-backend enrichment retry; migration
+preserving locators and unpublished pending enrichment; moves between mounts of
+one backend.
+
 ## Implementation stages
 
 ### 1. Establish correctness baselines
