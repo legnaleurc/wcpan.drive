@@ -16,6 +16,7 @@ members = [
     "wcpan-drive-server",
     "wcpan-drive-server-filesystem",
     "wcpan-drive-server-synology",
+    "wcpan-drive-sqlite",
 ]
 
 [manifest.dependency-groups]
@@ -757,6 +758,12 @@ wheels = [
 name = "wcpan-drive-client"
 version = "0.1.0"
 source = { editable = "packages/client" }
+dependencies = [
+    { name = "wcpan-drive-sqlite" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "wcpan-drive-sqlite", editable = "packages/sqlite" }]
 
 [[package]]
 name = "wcpan-drive-client-cli"
@@ -895,6 +902,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "wcpan-drive-plugin" },
     { name = "wcpan-drive-protocol" },
+    { name = "wcpan-drive-sqlite" },
     { name = "wcpan-logging" },
 ]
 
@@ -906,6 +914,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "wcpan-drive-plugin", editable = "packages/plugin" },
     { name = "wcpan-drive-protocol", editable = "packages/protocol" },
+    { name = "wcpan-drive-sqlite", editable = "packages/sqlite" },
     { name = "wcpan-logging", specifier = ">=2.1.0,<3.0.0" },
 ]
 
@@ -944,6 +953,11 @@ requires-dist = [
     { name = "wcpan-drive-server", editable = "packages/server" },
     { name = "wcpan-synology", specifier = ">=0.2.0,<0.3.0" },
 ]
+
+[[package]]
+name = "wcpan-drive-sqlite"
+version = "0.1.0"
+source = { editable = "packages/sqlite" }
 
 [[package]]
 name = "wcpan-logging"

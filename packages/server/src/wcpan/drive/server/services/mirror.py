@@ -1,11 +1,23 @@
 import logging
 import sqlite3
-from collections.abc import Callable, Generator, Mapping, Sequence
-from contextlib import closing, contextmanager
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from functools import partial
 from typing import Concatenate, Protocol
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.sqlite import (
+    checkpoint as _checkpoint,
+)
+from wcpan.drive.sqlite import (
+    initialize as initialize_database,
+)
+from wcpan.drive.sqlite import (
+    read_only as _read_only,
+)
+from wcpan.drive.sqlite import (
+    read_write as _read_write,
+)
 
 from ..lib.mounts import SERVER_ROOT_ID
 from ..types import BackendLocator, NodeObservation
@@ -138,36 +150,6 @@ def _node_row_values(
     )
 
 
-def _open(dsn: str) -> sqlite3.Connection:
-    con = sqlite3.connect(dsn, check_same_thread=False)
-    con.row_factory = sqlite3.Row
-    return con
-
-
-@contextmanager
-def _read_only(dsn: str) -> Generator[sqlite3.Connection]:
-    """Open for SELECT-only; accidental writes raise at SQLite level."""
-    con = _open(dsn)
-    try:
-        con.execute("PRAGMA query_only = ON")
-        yield con
-    finally:
-        con.close()
-
-
-@contextmanager
-def _read_write(dsn: str) -> Generator[sqlite3.Connection]:
-    con = _open(dsn)
-    try:
-        yield con
-        con.commit()
-    except BaseException:
-        con.rollback()
-        raise
-    finally:
-        con.close()
-
-
 type Schemas = Mapping[str, BackendSchema]
 """Persistence hooks by backend instance name."""
 
@@ -189,6 +171,7 @@ def _schema_for(schemas: Schemas, backend: str | None) -> BackendSchema | None:
 
 
 def _ensure_schema(dsn: str, schemas: Schemas) -> None:
+    initialize_database(dsn)
     with _read_write(dsn) as con:
         version = int(con.execute("PRAGMA user_version").fetchone()[0])
         existing_tables = {
@@ -235,7 +218,6 @@ def _run_write[R](
     kwargs: dict[str, object],
 ) -> R:
     with _read_write(dsn) as con:
-        con.execute("BEGIN")
         return fn(con, *args, **kwargs)
 
 
@@ -247,11 +229,6 @@ def _register_schema(dsn: str, schema: BackendSchema) -> None:
     with _read_write(dsn) as con:
         schema.ensure_schema(con)
         schema.forget_orphans(con)
-
-
-def _checkpoint(dsn: str) -> None:
-    with _read_write(dsn) as con:
-        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def _upsert_node_and_emit_change(dsn: str, record: NodeRecord) -> None:
@@ -343,7 +320,6 @@ def _apply_observations(
         return set()
     applied: set[NodeId] = set()
     with _read_write(dsn) as con:
-        con.execute("BEGIN")
         for observation in observations:
             record = observation.record
             if record.parent_id is not None and not _node_exists(con, record.parent_id):

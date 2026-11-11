@@ -23,6 +23,7 @@ namespace migration; the old package names and import paths are not aliases.
 | `packages/client-media` | `wcpan-drive-client-media` | `wcpan.drive.client.media` |
 | `packages/client-cli` | `wcpan-drive-client-cli` | `wcpan.drive.client.cli` |
 | `packages/plugin` | `wcpan-drive-plugin` | `wcpan.drive.plugin` |
+| `packages/sqlite` | `wcpan-drive-sqlite` | `wcpan.drive.sqlite` |
 | `packages/protocol` | `wcpan-drive-protocol` | `wcpan.drive.protocol` |
 | `packages/server` | `wcpan-drive-server` | `wcpan.drive.server` |
 | `packages/server-synology` | `wcpan-drive-server-synology` | `wcpan.drive.server.synology` |
@@ -39,6 +40,22 @@ module paths from `wcpan.drive.google` and `.crypt` to
 `wcpan.drive.client.google` and `.crypt`, respectively. The SQLite metadata
 cache is built into `wcpan-drive-client`; a source names its cache file with
 `cache`.
+
+Client caches and server mirrors share `wcpan-drive-sqlite`. Initialization enables
+WAL, so database files must be on a local filesystem that supports SQLite WAL.
+Existing client caches are switched to WAL without changing their schema.
+Connections use a five-second lock timeout, `synchronous=FULL`, SQLite's default
+cache size and automatic checkpointing, and disabled foreign-key enforcement;
+parent-child consistency remains application-owned.
+
+Read operations use an enforced read-only, deferred transaction for a consistent
+snapshot. Write operations use `BEGIN IMMEDIATE`, then commit on success or roll
+back on failure. Related reads and writes must use the same connection. The
+helpers use `autocommit=True` to disable Python's implicit transaction management
+and issue SQL `BEGIN`, `COMMIT`, and `ROLLBACK` explicitly. Callers must not commit,
+roll back, or include transaction commands in schema scripts. Cancelling an async
+caller does not stop work already running in an executor. Schemas, executor
+ownership, and server write-queue/checkpoint scheduling remain package-owned.
 
 The generic server (`wcpan-drive-server`) holds the mirror, change feed, HTTP
 API, and reconciliation, and defines the contract a storage backend implements.

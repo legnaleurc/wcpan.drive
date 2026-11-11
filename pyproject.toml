@@ -2,6 +2,7 @@
 members = ["packages/*"]
 
 [tool.uv.sources]
+wcpan-drive-sqlite = { workspace = true }
 wcpan-drive-client = { workspace = true }
 wcpan-drive-client-cli = { workspace = true }
 wcpan-drive-client-config = { workspace = true }

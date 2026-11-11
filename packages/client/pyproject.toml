@@ -7,6 +7,7 @@ license = "MIT"
 requires-python = ">=3.13,<4.0"
 authors = [{ name = "Wei-Cheng Pan", email = "legnaleurc@gmail.com" }]
 dependencies = [
+    "wcpan-drive-sqlite>=0.1.0,<0.2.0",
 ]
 
 [build-system]

@@ -1,8 +1,14 @@
 from collections.abc import Callable
 from concurrent.futures import Executor
 from contextlib import closing, contextmanager
-from sqlite3 import Row, connect
 from typing import Concatenate, Pattern
+
+from wcpan.drive.sqlite import (
+    read_only as read_connection,
+)
+from wcpan.drive.sqlite import (
+    read_write as write_connection,
+)
 
 
 type RegexpFunction = Callable[..., bool]
@@ -25,43 +31,23 @@ class OffMainProcess:
 
 
 @contextmanager
-def connect_(dsn: str, *, timeout: float | None, regexp: RegexpFunction | None):
-    if timeout is None:
-        timeout = 5.0
-    with closing(connect(dsn, timeout=timeout)) as db:
-        db.row_factory = Row
-        # FIXME error in the real world
-        # await db.execute("PRAGMA foreign_keys = 1;")
-        if regexp:
-            db.create_function("REGEXP", 2, regexp, deterministic=True)
-        yield db
-
-
-@contextmanager
 def read_only(
     dsn: str, *, timeout: float | None = None, regexp: RegexpFunction | None = None
 ):
-    with (
-        connect_(dsn, timeout=timeout, regexp=regexp) as db,
-        closing(db.cursor()) as cursor,
-    ):
-        yield cursor
+    with read_connection(dsn, timeout=5.0 if timeout is None else timeout) as db:
+        if regexp is not None:
+            db.create_function("REGEXP", 2, regexp, deterministic=True)
+        with closing(db.cursor()) as cursor:
+            yield cursor
 
 
 @contextmanager
 def read_write(dsn: str, *, timeout: float | None = None):
     with (
-        connect_(dsn, timeout=timeout, regexp=None) as db,
+        write_connection(dsn, timeout=5.0 if timeout is None else timeout) as db,
         closing(db.cursor()) as cursor,
     ):
-        try:
-            yield cursor
-            if db.in_transaction:
-                db.commit()
-        except Exception:
-            if db.in_transaction:
-                db.rollback()
-            raise
+        yield cursor
 
 
 def sqlite3_regexp(_: str, cell: str | None, *, pattern: Pattern[str]) -> bool:

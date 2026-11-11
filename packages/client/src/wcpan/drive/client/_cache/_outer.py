@@ -4,6 +4,7 @@ from typing import cast
 
 from wcpan.drive.client.lib import dispatch_change
 from wcpan.drive.client.types import ChangeAction, Node, NodeQuery, NodeSummary
+from wcpan.drive.sqlite import initialize as initialize_database
 
 from ..exceptions import CacheError
 from ._inner import (
@@ -24,6 +25,7 @@ KEY_CURSOR = "check_point"
 def initialize(dsn: str, /):
     from ._schema import CURRENT_SCHEMA_VERSION, SQL_CREATE_TABLES
 
+    initialize_database(dsn)
     with read_write(dsn) as query:
         # check the schema version
         query.execute("PRAGMA user_version;")

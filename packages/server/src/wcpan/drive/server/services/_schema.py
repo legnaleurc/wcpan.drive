@@ -1,6 +1,4 @@
 DDL = """
-PRAGMA journal_mode = WAL;
-PRAGMA cache_size = -65536;
 
 CREATE TABLE IF NOT EXISTS nodes (
     id           TEXT    PRIMARY KEY,
