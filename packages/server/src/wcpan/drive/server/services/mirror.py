@@ -9,6 +9,7 @@ from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 from ..lib.mounts import SERVER_ROOT_ID
 from ..types import BackendLocator, NodeObservation
+from ._schema import DDL, MIGRATE_3_TO_4, SCHEMA_VERSION
 from .off_main import OffMainService
 
 
@@ -44,67 +45,6 @@ class BackendSchema(Protocol):
         ...
 
 
-_DDL = """
-PRAGMA journal_mode = WAL;
-PRAGMA cache_size = -65536;
-
-CREATE TABLE IF NOT EXISTS nodes (
-    id           TEXT    PRIMARY KEY,
-    parent_id    TEXT,
-    name         TEXT    NOT NULL,
-    is_directory INTEGER NOT NULL DEFAULT 0,
-    created_time INTEGER NOT NULL,
-    modified_time INTEGER NOT NULL,
-    changed_time INTEGER NOT NULL,
-    mime_type    TEXT    NOT NULL DEFAULT '',
-    hash         TEXT    NOT NULL DEFAULT '',
-    hash_algorithm TEXT  NOT NULL DEFAULT '',
-    size         INTEGER NOT NULL DEFAULT 0,
-    is_image     INTEGER NOT NULL DEFAULT 0,
-    is_video     INTEGER NOT NULL DEFAULT 0,
-    width        INTEGER NOT NULL DEFAULT 0,
-    height       INTEGER NOT NULL DEFAULT 0,
-    ms_duration  INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS ix_nodes_parent_id ON nodes(parent_id);
-
-CREATE TABLE IF NOT EXISTS changes (
-    change_id  INTEGER PRIMARY KEY AUTOINCREMENT,
-    node_id    TEXT    NOT NULL,
-    is_removed INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS ix_changes_node_id ON changes(node_id);
-
--- Observations withheld because media enrichment failed. The node keeps its last
--- complete version (or stays unpublished) until a retry or newer observation.
-CREATE TABLE IF NOT EXISTS pending_enrichment (
-    node_id TEXT PRIMARY KEY,
-    -- Backend instance whose observation was withheld.
-    backend TEXT NOT NULL DEFAULT ''
-);
-"""
-
-_SCHEMA_VERSION = 4
-
-# Version 4 adds per-node hash algorithms and moves the Synology locator out of
-# the public node table into synology_locators, now owned by the Synology
-# backend (``BackendSchema``). Before version 4 every stored digest came from
-# Synology Drive. pending_enrichment is created by ``_DDL``.
-_MIGRATE_3_TO_4 = """
-ALTER TABLE nodes ADD COLUMN hash_algorithm TEXT NOT NULL DEFAULT '';
-UPDATE nodes SET hash = '' WHERE is_directory = 1;
-UPDATE nodes SET hash_algorithm = 'md4' WHERE is_directory = 0 AND hash != '';
-CREATE TABLE synology_locators (
-    node_id TEXT PRIMARY KEY,
-    file_id TEXT NOT NULL
-);
-INSERT INTO synology_locators (node_id, file_id)
-    SELECT id, mutable_id FROM nodes WHERE mutable_id != '';
-DROP INDEX IF EXISTS ix_nodes_mutable_id;
-ALTER TABLE nodes DROP COLUMN mutable_id;
-"""
 _MAX_CHANGES_PER_PAGE = 1000
 
 _UPSERT_NODE_SQL = """
@@ -260,20 +200,20 @@ def _ensure_schema(dsn: str, schemas: Schemas) -> None:
         has_user_tables = bool(existing_tables - {"sqlite_sequence"})
         if version == 0 and has_user_tables:
             raise SchemaVersionError(
-                f"database schema version mismatch: expected {_SCHEMA_VERSION}, got 0"
+                f"database schema version mismatch: expected {SCHEMA_VERSION}, got 0"
             )
         if version == 3:
-            con.executescript(_MIGRATE_3_TO_4)
+            con.executescript(MIGRATE_3_TO_4)
             con.execute("PRAGMA user_version = 4")
             version = 4
-        if version not in (0, _SCHEMA_VERSION):
+        if version not in (0, SCHEMA_VERSION):
             raise SchemaVersionError(
                 "database schema version mismatch: "
-                f"expected {_SCHEMA_VERSION}, got {version}"
+                f"expected {SCHEMA_VERSION}, got {version}"
             )
-        con.executescript(_DDL)
+        con.executescript(DDL)
         if version == 0:
-            con.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         for schema in _distinct(schemas):
             schema.ensure_schema(con)
 

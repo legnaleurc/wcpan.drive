@@ -22,7 +22,7 @@ KEY_CURSOR = "check_point"
 
 
 def initialize(dsn: str, /):
-    from ._sql import CURRENT_SCHEMA_VERSION, SQL_CREATE_TABLES
+    from ._schema import CURRENT_SCHEMA_VERSION, SQL_CREATE_TABLES
 
     with read_write(dsn) as query:
         # check the schema version
