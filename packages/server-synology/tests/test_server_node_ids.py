@@ -11,7 +11,7 @@ from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.debounce import TaskIdDebouncer
 from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.ids import NodeIds
-from wcpan.drive.server.services.mirror import MirrorStore
+from wcpan.drive.server.services.mirror import MirrorStore, rebuild_backend
 from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -162,6 +162,23 @@ class TestTwoInstances(DecoyTestCase):
         # then: ordering, keyed by public ID, still sees the same node
         assert again is not None
         self.assertEqual(again.record.id, node_id)
+
+    async def test_rebuild_restores_nodes_under_their_old_ids(self) -> None:
+        # given
+        node_id = await self._mirror(self.nas1, _info())
+        other = await self._mirror(self.nas2, _info())
+
+        # when: nas1 is rebuilt, and rediscovers the item after restarting
+        rebuild_backend(self.db_path, "nas1")
+        self.assertIsNone(await self.mirror.get_node_by_id(node_id))
+        await self.mirror.ensure_schema()
+        self.nas1 = _Instance(self.mirror, "nas1", "one")
+        again = await self._mirror(self.nas1, _info())
+
+        # then
+        self.assertEqual(again, node_id)
+        self.assertEqual(await self.mirror.owner_of(again), "nas1")
+        self.assertIsNotNone(await self.mirror.get_node_by_id(other))
 
     async def test_locate_asks_for_the_permanent_link(self) -> None:
         # given

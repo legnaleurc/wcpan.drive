@@ -544,7 +544,7 @@ core and each instance has its own tables (see Core-minted node identity).
 
 ## Core-minted node identity
 
-Status: proposed. Reviewed by Codex as a per-backend database split, then
+Status: implemented (see Staging). Reviewed by Codex as a per-backend database split, then
 narrowed to public node IDs minted by the core in one database, and reviewed
 again. Rebuilding the server database and client caches is accepted, so this
 design has no in-place migration. The file split is deferred (see Deferred:
