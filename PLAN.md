@@ -544,18 +544,28 @@ backend minting globally unique IDs rather than an enforced namespace.
 ## Backend-scoped node identity
 
 Status: proposed. Reviewed by Codex as a per-backend database split, then
-narrowed: node IDs are scoped per backend inside the single database, and the
-file split is deferred (see Deferred: per-backend database files). This amends
-"Backend state lives in the same SQLite database as the mirror" (Node identity
-and backend state) once implemented.
+narrowed: each backend instance gets its own tables inside the single database,
+and the file split is deferred (see Deferred: per-backend database files). This
+amends "Backend state lives in the same SQLite database as the mirror" (Node
+identity and backend state) once implemented.
 
 ### Goal
 
-Node IDs need only be unique within a backend instance. Native IDs are not
-globally unique by construction: the filesystem backend mints random UUIDs, but
-Synology node IDs come from the NAS, so two Synology instances can collide.
-Today the README only says collisions "are not expected", and `nodes.id` is a
-global primary key that backend SQL joins directly (`synology/_store.py`,
+Node IDs and backend state need only be unique within a backend instance.
+Neither is globally unique by construction: the filesystem backend mints random
+UUIDs, but Synology node IDs and file IDs come from the NAS, so two Synology
+instances can collide. Backend state already collides between two instances of
+the same type, before `nodes` is involved:
+
+- `synology_locators` is looked up by `file_id`, so a webhook for one NAS can
+  resolve to the other NAS's node.
+- `fs_entries` is looked up by `identity`, which two filesystem instances on the
+  same host filesystem can share.
+- Orphan cleanup in both backends (`DELETE ... WHERE node_id NOT IN (SELECT id
+  FROM nodes)`) checks every backend's nodes, not its own.
+
+Today the README only says node ID collisions "are not expected", and `nodes.id`
+is a global primary key that backend SQL joins directly (`synology/_store.py`,
 `filesystem/_store.py`).
 
 The HTTP feed stays one stream with one cursor and one total order of changes.
@@ -566,22 +576,28 @@ resynchronize once.
 
 No operation writes to two backends: `BackendRouter.update` refuses moves
 between backends (`services/routing.py`), and uploads, creates, and deletes are
-routed to one backend. ID uniqueness therefore needs a namespace, not separate
+routed to one backend. Isolation therefore needs separate tables, not separate
 files. Keeping one file keeps one `change_id` sequence (a simple cursor and a
-total order), parent checks in one transaction, and root and mount nodes in the
-same table as the nodes under them.
+total order), the node upsert, change row, and locator binding in one
+transaction, and mount nodes readable from the same transaction as the nodes
+under them.
 
-The cost compared with separate files: backend-owned tables and backend SQL
-must be scoped by instance (below), and backends keep sharing one SQLite
-writer.
+Per-instance tables were chosen over an instance column on shared tables: with
+a column, every backend key, index, and query must carry the instance, and a
+missed filter silently reads another instance's rows. With separate tables,
+backend lookups (`file_id`, `identity`) and orphan cleanup are scoped by
+construction.
+
+The cost compared with separate files: backends keep sharing one SQLite writer,
+and a corrupt or oversized file is not contained per backend.
 
 ### Node identity: qualify at the core boundary
 
-Storage keeps native node IDs, scoped by a `backend` column. The core qualifies
-them on the wire as `<key>.<native>` and strips the qualifier on the way in.
-`<key>` is an opaque token of `[a-z0-9]` assigned to a backend instance the first
-time it is seen and recorded in a registry table, as mount IDs are; renaming an
-instance in the config makes it a new backend.
+Storage keeps native node IDs, scoped by the instance's own tables. The core
+qualifies them on the wire as `<key>.<native>` and strips the qualifier on the
+way in. `<key>` is an opaque token of `[a-z0-9]` assigned to a backend instance
+the first time it is seen and recorded in a registry table, as mount IDs are;
+renaming an instance in the config makes it a new backend.
 
 Qualifying at the boundary, not in stored IDs, is deliberate: Synology code
 treats node IDs as permanent links throughout (`_operations.py`
@@ -619,29 +635,52 @@ Every public ID changes; this is accepted, since clients are being migrated
 anyway. Existing client caches are rebuilt (see Cursor reset), and external
 consumers that persist node IDs (duld) must be checked.
 
-### Storage scoping
+### Storage layout
 
-- Core nodes (the root and mounts) have the reserved backend value `''`.
-- `nodes` is keyed by `(backend, id)`. A node's parent is in the same backend,
-  or is a core node (a mount); the parent check in `_apply_observations`
-  accepts exactly those.
-- `changes` and `pending_enrichment` gain the `backend` column; tombstones keep
-  it, so ownership survives deletion.
-- `MirrorStore` reads and writes made on behalf of a backend are bound to its
-  instance. `get_ancestors` keeps its contract (stops before the mount), so
+Core tables:
+
+- Core nodes: the root and mount nodes, with mount ownership (which backend
+  serves a mount).
+- The registry: instance name and key.
+- `changes`: one global table, as today, with a `backend` column (the key, or
+  `''` for core nodes). Tombstones keep it, so ownership survives deletion.
+- The epoch (see Cursor reset).
+
+Per backend instance, named from its registry key:
+
+- `nodes_<key>` and `pending_enrichment_<key>`, with today's columns.
+- The backend's own tables (`BackendSchema`: locators, entries, checkpoints),
+  under names derived from the key. `BackendSchema.ensure_schema` and the hooks
+  (`bind_locator`, `forget_nodes`, `forget_orphans`) receive the instance's
+  table namespace; backend stores are already built per instance, so they hold
+  it. Backend SQL that reads nodes names its own `nodes_<key>`; otherwise backend
+  queries do not change.
+
+Table names are built only from registry keys (`[a-z0-9]`), never from config
+strings, so interpolating them into SQL is safe.
+
+`MirrorStore`:
+
+- Reads and writes made on behalf of a backend are bound to its tables.
+  `get_ancestors` keeps its contract (stops before the mount), so
   `Mounts.of_chain` works unchanged.
-- Backend-owned tables (`BackendSchema`: `synology_locators`, `fs_entries`, and
-  checkpoints) gain an instance column in their keys, and the `BackendSchema`
-  hooks (`bind_locator`, `forget_nodes`, `forget_orphans`) receive the instance.
-  Backend SQL that joins `nodes` (`synology/_store.py`, `filesystem/_store.py`)
-  adds the instance to the join and filters. Backend stores are already built
-  per instance, so they know it.
-- Each backend gets its own `NodeSyncService`, not a `for_backend` view: today
-  the views share the write and metadata queues, `ObservationOrder`, and the
-  enricher (`services/sync.py`), and metadata jobs carry a `ReadSeq` from that
-  ordering. Separate services keep one backend's enrichment backlog and retries
-  from delaying another. They still share the SQLite writer, which serializes
-  commits.
+- The parent check in `_apply_observations` accepts a parent in the backend's
+  own nodes table or a mount it serves in the core table, in the same
+  transaction, online and offline.
+- HTTP reads: unqualified IDs from the core table, qualified ones from the
+  named backend's table; children of the root from the core table, children of
+  a mount from its backend's table.
+- The feed reads `changes` by `change_id` and resolves each row in the table its
+  `backend` column names. Deduplication and raw-row progress
+  (`_get_changes_since`) keep today's semantics.
+- Schema creation and migrations for per-instance tables run once per
+  registered instance.
+
+Each backend gets its own `NodeSyncService`, not a `for_backend` view: today the
+views share the write and metadata queues, `ObservationOrder`, and the enricher
+(`services/sync.py`), and metadata jobs carry a `ReadSeq` from that ordering.
+Separate services keep one backend's enrichment backlog and retries from
+delaying another. They still share the SQLite writer, which serializes commits.
 
 ### Cursor
 
@@ -684,10 +723,11 @@ to descendants (`inner_delete_node_by_id` only unlinks the node), so every
 removal is one tombstone per node, which the single change log expresses
 directly.
 
-- `backend NAME drop`: delete the instance's nodes with one tombstone each, its
-  backend-owned rows, and its registry entry.
-- `backend NAME rebuild`: the same deletion, keeping the registry entry, then
-  initial discovery on next start. Rediscovered nodes may get new IDs.
+- `backend NAME drop`: write one tombstone per node of the instance, drop its
+  tables, and remove its registry entry, in one transaction.
+- `backend NAME rebuild`: the same tombstones, then empty its tables and keep
+  the registry entry; initial discovery runs on next start. Rediscovered nodes
+  may get new IDs.
 - Changing a mount's backend: the old backend's subtree under that mount is
   deleted with tombstones (its `gc` sees the mount is no longer its own), and
   the new backend discovers it with new qualified IDs. The mount node and ID
@@ -702,23 +742,25 @@ server unready (`app.py`). Per-backend readiness is a later option.
 
 ### Maintenance
 
-- `gc` runs per backend: reachability starts from that backend's mount IDs, and
-  nodes under a mount no longer served by it are deleted with tombstones.
+- `gc` runs per backend over its own tables: reachability starts from that
+  backend's mount IDs, and nodes under a mount no longer served by it are
+  deleted with tombstones.
 - `squash` stays global and changes the epoch.
 
 ### Migration
 
 Storage IDs are not rewritten. One offline migration (server stopped):
 
-1. Add the registry and the `backend` columns. Fill `nodes.backend` from mount
-   ownership, and `pending_enrichment` from its existing `backend` column,
-   which also covers withheld nodes that were never published. Fill the
-   instance column of backend-owned tables from their nodes.
-2. Re-key `nodes`, `pending_enrichment`, and backend-owned tables by
-   `(backend, id)`.
+1. Create the registry, the core nodes table with the root and mount nodes
+   (IDs unchanged), and the `backend` column on `changes`.
+2. For each instance, create its tables and move its rows: nodes by mount
+   ownership, `pending_enrichment` by its existing `backend` column (which also
+   covers withheld nodes that were never published), and backend-owned rows by
+   the owner of their node. Checkpoints keyed by mount name follow the mount.
 3. Existing tombstones have no node row to infer ownership from, so discard the
    change log, regenerate it from current nodes (as `squash` does), and set a
    new epoch; clients reset anyway because every public ID changes.
+4. Drop the old shared tables.
 
 ### Staging
 
@@ -726,29 +768,31 @@ Storage IDs are not rewritten. One offline migration (server stopped):
    reset and resynchronization. Useful alone, since `squash` needs it today.
    Also percent-encode IDs in `client-feed` URLs and reject `:` in client
    source names; both are independent fixes.
-2. Backend-scoped identity: registry, `backend` columns and re-keying with the
-   migration, instance-scoped backend tables and SQL, qualified IDs on the
-   wire, routing by qualifier, per-backend `gc`. Clients reset once, through
-   stage 1.
+2. Backend-scoped identity: registry, per-instance tables with the migration,
+   table namespaces passed to `BackendSchema`, qualified IDs on the wire,
+   routing by qualifier, per-backend `gc`. Clients reset once, through stage 1.
 3. Per-backend `NodeSyncService` and queues.
 4. Lifecycle commands: `drop`, `rebuild`, and mount reassignment.
 
 Tests: bootstrap and stale cursors (epoch, restored database); client reset
-without cancelling sibling sources; the same native ID in two backends; ID
-qualification on every HTTP path and in upload sessions; routing by qualifier,
-including native IDs containing `.`, `/`, and `%`; multi-source round trips of
-qualified IDs (`feed:nas.abc`) through lookup, move, and changes; parent checks
-rejecting a parent from another backend; Synology locator and filesystem entry
-lookups scoped by instance; per-backend enrichment retry; migration preserving
+without cancelling sibling sources; the same native ID, Synology `file_id`, and
+filesystem `identity` in two instances of one type; orphan cleanup in one
+instance leaving the other's rows; ID qualification on every HTTP path and in
+upload sessions; routing by qualifier, including native IDs containing `.`,
+`/`, and `%`; multi-source round trips of qualified IDs (`feed:nas.abc`)
+through lookup, move, and changes; parent checks rejecting a parent from
+another backend and accepting the backend's mounts; the feed resolving changes
+across instance tables; per-backend enrichment retry; migration preserving
 locators and unpublished pending enrichment; drop and rebuild emitting one
 tombstone per node; moves between mounts of one backend.
 
 ### Deferred: per-backend database files
 
 Giving each backend its own SQLite file (with a small core database for the
-root, mounts, and registry) was designed and reviewed, then deferred. It would
-add: containment of a corrupt or oversized file, no shared writer, restore of
-one backend from a file copy, and backend SQL needing no instance scoping.
+root, mounts, and registry) was designed and reviewed, then deferred.
+Per-instance tables already give backend SQL the isolation the split would, so
+the split would only add: containment of a corrupt or oversized file, no shared
+writer, and restore of one backend from a file copy.
 
 It would cost: a composite cursor (one `(key, epoch, change_id)` component per
 file, round-robin pages for fairness, `has_more` over shards a page did not
@@ -756,12 +800,14 @@ reach) and the loss of a total order across backends; a structural read facade
 so backend maintenance (Synology backfill) can see the root and mounts from
 another file; mount parents checked across files; a registry of database paths
 that must fail startup when a file is missing; and backups that are not atomic
-across files.
+across files. Attaching backend files to one connection (`ATTACH`) does not
+avoid this: in WAL mode a transaction across attached files is atomic per file
+only, so a crash could commit a node without its locator.
 
 Revisit it if the single file becomes a measured problem (size, write
-contention, or corruption recovery). The wire ID format is the same either way,
-so the split would only change the cursor format, which clients handle through
-stage 1's reset.
+contention, or corruption recovery). Because each instance's tables already
+stand alone, the split would move them to their own file and change only the
+cursor format, which clients handle through stage 1's reset.
 
 ## Implementation stages
 
