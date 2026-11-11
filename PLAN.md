@@ -545,8 +545,9 @@ Core-minted node identity).
 ## Core-minted node identity
 
 Status: proposed. Reviewed by Codex as a per-backend database split, then
-narrowed in two steps: first to backend-scoped IDs in one database, then to
-public node IDs minted by the core. The file split is deferred (see Deferred:
+narrowed to public node IDs minted by the core in one database, and reviewed
+again. Rebuilding the server database and client caches is accepted, so this
+design has no in-place migration. The file split is deferred (see Deferred:
 per-backend database files). This amends "Backend state lives in the same
 SQLite database as the mirror" (Node identity and backend state) once
 implemented, and replaces backends minting globally unique IDs.
@@ -555,9 +556,9 @@ implemented, and replaces backends minting globally unique IDs.
 
 Backends today mint the public node ID themselves, and neither those IDs nor
 backend state are unique across instances by construction. The filesystem
-backend mints random UUIDs, but Synology uses the NAS permanent link, so two
-Synology instances can collide. Backend state already collides between two
-instances of the same type, before `nodes` is involved:
+backend mints random UUIDs (`_scan.py` `_new_id`), but Synology uses the NAS
+permanent link, so two Synology instances can collide. Backend state already
+collides between two instances of the same type, before `nodes` is involved:
 
 - `synology_locators` is looked up by `file_id`, so a webhook for one NAS can
   resolve to the other NAS's node.
@@ -581,40 +582,64 @@ No operation writes to two backends: `BackendRouter.update` refuses moves
 between backends (`services/routing.py`), and uploads, creates, and deletes are
 routed to one backend. Isolation therefore needs an ID map and separate backend
 tables, not separate files. One file keeps one `change_id` sequence (a simple
-cursor and a total order), and the ID mint, node upsert, change row, and locator
-binding in one transaction.
+cursor and a total order), and the node upsert, change row, and locator binding
+in one transaction.
 
 ### Identity map
 
 The core owns `node_ids(id PRIMARY KEY, backend, native, UNIQUE(backend,
-native))`.
+native))`. The root (`_`) and mount IDs are core IDs without map rows.
 
-- An observation names its node and parent by native ID; a parent may instead
-  be a mount ID, which is a core ID. `_apply_observations` resolves each native
-  ID inside the write transaction and mints a new public ID (`uuid4` hex) when
-  the pair is new, so two observations of one new item cannot mint two IDs.
-- Public IDs are opaque. The core never parses them and never interprets native
-  IDs, which may contain anything. The root (`_`) and mount IDs stay core IDs
-  without map rows.
-- Backends work in public IDs against the mirror and in native IDs against their
-  source. The core gives each backend instance `resolve(native)` and
-  `native_of(id)`, bound to that instance; backend-bound mirror reads return the
-  native ID with each record. Synology sites that use the node ID as a permanent
-  link (`_operations.py` `_stable_node_ref`, `_paths.py` `locate`, the webhook's
-  lookup and deletion IDs) switch to these lookups. Synology already resolves
-  `file_id` through its locators the same way.
-- The filesystem backend keeps minting its own UUIDs as native IDs; the second
-  mapping is redundant but harmless.
-- Minting is one indexed insert in a transaction that already runs; reads, the
-  hot path, are primary-key lookups by public ID with no parsing.
-- A map row is deleted with its node, in the same transaction.
+ID spaces: every ID a backend exchanges with the core is public, in
+observations (`id` and `parent_id`), deletions, mirror reads, ordering, and
+returned records. Native IDs appear only between a backend and its source.
+Backends translate where they already convert source data, so the core
+contract, `NodeSyncService`, `ObservationOrder`, the enricher, uploads, and the
+HTTP layer keep working in one ID space.
 
-Routing: `nodes` gains a `backend` column (`''` for core nodes), and
-`BackendRouter` routes by it, replacing the ancestor walk in `backend_of`.
-`changes` does not need the column: routing and maintenance read `nodes`.
+The core gives each backend instance, bound to that instance:
 
-Independent client fixes, still worth doing because legacy and native-derived
-IDs remain in circulation:
+- `public(natives) -> ids`: lookup or mint. Hits are read from a read
+  connection; misses run one writer job that does `INSERT OR IGNORE` then
+  reads back, so concurrent requests for one native ID get one public ID.
+  Minting does not need the node's transaction: a map row without a node is
+  harmless, and `gc` prunes it.
+- `lookup(native) -> id | None`: lookup only, for deletions and other events
+  that must not mint.
+- `native_of(id) -> native`: for calls to the source.
+- `mint() -> id`: a fresh ID whose native ID is itself, for backends that keep
+  their own identity mapping.
+
+Mappings never change once written, so lookups can be cached in memory.
+`public` must not be called from inside a writer job (it waits on the writer).
+
+Map rows are kept when their node is deleted, so a delayed observation of a
+deleted native ID gets the same public ID, and `ObservationOrder`, keyed by
+public ID, still rejects it. Withheld nodes, upload-conflict records that are
+never mirrored, and nodes under failed listings all have stable IDs for the
+same reason. Only offline `gc` prunes map rows that have no node and no pending
+enrichment.
+
+Backend conversion sites:
+
+- Synology: converting API info to a record calls `public(permanent_link)`;
+  parents keep resolving to public IDs through locators or mount roots
+  (`_paths.py` `resolve_parent`). Sites that send a node ID to the NAS
+  (`_operations.py` `_stable_node_ref`, `_paths.py` `locate`) call `native_of`.
+  Webhook deletions call `lookup`; an unknown permanent link has nothing to
+  delete. Comparisons that already exist inside the backend, such as the move
+  check `updated.id != record.id` (`_operations.py`) and backfill's comparison
+  with mirror IDs (`_backfill.py`), stay correct because both sides are public.
+- Filesystem: `_new_id` calls `mint`; `fs_entries` keeps mapping identity to
+  the node ID. Scan matching, `claimed`, and traversal already use those IDs.
+
+Routing: the root is rejected; a mount ID routes to the mount's owner, as
+create, upload, and move destinations are usually mounts; any other ID routes
+by its map row's backend, which also covers withheld nodes. This replaces the
+ancestor walk in `backend_of`. An ID without a map row is not found; a
+registered backend that is not running gives 503.
+
+Independent client fixes:
 
 - `client-feed` percent-encodes every ID it puts in a URL (`quote(id,
   safe="")`; aiohttp decodes `match_info`). It interpolates them raw today
@@ -622,39 +647,31 @@ IDs remain in circulation:
 - Client source names must not contain `:`; `client-config` accepts any
   non-empty name today, which already breaks `client/_drive.py` `_parse_id`.
 
-The README note "collisions are not expected" becomes a guarantee for new IDs.
+The README note "collisions are not expected" becomes a guarantee.
 
 ### Backend tables
 
 Per backend instance, the backend-owned tables (`BackendSchema`: locators,
-entries, checkpoints) are created under names derived from the instance's
-registry key. `<key>` is an opaque token of `[a-z0-9]` assigned the first time
-an instance is seen and recorded in a registry table, as mount IDs are;
-renaming an instance in the config makes it a new backend. Table names are built
-only from registry keys, never from config strings, so interpolating them into
-SQL is safe.
+entries, checkpoints) and their indexes are created under names derived from
+the instance's registry key. The registry records, per instance: name, type,
+key (an opaque `[a-z0-9]` token assigned the first time the instance is seen,
+as mount IDs are), and backend schema version. Renaming an instance in the
+config makes it a new backend. SQL object names are built only from registry
+keys, never from config strings, so interpolating them is safe.
 
 - `BackendSchema.ensure_schema` and the hooks (`bind_locator`, `forget_nodes`,
-  `forget_orphans`) receive the instance's table namespace; backend stores are
+  `forget_orphans`) receive the instance's namespace; backend stores are
   already built per instance, so they hold it.
 - Backend rows stay keyed by public node ID. Since public IDs are unique, the
   backend joins to `nodes` (`_get_node_by_locator`, `_nodes_by_identity`) and
   orphan cleanup (`NOT IN (SELECT id FROM nodes)`) need no instance filter.
 - Lookups by `file_id` and `identity` read only the instance's own table.
-- Schema creation and migrations for per-instance tables run once per
-  registered instance.
+- Backend schema versions are per instance, checked at startup like the core
+  `user_version`; a mismatch requires a rebuild of that instance.
 
 Per-instance tables were chosen over an instance column on shared tables: with
 a column, every backend key, index, and query must carry the instance, and a
 missed filter silently reads another instance's rows.
-
-### Sync services
-
-Each backend gets its own `NodeSyncService`, not a `for_backend` view: today the
-views share the write and metadata queues, `ObservationOrder`, and the enricher
-(`services/sync.py`), and metadata jobs carry a `ReadSeq` from that ordering.
-Separate services keep one backend's enrichment backlog and retries from
-delaying another. They still share the SQLite writer, which serializes commits.
 
 ### Cursor
 
@@ -666,8 +683,8 @@ epoch plus the global `change_id`.
   token: everything from the start.
 - A cursor is stale when its epoch differs from the database's, or its
   `change_id` is beyond the current maximum (an older database restored under
-  the same epoch). Stale cursors get 410 Gone. Legacy integer cursors are read
-  as the current epoch, so existing clients keep their position.
+  the same epoch). Stale cursors get 410 Gone. Legacy integer cursors other
+  than `"0"` are stale.
 - `GET /cursor` returns the current position.
 
 ### Cursor reset
@@ -676,8 +693,8 @@ Independent of the identity map, and already missing today: `squash` warns that
 it resets consumer cursors, but nothing tells consumers, and old integer
 cursors keep working while missing dropped tombstones.
 
-- Server: the database stores an epoch (random, changed by `squash` and
-  restore). 410 for stale cursors.
+- Server: the database stores an epoch (random, set when the database is
+  created and changed by `squash` and restore). 410 for stale cursors.
 - `client-feed`: map 410 to a dedicated exception.
 - Client cache: a transactional reset operation for one source (the cache has
   none today).
@@ -697,17 +714,17 @@ to descendants (`inner_delete_node_by_id` only unlinks the node), so every
 removal is one tombstone per node, which the change log expresses directly.
 
 - `backend NAME drop`: write one tombstone per node of the instance, delete its
-  nodes and map rows, drop its tables, and remove its registry entry, in one
-  transaction.
-- `backend NAME rebuild`: the same tombstones and node deletion, keeping the
-  map rows and registry entry, and emptying its tables. Initial discovery runs
-  on next start; items whose native ID is stable (Synology permanent links) come
-  back under their old public IDs. Map rows still unused after initial
-  discovery are then deleted.
+  nodes, pending enrichment, and map rows, drop its tables, and remove its
+  registry entry, in one transaction.
+- `backend NAME rebuild`: the same tombstones and deletions, keeping the map
+  rows and registry entry and emptying its tables. Initial discovery runs on
+  next start; items whose native ID is stable (Synology permanent links) come
+  back under their old public IDs. Map rows left unused are pruned by a later
+  `gc`, so a rebuild that does not finish discovery before `gc` loses only ID
+  continuity, not data.
 - Changing a mount's backend: the old backend's subtree under that mount is
   deleted with tombstones (its `gc` sees the mount is no longer its own), and
-  the new backend discovers it with new public IDs, since its native IDs
-  differ. The mount node and ID stay.
+  the new backend discovers it with new public IDs. The mount node and ID stay.
 - A backend removed from the config but still registered is reported at startup
   and kept until dropped, so a config typo does not discard a mirror. Its nodes
   stay in the mirror; content reads and writes on them fail (503), since no
@@ -719,28 +736,19 @@ server unready (`app.py`). Per-backend readiness is a later option.
 ### Maintenance
 
 - `gc` runs per backend: reachability starts from that backend's mount IDs over
-  its `nodes` rows, and nodes under a mount no longer served by it are deleted
-  with tombstones and their map rows.
+  the nodes its map rows own, and nodes under a mount no longer served by it are
+  deleted with tombstones. It then prunes map rows with no node and no pending
+  enrichment.
 - `squash` stays global and changes the epoch.
 
-### Migration
+### Database rebuild
 
-Existing node IDs are globally unique in today's `nodes` table, so they become
-both the public and the native ID of their map row. Public IDs and the change
-log survive, and clients keep their cursors; only nodes discovered afterwards
-get minted IDs. One offline migration (server stopped):
-
-1. Create the registry and the map. Fill `nodes.backend` from mount ownership,
-   and insert one map row `(id, backend, id)` per backend node. Withheld nodes
-   that were never published are covered from `pending_enrichment.backend`.
-2. Create each instance's backend tables and move backend-owned rows into them
-   by the owner of their node. Checkpoints keyed by mount name follow the
-   mount.
-3. Drop the old shared backend tables.
-
-Two Synology instances whose permanent links already collide cannot be
-separated by the migration; that state is already broken today, and `rebuild`
-of one instance is the remedy.
+There is no in-place migration. The new schema version refuses to open an older
+database and tells the operator to move it aside; the server then creates a new
+database with a new epoch, runs initial discovery, and mints new public IDs.
+Clients reset through stage 1 (their integer cursors are stale). Existing
+consumers that persist node IDs (duld) must be checked. This also clears any
+state where two Synology instances already collide.
 
 ### Staging
 
@@ -748,25 +756,33 @@ of one instance is the remedy.
    reset and resynchronization. Useful alone, since `squash` needs it today.
    Also percent-encode IDs in `client-feed` URLs and reject `:` in client
    source names.
-2. Identity map and registry: `node_ids`, `nodes.backend`, native IDs in
-   observations and backend-bound reads, `resolve` and `native_of` in Synology,
-   routing by `nodes.backend`, per-backend `gc`, and the migration.
-3. Per-instance backend tables with the table namespace passed to
-   `BackendSchema`.
-4. Per-backend `NodeSyncService` and queues.
-5. Lifecycle commands: `drop`, `rebuild`, and mount reassignment.
+2. Identity and isolation, in one release with the database rebuild: the
+   registry, `node_ids` with `public`, `lookup`, `native_of`, and `mint`,
+   Synology and filesystem conversion sites, routing by mount owner and map
+   row, per-instance backend tables and indexes with the namespace passed to
+   `BackendSchema`, per-instance schema versions, and per-backend `gc`. Shipping
+   identity without table isolation would leave the `file_id` and `identity`
+   collisions in place.
+3. Lifecycle commands: `drop`, `rebuild`, and mount reassignment.
 
-Tests: bootstrap and stale cursors (epoch, restored database), and legacy
-integer cursors keeping their position; client reset without cancelling
-sibling sources; the same native ID, Synology `file_id`, and filesystem
-`identity` in two instances of one type; concurrent observations of one new
-item minting one ID; parent resolution from native IDs and mount IDs; Synology
-webhook and permanent-link operations through `resolve` and `native_of`;
-routing by `nodes.backend`; orphan cleanup in one instance leaving the other's
-rows; per-backend enrichment retry; migration keeping public IDs, the change
-log, locators, and unpublished pending enrichment; drop emitting one tombstone
-per node; rebuild restoring Synology nodes under their old IDs; moves between
-mounts of one backend.
+Not part of this work: a separate `NodeSyncService` per backend. Today the
+`for_backend` views share the write and metadata queues, `ObservationOrder`,
+and the enricher (`services/sync.py`), so one backend's enrichment backlog can
+delay another. Separating them is a scheduling improvement, not needed for
+identity, and can follow later.
+
+Tests: bootstrap and stale cursors (epoch, restored database, legacy integer
+cursors); client reset without cancelling sibling sources; the same native ID,
+Synology `file_id`, and filesystem `identity` in two instances of one type;
+concurrent `public` calls for one new native ID getting one ID; `lookup` not
+minting; a delayed observation after deletion keeping its ID and being rejected
+by ordering; Synology operations, `locate`, webhook deletions, and moves through
+`native_of` and `lookup`; Synology moves not deleting an unchanged node;
+routing to mounts, ordinary nodes, withheld nodes, unknown IDs, and stopped
+backends; orphan cleanup in one instance leaving the other's rows; per-instance
+schema version mismatch; drop emitting one tombstone per node; rebuild
+restoring Synology nodes under their old IDs; `gc` pruning unused map rows;
+moves between mounts of one backend.
 
 ### Deferred: per-backend database files
 
@@ -778,18 +794,18 @@ oversized file, no shared writer, and restore of one backend from a file copy.
 
 It would cost: a composite cursor (one `(key, epoch, change_id)` component per
 file, round-robin pages for fairness, `has_more` over shards a page did not
-reach) and the loss of a total order across backends; minting in the core file
-while the node is written in the backend file; a structural read facade so
-backend maintenance (Synology backfill) can see the root and mounts from
+reach) and the loss of a total order across backends; a structural read facade
+so backend maintenance (Synology backfill) can see the root and mounts from
 another file; mount parents checked across files; a registry of database paths
 that must fail startup when a file is missing; and backups that are not atomic
 across files. Attaching backend files to one connection (`ATTACH`) does not
 avoid this: in WAL mode a transaction across attached files is atomic per file
-only, so a crash could commit a node without its map row or locator.
+only, so a crash could commit a node without its locator.
 
 Revisit it if the single file becomes a measured problem (size, write
-contention, or corruption recovery). Public IDs would not change; only the
-cursor format would, which clients handle through stage 1's reset.
+contention, or corruption recovery). Public IDs would not change, since minting
+does not share the node's transaction; only the cursor format would, which
+clients handle through stage 1's reset.
 
 ## Implementation stages
 
