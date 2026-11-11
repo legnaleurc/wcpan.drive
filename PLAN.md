@@ -521,7 +521,7 @@ routes operations and uploads to the backend serving a node's mount
 and becomes ready once all have finished initial discovery. Each instance writes
 through `NodeSyncService.for_backend(name)`, which tags observations so storage
 binds locators with that instance's `BackendSchema`; pending enrichment records
-its instance (schema 7) so each backend retries only its own. `local_paths`
+its instance (server schema 4) so each backend retries only its own. `local_paths`
 moved into backend settings; the core asks the backend for each mount's host
 paths. Synology webhooks use the per-instance route
 `/api/v1/backends/<name>/webhook`.
@@ -585,7 +585,7 @@ Known remaining gaps, deferred to stage 3:
 ### 2. Separate normalized records and backend state
 
 Introduce internal protocol/mirror types, Synology locator persistence, and a
-transaction-bound application path (server schema 5). Stop counting locator changes as public
+transaction-bound application path (server schema 4). Stop counting locator changes as public
 metadata updates. Prepare tolerant client decoding and migration tests.
 
 Deliverable: generic records contain no Synology locators; existing clients remain
@@ -596,7 +596,7 @@ Status: done. `NodeRecord` no longer has `mutable_id`. The server passes
 `apply_observations` commits a node and its `synology_locators` row in one
 transaction. A change row is emitted only when the public node row changes, so
 locator-only updates are silent. Bindings are deleted with their subtree and by
-dangling-node GC. Schema 5 migrates existing locators and preserves node IDs and
+dangling-node GC. Schema 4 migrates existing locators and preserves node IDs and
 the change feed (`packages/server-synology/tests/test_server_mount_max_ids.py`). The protocol decoder
 ignores `mutable_id` from older servers, and the encoder no longer emits it.
 
@@ -652,7 +652,7 @@ Hash model and client adaptation.
 Status: observations are still published only after enrichment, so the feed
 never shows an incomplete node and a changed file keeps its last complete
 version. A failed media probe is no longer dropped: the node is recorded in
-`pending_enrichment` (schema 6) unless a later read already observed it. Any
+`pending_enrichment` (server schema 4) unless a later read already observed it. Any
 applied observation or removal of the node clears the entry, and startup
 re-observes each pending node after the scan (`retry_pending_enrichment`),
 removing it if the backend no longer has it. Checkpoints may therefore advance
