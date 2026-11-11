@@ -39,7 +39,7 @@ from .types import (
 )
 
 
-_API_VERSION = 7
+_API_VERSION = 6
 
 _VIRTUAL_ROOT_ID = "__virtual_root__"
 

@@ -11,7 +11,7 @@ from wcpan.drive.client.types import Drive, SourceConfig
 from yaml import safe_load
 
 
-VERSION = 5
+VERSION = 4
 
 
 @dataclass(frozen=True, kw_only=True)

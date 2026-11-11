@@ -1407,7 +1407,7 @@ def as_factory[T](service: T) -> Callable[[], AbstractAsyncContextManager[T]]:
 
 def create_backend_mock(decoy: Decoy) -> Backend:
     backend = decoy.mock(cls=Backend)
-    decoy.when(backend.api_version).then_return(7)
+    decoy.when(backend.api_version).then_return(6)
     return backend
 
 

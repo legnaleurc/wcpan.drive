@@ -20,7 +20,7 @@ async def main():
 Example config file:
 
 ```yaml
-version: 5
+version: 4
 sources:
   # In multi-source mode (2+ sources), each name becomes a path prefix.
   - name: google
@@ -50,10 +50,10 @@ group; a factory that takes a positional argument is middleware for the backend
 it wraps. Settings marked required, and the cache path, are left empty to fill
 in.
 
-Version 5 replaced the `cache` factory chain with the path of the SQLite cache
-file (the old `dsn` value); the cache is built into `wcpan-drive-client`.
-Version 4 renamed the source keys `file` and `snapshot` to `backend` and
-`cache`. Older versions are rejected.
+Version 4 renamed the source keys `file` to `backend` and replaced the
+`snapshot` factory chain with `cache`, the path of the SQLite cache file (the
+old `dsn` value); the cache is built into `wcpan-drive-client`. Older versions
+are rejected.
 
 The whole file is validated before any factory is imported. Factory names are
 imported and called as written, so a config file is trusted executable wiring;

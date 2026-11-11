@@ -929,7 +929,7 @@ class Service(metaclass=ABCMeta):
                 >>> class MyBackend(Backend):
                 ...     @property
                 ...     def api_version(self) -> int:
-                ...         return 7
+                ...         return 6
         """
 
 
@@ -990,7 +990,7 @@ class Backend(Service, metaclass=ABCMeta):
 
     Implementations must:
         - Provide all abstract methods
-        - Return api_version = 7
+        - Return api_version = 6
         - Handle authentication appropriately
         - Support async context manager protocol
         - Raise appropriate exceptions on errors
@@ -1007,7 +1007,7 @@ class Backend(Service, metaclass=ABCMeta):
             >>> class MyCloudBackend(Backend):
             ...     @property
             ...     def api_version(self) -> int:
-            ...         return 7
+            ...         return 6
             ...
             ...     async def get_root(self) -> Node:
             ...         # Fetch root from API

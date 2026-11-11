@@ -46,7 +46,7 @@ path needs updating. Install `wcpan-drive-server` alongside the backend
 packages: the backend packages no longer provide the command. Backend
 maintenance commands moved under `backend NAME`, for example
 `backend synology backfill /`. The Synology locator is private backend state
-(schema 5, now 7), and node payloads no longer carry `mutable_id`, so
+(server schema 4), and node payloads no longer carry `mutable_id`, so
 clients from before this migration cannot read them. The remaining work is specified in PLAN.md.
 
 ## Client naming
@@ -59,9 +59,7 @@ take `backend=` and `cache=` instead of `file=` and `snapshot=`. Provider entry
 points are `wcpan.drive.client.google.create_backend`,
 `wcpan.drive.client.feed.create_backend`,
 `wcpan.drive.client.sqlite.create_cache`, and
-`wcpan.drive.client.crypt.create_middleware`. The CLI configuration is now
-version 4: rename each source's `file` key to `backend` and `snapshot` to
-`cache`, and update the function names above. `SqliteSnapshotError` is now
+`wcpan.drive.client.crypt.create_middleware`. `SqliteSnapshotError` is now
 `SqliteCacheError`. The protocol's `MirrorStableId` is now `NodeId`.
 
 ## Built-in client cache
@@ -72,6 +70,8 @@ The SQLite cache is now part of `wcpan-drive-client`, and
 `CacheMiddleware` are gone: `create_drive()` takes `cache_path=` and
 `SourceConfig` takes `cache_path` (the old `dsn`) instead of a cache factory.
 `SqliteCacheError` is now `wcpan.drive.client.exceptions.CacheError`. The CLI
-configuration is now version 5: replace each source's `cache` list with the
-path of its SQLite file, for example `cache: /path/to/google.sqlite`. Existing
+configuration is now version 4: rename each source's `file` key to `backend`,
+replace its `snapshot` list with `cache`, the path of its SQLite file (for
+example `cache: /path/to/google.sqlite`), and update the backend function names
+above. Existing
 cache files keep working; the schema is unchanged.

@@ -72,7 +72,7 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
         self.decoy.when(self._create_multi_drive(sources=sources)).then_enter_with(
             drive
         )
-        self._write({"version": 5, "sources": [_source("google"), _source("local")]})
+        self._write({"version": 4, "sources": [_source("google"), _source("local")]})
 
         # when
         async with create_drive_from_config(self._path) as rv:
@@ -88,7 +88,7 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
 
     async def testWrongVersion(self) -> None:
         # when / then
-        await self._assert_invalid({"version": 4, "sources": [_source()]})
+        await self._assert_invalid({"version": 3, "sources": [_source()]})
 
     async def testNotMapping(self) -> None:
         # when / then
@@ -96,46 +96,46 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
 
     async def testEmptySources(self) -> None:
         # when / then
-        await self._assert_invalid({"version": 5, "sources": []})
+        await self._assert_invalid({"version": 4, "sources": []})
 
     async def testDuplicateNames(self) -> None:
         # when / then
-        await self._assert_invalid({"version": 5, "sources": [_source(), _source()]})
+        await self._assert_invalid({"version": 4, "sources": [_source(), _source()]})
 
     async def testMissingName(self) -> None:
         # given
         source = _source()
         del source["name"]
         # when / then
-        await self._assert_invalid({"version": 5, "sources": [source]})
+        await self._assert_invalid({"version": 4, "sources": [source]})
 
     async def testEmptyChain(self) -> None:
         # given
         source = _source()
         source["backend"] = []
         # when / then
-        await self._assert_invalid({"version": 5, "sources": [source]})
+        await self._assert_invalid({"version": 4, "sources": [source]})
 
     async def testMissingChain(self) -> None:
         # given
         source = _source()
         del source["backend"]
         # when / then
-        await self._assert_invalid({"version": 5, "sources": [source]})
+        await self._assert_invalid({"version": 4, "sources": [source]})
 
     async def testUndottedFunctionName(self) -> None:
         # given
         source = _source()
         source["backend"][0]["name"] = "create_backend"
         # when / then
-        await self._assert_invalid({"version": 5, "sources": [source]})
+        await self._assert_invalid({"version": 4, "sources": [source]})
 
     async def testInvalidArgs(self) -> None:
         # given
         source = _source()
         source["backend"][0]["args"] = "token"
         # when / then
-        await self._assert_invalid({"version": 5, "sources": [source]})
+        await self._assert_invalid({"version": 4, "sources": [source]})
 
     async def testInvalidCachePath(self) -> None:
         for cache in (None, "", [{"name": "pkg.cache.create_cache"}]):
@@ -144,11 +144,11 @@ class CreateDriveFromConfigTestCase(IsolatedAsyncioTestCase):
                 source = _source()
                 source["cache"] = cache
                 # when / then
-                await self._assert_invalid({"version": 5, "sources": [source]})
+                await self._assert_invalid({"version": 4, "sources": [source]})
 
     async def testInvalidKwargs(self) -> None:
         # given
         source = _source()
         source["backend"][0]["kwargs"] = ["token"]
         # when / then
-        await self._assert_invalid({"version": 5, "sources": [source]})
+        await self._assert_invalid({"version": 4, "sources": [source]})

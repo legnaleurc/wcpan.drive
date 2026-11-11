@@ -49,7 +49,7 @@ class CreateConfigScaffoldTestCase(TestCase):
         self.assertEqual(
             text,
             """\
-version: 5
+version: 4
 sources:
   - name: drive
     backend:

@@ -86,18 +86,16 @@ CREATE TABLE IF NOT EXISTS pending_enrichment (
 );
 """
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 4
 
-# Before version 4 every stored digest came from Synology Drive.
+# Version 4 adds per-node hash algorithms and moves the Synology locator out of
+# the public node table into synology_locators, now owned by the Synology
+# backend (``BackendSchema``). Before version 4 every stored digest came from
+# Synology Drive. pending_enrichment is created by ``_DDL``.
 _MIGRATE_3_TO_4 = """
 ALTER TABLE nodes ADD COLUMN hash_algorithm TEXT NOT NULL DEFAULT '';
 UPDATE nodes SET hash = '' WHERE is_directory = 1;
 UPDATE nodes SET hash_algorithm = 'md4' WHERE is_directory = 0 AND hash != '';
-"""
-
-# Version 5 moves the Synology locator out of the public node table. Historical:
-# the Synology backend now owns synology_locators (``BackendSchema``).
-_MIGRATE_4_TO_5 = """
 CREATE TABLE synology_locators (
     node_id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL
@@ -106,18 +104,6 @@ INSERT INTO synology_locators (node_id, file_id)
     SELECT id, mutable_id FROM nodes WHERE mutable_id != '';
 DROP INDEX IF EXISTS ix_nodes_mutable_id;
 ALTER TABLE nodes DROP COLUMN mutable_id;
-"""
-
-# Version 6 adds pending_enrichment.
-_MIGRATE_5_TO_6 = """
-CREATE TABLE pending_enrichment (node_id TEXT PRIMARY KEY);
-"""
-
-# Version 7 records the backend instance of pending enrichment. Earlier entries
-# can only come from a single Synology server, named as in legacy config files.
-_MIGRATE_6_TO_7 = """
-ALTER TABLE pending_enrichment ADD COLUMN backend TEXT NOT NULL DEFAULT '';
-UPDATE pending_enrichment SET backend = 'synology';
 """
 _MAX_CHANGES_PER_PAGE = 1000
 
@@ -280,18 +266,6 @@ def _ensure_schema(dsn: str, schemas: Schemas) -> None:
             con.executescript(_MIGRATE_3_TO_4)
             con.execute("PRAGMA user_version = 4")
             version = 4
-        if version == 4:
-            con.executescript(_MIGRATE_4_TO_5)
-            con.execute("PRAGMA user_version = 5")
-            version = 5
-        if version == 5:
-            con.executescript(_MIGRATE_5_TO_6)
-            con.execute("PRAGMA user_version = 6")
-            version = 6
-        if version == 6:
-            con.executescript(_MIGRATE_6_TO_7)
-            con.execute("PRAGMA user_version = 7")
-            version = 7
         if version not in (0, _SCHEMA_VERSION):
             raise SchemaVersionError(
                 "database schema version mismatch: "

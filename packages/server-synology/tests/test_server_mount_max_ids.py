@@ -166,7 +166,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         version = con.execute("PRAGMA user_version").fetchone()[0]
         con.close()
 
-        self.assertEqual(version, 7)
+        self.assertEqual(version, 4)
 
     async def test_version_3_db_is_migrated(self) -> None:
         # given
@@ -211,52 +211,13 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         locators = dict(con.execute("SELECT node_id, file_id FROM synology_locators"))
         con.close()
 
-        self.assertEqual(version, 7)
+        self.assertEqual(version, 4)
         self.assertEqual(rows["f1"], ("abc", "md4"))
         self.assertEqual(rows["f2"], ("", ""))
         self.assertEqual(rows["d1"], ("", ""))
         self.assertEqual(locators, {"f1": "m1", "f2": "m2", "d1": "m3"})
 
-    async def test_version_6_pending_entries_belong_to_legacy_backend(self) -> None:
-        # given
-        con = sqlite3.connect(self.db_path)
-        con.executescript(
-            """
-            CREATE TABLE nodes (
-                id TEXT PRIMARY KEY, parent_id TEXT,
-                name TEXT NOT NULL, is_directory INTEGER NOT NULL DEFAULT 0,
-                created_time INTEGER NOT NULL, modified_time INTEGER NOT NULL,
-                changed_time INTEGER NOT NULL,
-                mime_type TEXT NOT NULL DEFAULT '', hash TEXT NOT NULL DEFAULT '',
-                hash_algorithm TEXT NOT NULL DEFAULT '',
-                size INTEGER NOT NULL DEFAULT 0,
-                is_image INTEGER NOT NULL DEFAULT 0,
-                is_video INTEGER NOT NULL DEFAULT 0,
-                width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0,
-                ms_duration INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE changes (
-                change_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                node_id TEXT NOT NULL,
-                is_removed INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE pending_enrichment (node_id TEXT PRIMARY KEY);
-            INSERT INTO pending_enrichment (node_id) VALUES ('pending-1');
-            PRAGMA user_version = 6;
-            """
-        )
-        con.commit()
-        con.close()
-
-        # when
-        mirror = MirrorStore(self.db_path, off_main=self.off_main)
-        await mirror.ensure_schema()
-
-        # then
-        self.assertEqual(await mirror.get_pending_enrichment("synology"), ["pending-1"])
-        self.assertEqual(await mirror.get_pending_enrichment("other"), [])
-
-    async def test_version_4_db_moves_locators_out_of_nodes(self) -> None:
+    async def test_version_3_db_moves_locators_out_of_nodes(self) -> None:
         # given
         con = sqlite3.connect(self.db_path)
         con.executescript(
@@ -267,7 +228,6 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
                 created_time INTEGER NOT NULL, modified_time INTEGER NOT NULL,
                 changed_time INTEGER NOT NULL,
                 mime_type TEXT NOT NULL DEFAULT '', hash TEXT NOT NULL DEFAULT '',
-                hash_algorithm TEXT NOT NULL DEFAULT '',
                 size INTEGER NOT NULL DEFAULT 0,
                 is_image INTEGER NOT NULL DEFAULT 0,
                 is_video INTEGER NOT NULL DEFAULT 0,
@@ -289,7 +249,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
                    ('perm-f', '102', 'perm-d', 'a.txt', 0, 0, 0, 0);
             INSERT INTO changes (node_id, is_removed)
             VALUES ('_', 0), ('_docs', 0), ('perm-d', 0), ('perm-f', 0);
-            PRAGMA user_version = 4;
+            PRAGMA user_version = 3;
             """
         )
         con.commit()
@@ -306,7 +266,7 @@ class TestEnsureSchemaVersion(IsolatedAsyncioTestCase):
         version = con.execute("PRAGMA user_version").fetchone()[0]
         columns = {row[1] for row in con.execute("PRAGMA table_info(nodes)")}
         con.close()
-        self.assertEqual(version, 7)
+        self.assertEqual(version, 4)
         self.assertNotIn("mutable_id", columns)
 
         # Public IDs and the change feed survive; virtual nodes get no locator.

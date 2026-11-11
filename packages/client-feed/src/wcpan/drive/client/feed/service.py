@@ -40,7 +40,7 @@ class FeedBackend(Backend):
     @property
     @override
     def api_version(self) -> int:
-        return 7
+        return 6
 
     @override
     async def get_initial_cursor(self) -> str:
