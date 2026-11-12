@@ -20,6 +20,7 @@ from wcpan.synology import (
     SynologyError,
     SynologyFileId,
     SynologyFileInfo,
+    SynologyLookupRef,
     SynologyNetworkError,
     SynologyParentRef,
     SynologyPath,
@@ -150,8 +151,21 @@ class SynologyPathService:
         drive_api: SynologyClient,
         parent_node_id: NodeId,
     ) -> list[SynologyFileInfo]:
-        """List children of a mirror parent node ID."""
-        folder_ref = await self.synology_parent_ref(parent_node_id)
+        """List children of a mirror parent node ID.
+
+        A folder is listed by its permanent link, which is stable and known as
+        soon as its ID is minted, so a folder can be listed before its own
+        write lands.
+
+        Raises:
+            UnknownNodeError: If *parent_node_id* is not a node of this instance.
+        """
+        mount = self._registry.mounts.by_id(parent_node_id)
+        folder_ref: SynologyLookupRef = (
+            self._registry.paths[mount.name]
+            if mount is not None
+            else await self.permanent_link(parent_node_id)
+        )
         all_items: list[SynologyFileInfo] = []
         offset = 0
         while True:

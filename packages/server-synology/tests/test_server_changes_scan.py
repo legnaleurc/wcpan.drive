@@ -27,7 +27,7 @@ from wcpan.drive.server.types import (
     WriteQueue,
 )
 from wcpan.drive.server.workers import create_write_queue, metadata_worker
-from wcpan.synology import SynologyClient, SynologyFileId
+from wcpan.synology import SynologyClient, SynologyPermanentLink
 
 from ._lib import DecoyTestCase, IdentityIds
 
@@ -723,7 +723,7 @@ class TestDeferredScan(DecoyTestCase):
                 drive_api = await self._drive_api()
                 self.decoy.when(
                     await drive_api.list_folder(
-                        SynologyFileId("dirF"), offset=0, limit=1
+                        SynologyPermanentLink("perm:dirF"), offset=0, limit=1
                     )
                 ).then_return(([], 1))
                 q = create_write_queue()

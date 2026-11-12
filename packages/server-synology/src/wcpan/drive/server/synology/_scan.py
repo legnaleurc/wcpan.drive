@@ -11,7 +11,7 @@ from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.reconcile import ReconcileSession, reconcile_session
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation, ReadSeq
-from wcpan.synology import SynologyClient, SynologyFileId, SynologyPath
+from wcpan.synology import SynologyClient, SynologyPath
 
 from ._paths import SynologyPathService
 from ._store import SynologyStore
@@ -125,12 +125,8 @@ class StartupScanService:
                 if db_children:
                     should_skip = True
                     try:
-                        locators = await self._store.get_locators([folder_id])
-                        locator = locators.get(folder_id)
-                        if locator is None:
-                            raise ValueError(f"missing locator for {folder_id}")
                         _, api_count = await self._drive_api.list_folder(
-                            SynologyFileId(locator),
+                            await self._syno_paths.permanent_link(folder_id),
                             offset=0,
                             limit=1,
                         )
