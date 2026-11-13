@@ -12,6 +12,7 @@ from collections.abc import (
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from functools import partial
 from logging import getLogger
 
 from aiohttp import web
@@ -53,6 +54,7 @@ from .keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
+from .lib.write_queue import run_queued
 from .services.ids import NodeIds
 from .services.mirror import MirrorStore, create_mirror_store
 from .services.mounts import Mounts, ensure_mount_nodes, load_mounts
@@ -154,7 +156,7 @@ async def managed_core(
     async with AsyncExitStack() as stack:
         group = await stack.enter_async_context(asyncio.TaskGroup())
         if after_write is None:
-            checkpoints = create_checkpoint_scheduler(group, mirror)
+            checkpoints = create_checkpoint_scheduler(group, mirror, write_queue)
             stack.callback(checkpoints.cancel)
             after_write = checkpoints
         await stack.enter_async_context(
@@ -193,7 +195,9 @@ async def entered_backends(
         backends: dict[str, Backend] = {}
         for name in selected:
             settings = config.backends[name]
-            key = await core.mirror.register_instance(name)
+            key = await run_queued(
+                core.write_queue, partial(core.mirror.register_instance, name)
+            )
             context = BackendContext(
                 name=name,
                 mounts=core.mounts.subset(config.mounts_of(name)),
@@ -201,7 +205,9 @@ async def entered_backends(
                     mirror=core.mirror,
                     node_sync=core.node_sync.for_backend(name),
                     off_main=core.off_main,
-                    ids=NodeIds(mirror=core.mirror, key=key),
+                    ids=NodeIds(
+                        mirror=core.mirror, write_queue=core.write_queue, key=key
+                    ),
                 ),
                 routes=routes[name] if routes is not None else BackendRoutes(name=name),
                 offline=offline,
@@ -234,8 +240,12 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             await ensure_mount_nodes(
                 core.mounts, mirror=core.mirror, node_sync=core.node_sync
             )
-            released = await core.mirror.release_reassigned_mounts(
-                {m.id: config.mounts[n].backend for n, m in core.mounts.items()}
+            released = await run_queued(
+                core.write_queue,
+                partial(
+                    core.mirror.release_reassigned_mounts,
+                    {m.id: config.mounts[n].backend for n, m in core.mounts.items()},
+                ),
             )
             if released:
                 _L.info("Removed %d subtree(s) left under reassigned mounts", released)

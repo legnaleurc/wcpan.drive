@@ -14,6 +14,8 @@ from typing import Protocol
 
 from wcpan.drive.protocol.types import NodeId
 
+from ..lib.write_queue import run_queued
+from ..types import WriteQueue
 from .mirror import MirrorStore
 
 
@@ -38,8 +40,9 @@ class NodeIdMap(Protocol):
     async def public(self, natives: Sequence[str]) -> list[NodeId]:
         """The public ID of each native ID, minting those seen for the first time.
 
-        Concurrent calls for one new native ID get the same public ID. Must not
-        be called from a write-queue job.
+        Concurrent calls for one new native ID get the same public ID. Minting
+        waits on the write queue, so calling this from a write-queue job
+        deadlocks.
         """
         ...
 
@@ -115,8 +118,11 @@ def _native_of(con: sqlite3.Connection, key: str, node_id: NodeId) -> str | None
 class NodeIds:
     """``NodeIdMap`` over the mirror database for the instance with *key*."""
 
-    def __init__(self, *, mirror: MirrorStore, key: str) -> None:
+    def __init__(
+        self, *, mirror: MirrorStore, write_queue: WriteQueue, key: str
+    ) -> None:
         self._mirror = mirror
+        self._write_queue = write_queue
         self._key = key
         self._by_native: dict[str, NodeId] = {}
         self._by_id: dict[NodeId, str] = {}
@@ -128,9 +134,12 @@ class NodeIds:
             found.update(await self._mirror.read(_lookup, self._key, missing))
             missing = [n for n in missing if n not in found]
         if missing:
-            # Directly, not through the write queue: the insert is idempotent
-            # and independent of the node's own write.
-            found.update(await self._mirror.write(_mint, self._key, missing))
+            new = missing
+
+            async def mint() -> dict[str, NodeId]:
+                return await self._mirror.write(_mint, self._key, new)
+
+            found.update(await run_queued(self._write_queue, mint))
         for native, node_id in found.items():
             self._remember(native, node_id)
         return [found[n] for n in natives]

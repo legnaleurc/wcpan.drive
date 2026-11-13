@@ -128,7 +128,7 @@ async def create_backend(
         local_paths=local_paths,
     )
     mounts = check_mounts(context.mounts)
-    ns = await context.core.mirror.register_schema(context.name, FILESYSTEM_SCHEMA)
+    ns = await context.core.node_sync.register_schema(FILESYSTEM_SCHEMA)
     store = FilesystemStore(mirror=context.core.mirror, ns=ns)
     backend = FilesystemBackend(
         context=context, config=config, mounts=mounts, store=store

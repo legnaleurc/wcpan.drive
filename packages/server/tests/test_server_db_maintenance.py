@@ -1,5 +1,6 @@
 """Tests for cleanup_dangling_nodes and reset_change_history."""
 
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -20,6 +21,11 @@ from wcpan.drive.server.services.mirror import (
     reset_change_history,
 )
 from wcpan.drive.server.services.off_main import OffMainService
+from wcpan.drive.server.workers import (
+    create_write_queue,
+    noop_after_write,
+    write_worker,
+)
 
 from ._mounts import ROOT_ID
 
@@ -462,8 +468,11 @@ class TestLifecycle(IsolatedAsyncioTestCase):
             name: await self.mirror.register_schema(name, _Schema())
             for name in ("a", "b")
         }
+        self.write_queue = create_write_queue()
+        worker = asyncio.create_task(write_worker(self.write_queue, noop_after_write))
+        self.addCleanup(worker.cancel)
         self.ids = {
-            name: NodeIds(mirror=self.mirror, key=ns.key)
+            name: NodeIds(mirror=self.mirror, write_queue=self.write_queue, key=ns.key)
             for name, ns in self.ns.items()
         }
         await self.mirror.bulk_upsert_nodes(
@@ -536,7 +545,7 @@ class TestLifecycle(IsolatedAsyncioTestCase):
 
         # then: same namespace, and stable items keep their IDs
         self.assertEqual(ns, self.ns["a"])
-        again = NodeIds(mirror=mirror, key=ns.key)
+        again = NodeIds(mirror=mirror, write_queue=self.write_queue, key=ns.key)
         self.assertEqual(await again.public(["dir", "file"]), [self.a_dir, self.a_file])
 
     async def test_unregistered_instances_are_rejected(self) -> None:

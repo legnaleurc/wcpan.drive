@@ -59,13 +59,16 @@ def _sources(mounts: Mounts) -> dict[str, str]:
 
 
 def _context(mounts: dict[str, str]) -> BackendContext:
-    mirror = MagicMock()
-    mirror.register_schema = AsyncMock()
+    node_sync = MagicMock()
+    node_sync.register_schema = AsyncMock()
     return BackendContext(
         name="disk",
         mounts=make_mounts(mounts),
         core=CoreServices(
-            mirror=mirror, node_sync=MagicMock(), off_main=MagicMock(), ids=MagicMock()
+            mirror=MagicMock(),
+            node_sync=node_sync,
+            off_main=MagicMock(),
+            ids=MagicMock(),
         ),
         routes=BackendRoutes(name="disk"),
         offline=True,

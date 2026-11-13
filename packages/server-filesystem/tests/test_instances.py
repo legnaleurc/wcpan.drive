@@ -22,7 +22,7 @@ class TestTwoInstances(ScanTestCase):
             mirror=self.mirror,
             store=FilesystemStore(mirror=self.mirror, ns=ns),
             node_sync=self.node_sync2,
-            ids=NodeIds(mirror=self.mirror, key=ns.key),
+            ids=NodeIds(mirror=self.mirror, write_queue=self.write_queue, key=ns.key),
             paths=NodePaths(mirror=self.mirror, mounts=self.mounts2),
             blocking=Blocking(executor=self.io_pool),
         )

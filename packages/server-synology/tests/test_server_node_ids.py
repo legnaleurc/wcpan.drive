@@ -1,5 +1,6 @@
 """Synology nodes get core-minted public IDs, isolated per instance."""
 
+import asyncio
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +20,12 @@ from wcpan.drive.server.synology._operations import SynologyNodeOperations
 from wcpan.drive.server.synology._paths import SynologyPathService
 from wcpan.drive.server.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.synology._webhook import WebhookService
-from wcpan.drive.server.types import ReadSeq
+from wcpan.drive.server.types import ReadSeq, WriteQueue
+from wcpan.drive.server.workers import (
+    create_write_queue,
+    noop_after_write,
+    write_worker,
+)
 from wcpan.synology import (
     SynologyClient,
     SynologyFileId,
@@ -73,12 +79,14 @@ def _dir(node_id: str, parent_id: str | None, name: str) -> NodeRecord:
 class _Instance:
     """One Synology instance's services over the shared mirror."""
 
-    def __init__(self, mirror: MirrorStore, name: str, mount: str) -> None:
+    def __init__(
+        self, mirror: MirrorStore, name: str, mount: str, *, write_queue: WriteQueue
+    ) -> None:
         ns = mirror.namespace(name)
         self.name = name
         self.mount = mount_id(mount)
         self.store = SynologyStore(mirror=mirror, ns=ns)
-        self.ids = NodeIds(mirror=mirror, key=ns.key)
+        self.ids = NodeIds(mirror=mirror, write_queue=write_queue, key=ns.key)
         self.paths = SynologyPathService(
             registry=MountRegistry(
                 mounts=make_mounts({mount: f"/{mount}"}),
@@ -101,6 +109,9 @@ class TestTwoInstances(DecoyTestCase):
             schemas={"nas1": SYNOLOGY_SCHEMA, "nas2": SYNOLOGY_SCHEMA},
         )
         await self.mirror.ensure_schema()
+        self.write_queue = create_write_queue()
+        worker = asyncio.create_task(write_worker(self.write_queue, noop_after_write))
+        self.addCleanup(worker.cancel)
         await self.mirror.bulk_upsert_nodes(
             [
                 _dir(ROOT_ID, None, ""),
@@ -108,8 +119,8 @@ class TestTwoInstances(DecoyTestCase):
                 _dir(mount_id("two"), ROOT_ID, "two"),
             ]
         )
-        self.nas1 = _Instance(self.mirror, "nas1", "one")
-        self.nas2 = _Instance(self.mirror, "nas2", "two")
+        self.nas1 = _Instance(self.mirror, "nas1", "one", write_queue=self.write_queue)
+        self.nas2 = _Instance(self.mirror, "nas2", "two", write_queue=self.write_queue)
 
     async def _mirror(self, instance: _Instance, info: SynologyFileInfo) -> NodeId:
         observation = await instance.paths.convert_one(info, instance.mount)
@@ -170,7 +181,7 @@ class TestTwoInstances(DecoyTestCase):
         rebuild_backend(self.db_path, "nas1")
         self.assertIsNone(await self.mirror.get_node_by_id(node_id))
         await self.mirror.ensure_schema()
-        self.nas1 = _Instance(self.mirror, "nas1", "one")
+        self.nas1 = _Instance(self.mirror, "nas1", "one", write_queue=self.write_queue)
         again = await self._mirror(self.nas1, _info())
 
         # then

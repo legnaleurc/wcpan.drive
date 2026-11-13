@@ -4,6 +4,7 @@ import asyncio
 import os
 import sqlite3
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
@@ -13,6 +14,11 @@ from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.services.ids import NodeIds, UnknownNodeError
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
+from wcpan.drive.server.workers import (
+    create_write_queue,
+    noop_after_write,
+    write_worker,
+)
 
 
 class TestNodeIds(IsolatedAsyncioTestCase):
@@ -23,14 +29,25 @@ class TestNodeIds(IsolatedAsyncioTestCase):
         self.pool = ThreadPoolExecutor(4)
         self.mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
         await self.mirror.ensure_schema()
+        self.write_queue = create_write_queue()
+        self.worker = asyncio.create_task(
+            write_worker(self.write_queue, noop_after_write)
+        )
         self.a = NodeIds(
-            mirror=self.mirror, key=await self.mirror.register_instance("a")
+            mirror=self.mirror,
+            write_queue=self.write_queue,
+            key=await self.mirror.register_instance("a"),
         )
         self.b = NodeIds(
-            mirror=self.mirror, key=await self.mirror.register_instance("b")
+            mirror=self.mirror,
+            write_queue=self.write_queue,
+            key=await self.mirror.register_instance("b"),
         )
 
     async def asyncTearDown(self) -> None:
+        self.worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await self.worker
         self.pool.shutdown(wait=False, cancel_futures=True)
         for suffix in ("", "-wal", "-shm"):
             with suppress(FileNotFoundError):
@@ -38,7 +55,11 @@ class TestNodeIds(IsolatedAsyncioTestCase):
 
     def _fresh(self, ids: NodeIds) -> NodeIds:
         """Another map of the same instance, without the in-memory cache."""
-        return NodeIds(mirror=self.mirror, key=ids._key)  # pyright: ignore[reportPrivateUsage]
+        return NodeIds(
+            mirror=self.mirror,
+            write_queue=self.write_queue,
+            key=ids._key,  # pyright: ignore[reportPrivateUsage]
+        )
 
     async def test_public_ids_are_stable_and_opaque(self) -> None:
         # when
@@ -70,6 +91,33 @@ class TestNodeIds(IsolatedAsyncioTestCase):
 
         # then
         self.assertEqual(len({r[0] for r in results}), 1)
+
+    async def test_mints_run_on_the_write_worker(self) -> None:
+        # given: the write worker busy with a long job
+        started = threading.Event()
+        release = threading.Event()
+
+        def hold(con: sqlite3.Connection) -> None:
+            started.set()
+            release.wait()
+
+        async def long_job() -> None:
+            await self.mirror.write(hold)
+
+        await self.write_queue.put(long_job)
+        await asyncio.to_thread(started.wait)
+
+        # when: scan workers mint meanwhile
+        maps = [self._fresh(self.a) for _ in range(3)]
+        mints = [asyncio.create_task(m.public([f"n{i}"])) for i, m in enumerate(maps)]
+        async with asyncio.timeout(5):
+            while self.write_queue.qsize() < len(mints):
+                await asyncio.sleep(0.01)
+
+        # then: they wait in the queue, not on SQLite's writer lock
+        self.assertTrue(all(not t.done() for t in mints))
+        release.set()
+        self.assertEqual(len({(await t)[0] for t in mints}), 3)
 
     async def test_lookup_does_not_mint(self) -> None:
         # when / then

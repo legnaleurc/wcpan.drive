@@ -90,7 +90,11 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         )
         # The backend's own view, as the server hands it over.
         self.node_sync = self.core_sync.for_backend("fs")
-        self.ids = NodeIds(mirror=self.mirror, key=self.mirror.namespace("fs").key)
+        self.ids = NodeIds(
+            mirror=self.mirror,
+            write_queue=self.write_queue,
+            key=self.mirror.namespace("fs").key,
+        )
         self.tasks = [
             asyncio.create_task(write_worker(self.write_queue, noop_after_write)),
             asyncio.create_task(

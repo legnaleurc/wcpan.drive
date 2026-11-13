@@ -1,6 +1,7 @@
 import asyncio
 import os
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from logging import getLogger
 
 from .lib.debounce import Debouncer
@@ -47,16 +48,40 @@ async def metadata_worker(
 
 
 class CheckpointScheduler:
-    """Debounced WAL checkpoint after writes; call it from the write worker."""
+    """Debounced WAL checkpoint after writes; call it from the write worker.
+
+    The checkpoint takes SQLite's writer lock, so it runs as a write-queue job.
+    That job does not schedule another checkpoint.
+    """
 
     def __init__(
-        self, group: asyncio.TaskGroup, mirror: MirrorStore, *, delay: float
+        self,
+        group: asyncio.TaskGroup,
+        mirror: MirrorStore,
+        write_queue: WriteQueue,
+        *,
+        delay: float,
     ) -> None:
         self._debouncer = Debouncer(group, delay)
         self._mirror = mirror
+        self._write_queue = write_queue
+        self._checkpointed = False
 
     def __call__(self) -> None:
-        self._debouncer.start(self._mirror.checkpoint)
+        if self._checkpointed:
+            self._checkpointed = False
+            return
+        self._debouncer.start(self._enqueue)
+
+    async def _enqueue(self) -> None:
+        # Never wait for room: a waiting put outlives the worker at shutdown.
+        # A full queue holds writes, and each reschedules the checkpoint.
+        with suppress(asyncio.QueueFull):
+            self._write_queue.put_nowait(self._checkpoint)
+
+    async def _checkpoint(self) -> None:
+        await self._mirror.checkpoint()
+        self._checkpointed = True
 
     def cancel(self) -> None:
         """Drop a pending checkpoint, so shutdown need not wait for its delay."""
@@ -66,10 +91,11 @@ class CheckpointScheduler:
 def create_checkpoint_scheduler(
     group: asyncio.TaskGroup,
     mirror: MirrorStore,
+    write_queue: WriteQueue,
     *,
     delay: float = _WAL_CHECKPOINT_DELAY,
 ) -> CheckpointScheduler:
-    return CheckpointScheduler(group, mirror, delay=delay)
+    return CheckpointScheduler(group, mirror, write_queue, delay=delay)
 
 
 # Let-it-crash on write failure by design.

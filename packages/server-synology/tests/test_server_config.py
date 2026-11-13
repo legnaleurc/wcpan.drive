@@ -148,9 +148,7 @@ class TestFactory(DecoyTestCase):
                 with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
                     await backend.command(["--help"])
         self.decoy.verify(
-            await context.core.mirror.register_schema(
-                matchers.Anything(), matchers.Anything()
-            ),
+            await context.core.node_sync.register_schema(matchers.Anything()),
             times=1,
         )
 

@@ -9,6 +9,7 @@ from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.types import MetadataWorkItem, NodeObservation, ReadSeq
 from wcpan.drive.server.workers import (
     create_checkpoint_scheduler,
+    create_write_queue,
     metadata_worker,
     noop_after_write,
     write_worker,
@@ -233,79 +234,125 @@ class TestWriteWorker(IsolatedAsyncioTestCase):
         after_write.assert_not_called()
 
 
+async def _noop() -> None:
+    pass
+
+
 class TestCheckpointScheduler(IsolatedAsyncioTestCase):
-    async def test_calls_checkpoint_after_schedule(self):
-        # given
-        mirror = MagicMock()
-        mirror.checkpoint = AsyncMock()
+    async def asyncSetUp(self) -> None:
+        self.mirror = MagicMock()
+        self.mirror.checkpoint = AsyncMock()
+        self.queue = create_write_queue()
 
-        # when
+    async def test_checkpoint_is_queued_not_run_directly(self):
+        # when: no worker consumes the queue
         async with asyncio.TaskGroup() as group:
-            schedule = create_checkpoint_scheduler(group, mirror, delay=0.01)
+            schedule = create_checkpoint_scheduler(
+                group, self.mirror, self.queue, delay=0.01
+            )
             schedule()
             await asyncio.sleep(0.05)
 
         # then
-        mirror.checkpoint.assert_awaited_once()
+        self.assertEqual(self.queue.qsize(), 1)
+        self.mirror.checkpoint.assert_not_called()
 
-    async def test_does_not_checkpoint_without_schedule(self):
-        # given
-        mirror = MagicMock()
-        mirror.checkpoint = AsyncMock()
+    async def test_full_queue_does_not_hold_shutdown(self):
+        # given: a full queue whose worker has stopped
+        while not self.queue.full():
+            self.queue.put_nowait(_noop)
 
+        # when: the timer fires before shutdown
+        async with asyncio.timeout(1):
+            async with asyncio.TaskGroup() as group:
+                schedule = create_checkpoint_scheduler(
+                    group, self.mirror, self.queue, delay=0
+                )
+                schedule()
+                await asyncio.sleep(0.05)
+                schedule.cancel()
+
+        # then: the checkpoint is skipped; a later write schedules it again
+        self.assertNotIn(
+            schedule._checkpoint,  # pyright: ignore[reportPrivateUsage]
+            list(self.queue._queue),  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownArgumentType]
+        )
+        self.mirror.checkpoint.assert_not_called()
+
+    async def test_checkpoints_once_after_writes(self):
         # when
         async with asyncio.TaskGroup() as group:
-            create_checkpoint_scheduler(group, mirror, delay=0.01)
-            await asyncio.sleep(0.03)
+            schedule = create_checkpoint_scheduler(
+                group, self.mirror, self.queue, delay=0.01
+            )
+            worker = group.create_task(write_worker(self.queue, schedule))
+            await self.queue.put(_noop)
+            # long enough for a checkpoint to schedule another
+            await asyncio.sleep(0.1)
+            worker.cancel()
 
         # then
-        mirror.checkpoint.assert_not_called()
+        self.mirror.checkpoint.assert_awaited_once()
 
-    async def test_debounces_multiple_schedules(self):
-        # given
-        mirror = MagicMock()
-        mirror.checkpoint = AsyncMock()
-
+    async def test_does_not_checkpoint_without_writes(self):
         # when
         async with asyncio.TaskGroup() as group:
-            schedule = create_checkpoint_scheduler(group, mirror, delay=0.03)
-            schedule()
-            await asyncio.sleep(0.01)
-            schedule()
-            await asyncio.sleep(0.01)
-            schedule()
+            schedule = create_checkpoint_scheduler(
+                group, self.mirror, self.queue, delay=0.01
+            )
+            worker = group.create_task(write_worker(self.queue, schedule))
+            await asyncio.sleep(0.03)
+            worker.cancel()
+
+        # then
+        self.mirror.checkpoint.assert_not_called()
+
+    async def test_debounces_multiple_writes(self):
+        # when
+        async with asyncio.TaskGroup() as group:
+            schedule = create_checkpoint_scheduler(
+                group, self.mirror, self.queue, delay=0.03
+            )
+            worker = group.create_task(write_worker(self.queue, schedule))
+            for _ in range(3):
+                await self.queue.put(_noop)
+                await asyncio.sleep(0.01)
             await asyncio.sleep(0.05)
+            worker.cancel()
 
         # then
-        mirror.checkpoint.assert_awaited_once()
+        self.mirror.checkpoint.assert_awaited_once()
 
-    async def test_can_schedule_again_after_checkpoint_completes(self):
-        # given
-        mirror = MagicMock()
-        mirror.checkpoint = AsyncMock()
-
+    async def test_checkpoints_again_after_later_writes(self):
         # when
         async with asyncio.TaskGroup() as group:
-            schedule = create_checkpoint_scheduler(group, mirror, delay=0.01)
-            schedule()
-            await asyncio.sleep(0.03)
-            schedule()
-            await asyncio.sleep(0.03)
+            schedule = create_checkpoint_scheduler(
+                group, self.mirror, self.queue, delay=0.01
+            )
+            worker = group.create_task(write_worker(self.queue, schedule))
+            await self.queue.put(_noop)
+            await asyncio.sleep(0.05)
+            await self.queue.put(_noop)
+            await asyncio.sleep(0.05)
+            worker.cancel()
 
         # then
-        self.assertEqual(mirror.checkpoint.await_count, 2)
+        self.assertEqual(self.mirror.checkpoint.await_count, 2)
 
-    async def test_checkpoint_failure_propagates(self):
+    async def test_checkpoint_failure_stops_the_write_worker(self):
         # given
-        mirror = MagicMock()
-        mirror.checkpoint = AsyncMock(side_effect=RuntimeError("checkpoint failed"))
+        self.mirror.checkpoint = AsyncMock(
+            side_effect=RuntimeError("checkpoint failed")
+        )
 
         # when
         with self.assertRaises(ExceptionGroup) as cm:
             async with asyncio.TaskGroup() as group:
-                schedule = create_checkpoint_scheduler(group, mirror, delay=0)
-                schedule()
-                await asyncio.sleep(0)
+                schedule = create_checkpoint_scheduler(
+                    group, self.mirror, self.queue, delay=0
+                )
+                group.create_task(write_worker(self.queue, schedule))
+                await self.queue.put(_noop)
 
         # then
         self.assertIsInstance(cm.exception.exceptions[0], RuntimeError)

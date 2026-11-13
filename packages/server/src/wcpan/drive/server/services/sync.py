@@ -8,6 +8,7 @@ from logging import getLogger
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
+from ..lib.write_queue import run_queued
 from ..types import (
     MetadataQueue,
     MetadataWorkItem,
@@ -16,7 +17,7 @@ from ..types import (
     WriteQueue,
 )
 from .enricher import MediaEnrichmentError, MediaEnrichService
-from .mirror import MirrorStore
+from .mirror import BackendNamespace, BackendSchema, MirrorStore
 from .off_main import OffMainService
 from .operations import Locate, LocateUndecidedError
 from .ordering import ObservationOrder
@@ -345,6 +346,20 @@ class NodeSyncService:
         await self._metadata_queue.put(
             MetadataWorkItem(observation=from_api, force_refresh=True, read=read)
         )
+
+    async def register_schema(self, schema: BackendSchema) -> BackendNamespace:
+        """Register this view's backend with *schema*, in order with queued writes.
+
+        Used by: backend factories, before they observe anything.
+        """
+        backend = self._backend
+        if backend is None:
+            raise ValueError("register_schema needs a backend view")
+
+        async def register() -> BackendNamespace:
+            return await self._mirror.register_schema(backend, schema)
+
+        return await run_queued(self._write_queue, register)
 
     async def enqueue(self, job: Callable[[], Awaitable[None]]) -> None:
         """Run a backend write in order with queued mirror writes.

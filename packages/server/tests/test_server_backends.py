@@ -164,7 +164,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
             schemas={"a": self.a, "b": self.b},
         )
         await self.mirror.ensure_schema()
-        wq = create_write_queue()
+        self.write_queue = wq = create_write_queue()
         mq = create_metadata_queue()
         self.node_sync = NodeSyncService(
             mirror=self.mirror,
@@ -335,6 +335,27 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         # when / then
         with self.assertRaises(SchemaVersionError):
             await mirror.register_schema("a", _OtherSchema())
+
+    async def test_view_registers_its_schema_through_the_write_queue(self) -> None:
+        # given: the write worker busy
+        release = asyncio.Event()
+
+        async def busy() -> None:
+            await release.wait()
+
+        await self.write_queue.put(busy)
+
+        # when
+        registering = asyncio.create_task(
+            self.node_sync.for_backend("c").register_schema(_OtherSchema())
+        )
+        await asyncio.sleep(0.05)
+
+        # then: it waits its turn
+        self.assertFalse(registering.done())
+        self.assertNotIn("c", await self.mirror.registered_instances())
+        release.set()
+        self.assertEqual(await registering, self.mirror.namespace("c"))
 
     async def test_new_instance_takes_any_schema(self) -> None:
         # registered before its backend loads, so no schema is bound yet

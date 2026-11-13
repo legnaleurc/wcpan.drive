@@ -90,7 +90,7 @@ async def create_backend(
         local_paths=dict(local_paths or {}),
         upload_tmp_dir=upload_tmp_dir,
     )
-    ns = await context.core.mirror.register_schema(context.name, SYNOLOGY_SCHEMA)
+    ns = await context.core.node_sync.register_schema(SYNOLOGY_SCHEMA)
     backend = SynologyBackend(context=context, config=config, ns=ns)
     if context.offline:
         yield backend
