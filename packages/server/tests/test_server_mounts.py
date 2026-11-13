@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from unittest import IsolatedAsyncioTestCase, TestCase
+from unittest.mock import AsyncMock
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.lib.root import SERVER_ROOT_ID, is_structural
@@ -176,13 +177,15 @@ class _Owners:
 class TestBackendOf(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         mirror = _Owners({"folder": "disk", "photo": "nas", "old": "gone"})
+        self.disk = AsyncMock()
+        self.nas = AsyncMock()
         self.router = BackendRouter(
             mirror=cast(MirrorStore, mirror),
             mounts=_ALL.subset(["docs", "pics"]),
             mount_backends={"docs": "disk"},
             operations={
-                "disk": cast(NodeOperations, object()),
-                "nas": cast(NodeOperations, object()),
+                "disk": cast(NodeOperations, self.disk),
+                "nas": cast(NodeOperations, self.nas),
             },
             uploaders={},
             files={},
@@ -200,6 +203,30 @@ class TestBackendOf(IsolatedAsyncioTestCase):
         # when / then
         with self.assertRaises(OperationNotSupportedError):
             await self.router.backend_of(_ALL.root_id)
+
+    async def test_create_under_root_is_not_supported(self) -> None:
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.create_folder(_ALL.root_id, "x")
+        self.disk.create_folder.assert_not_awaited()
+        self.nas.create_folder.assert_not_awaited()
+
+    async def test_move_into_root_is_not_supported(self) -> None:
+        # given
+        record = _dir("folder", _DOCS.id)
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.update(record, name=None, parent_id=_ALL.root_id)
+        self.disk.update.assert_not_awaited()
+
+    async def test_move_between_backends_is_not_supported(self) -> None:
+        # given
+        record = _dir("folder", _DOCS.id)
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.update(record, name=None, parent_id=NodeId("photo"))
+        self.disk.update.assert_not_awaited()
+        self.nas.update.assert_not_awaited()
 
     async def test_unserved_nodes_are_unavailable(self) -> None:
         # a mount without a backend

@@ -212,7 +212,7 @@ class TestIdentity(ScanTestCase):
             blocking=Blocking(executor=self.io_pool),
         )
         await ensure_mount_nodes(
-            self.mounts, mirror=self.mirror, node_sync=self.node_sync
+            self.mounts, mirror=self.mirror, node_sync=self.core_sync
         )
         await self.scan()
 

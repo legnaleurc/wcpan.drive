@@ -72,14 +72,16 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         await self.mirror.ensure_schema()
         self.write_queue = create_write_queue()
         self.metadata_queue = create_metadata_queue()
-        # The backend's own view, as the server hands it over.
-        self.node_sync = NodeSyncService(
+        # The core's service, which alone writes the root and mount nodes.
+        self.core_sync = NodeSyncService(
             mirror=self.mirror,
             write_queue=self.write_queue,
             off_main=OffMainService(pool=self.pool),
             mounts={},
             metadata_queue=self.metadata_queue,
-        ).for_backend("fs")
+        )
+        # The backend's own view, as the server hands it over.
+        self.node_sync = self.core_sync.for_backend("fs")
         self.ids = NodeIds(mirror=self.mirror, key=self.mirror.namespace("fs").key)
         self.tasks = [
             asyncio.create_task(write_worker(self.write_queue, noop_after_write)),
@@ -123,7 +125,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             read_only=self.read_only,
         )
         await ensure_mount_nodes(
-            self.mounts, mirror=self.mirror, node_sync=self.node_sync
+            self.mounts, mirror=self.mirror, node_sync=self.core_sync
         )
 
     async def asyncTearDown(self) -> None:

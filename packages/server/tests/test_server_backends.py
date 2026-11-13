@@ -7,10 +7,12 @@ import tempfile
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import (
     BackendNamespace,
     MirrorStore,
@@ -86,6 +88,64 @@ def _file(node_id: str, parent_id: str) -> NodeRecord:
 
 def _mounts(*names: str) -> Mounts:
     return make_mounts({name: f"/{name}" for name in names})
+
+
+class TestRootPlacement(IsolatedAsyncioTestCase):
+    """Only the core places nodes at the root or directly under it."""
+
+    async def asyncSetUp(self) -> None:
+        fd, self.db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        os.unlink(self.db_path)
+        self.pool = ThreadPoolExecutor(1)
+        self.mirror = MirrorStore(
+            self.db_path,
+            off_main=OffMainService(pool=self.pool),
+            schemas={"a": _RecordingSchema()},
+        )
+        await self.mirror.ensure_schema()
+
+    async def asyncTearDown(self) -> None:
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        for suffix in ("", "-wal", "-shm"):
+            with suppress(FileNotFoundError):
+                Path(self.db_path + suffix).unlink()
+
+    async def test_backend_node_under_the_root_is_refused(self) -> None:
+        # given
+        observation = NodeObservation(
+            record=_file("fx", SERVER_ROOT_ID), locator=None, backend="a"
+        )
+        # when / then
+        with self.assertRaises(ValueError):
+            await self.mirror.apply_observations([observation])
+        self.assertIsNone(await self.mirror.get_node_by_id(NodeId("fx")))
+
+    async def test_backend_node_without_parent_is_refused(self) -> None:
+        # given
+        observation = NodeObservation(
+            record=replace(_file("fx", "p"), parent_id=None),
+            locator=None,
+            backend="a",
+        )
+        # when / then
+        with self.assertRaises(ValueError):
+            await self.mirror.apply_observations([observation])
+        self.assertIsNone(await self.mirror.get_node_by_id(NodeId("fx")))
+
+    async def test_core_places_root_and_its_children(self) -> None:
+        # given
+        root = replace(_file(SERVER_ROOT_ID, "p"), parent_id=None)
+        mount = _file("m", SERVER_ROOT_ID)
+        # when
+        await self.mirror.apply_observations(
+            [
+                NodeObservation(record=root, locator=None),
+                NodeObservation(record=mount, locator=None),
+            ]
+        )
+        # then
+        self.assertIsNotNone(await self.mirror.get_node_by_id(NodeId("m")))
 
 
 class TestBackendViews(IsolatedAsyncioTestCase):

@@ -206,17 +206,24 @@ def _observer_of(
 ) -> _Instance | None:
     """The registered instance that made *observation*; None for a core node.
 
+    Only the core places nodes at the root or directly under it.
+
     Raises:
-        ValueError: If the observation names an unregistered instance, or
-            carries a locator without naming its instance.
+        ValueError: If the observation names an unregistered instance, carries
+            a locator without naming its instance, or places a backend node at
+            or directly under the root.
     """
+    record = observation.record
     if observation.backend is None:
         if observation.locator is not None:
-            raise ValueError(
-                f"Untagged observation of {observation.record.id} has a locator"
-            )
+            raise ValueError(f"Untagged observation of {record.id} has a locator")
         return None
-    return _registered(instances, observation.backend)
+    instance = _registered(instances, observation.backend)
+    if record.parent_id is None or record.parent_id == SERVER_ROOT_ID:
+        raise ValueError(
+            f"Backend {observation.backend!r} placed {record.id} at the root"
+        )
+    return instance
 
 
 def _registered(instances: _Instances, backend: str) -> _Instance:
@@ -465,6 +472,9 @@ def _apply_observations(
     with _read_write(dsn) as con:
         for observation in observations:
             record = observation.record
+            # Before the parent check, so an invalid observation is refused
+            # whatever the mirror holds.
+            owner = _observer_of(instances, observation)
             if record.parent_id is not None and not _node_exists(con, record.parent_id):
                 continue
             before = _select_node_row(con, record.id)
@@ -474,7 +484,6 @@ def _apply_observations(
                     "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
                     (str(record.id),),
                 )
-            owner = _observer_of(instances, observation)
             if owner is not None:
                 _claim_id(con, record.id, owner)
                 if observation.locator is not None and owner.schema is not None:

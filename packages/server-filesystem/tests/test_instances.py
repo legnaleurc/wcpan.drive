@@ -17,7 +17,7 @@ class TestTwoInstances(ScanTestCase):
         # A second instance serving the same directory under another mount.
         ns = await self.mirror.register_schema("fs2", FILESYSTEM_SCHEMA)
         self.mounts2 = make_mounts({"copy": str(self.source)})
-        self.node_sync2 = self.node_sync.for_backend("fs2")
+        self.node_sync2 = self.core_sync.for_backend("fs2")
         self.scanner2 = FilesystemScanner(
             mirror=self.mirror,
             store=FilesystemStore(mirror=self.mirror, ns=ns),
@@ -27,7 +27,7 @@ class TestTwoInstances(ScanTestCase):
             blocking=Blocking(executor=self.io_pool),
         )
         await ensure_mount_nodes(
-            self.mounts2, mirror=self.mirror, node_sync=self.node_sync2
+            self.mounts2, mirror=self.mirror, node_sync=self.core_sync
         )
 
     async def scan_both(self) -> None:
