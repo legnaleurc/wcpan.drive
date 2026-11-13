@@ -29,7 +29,6 @@ from wcpan.drive.server.keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.spool import (
     SpoolArea,
     SpooledFiles,
@@ -57,7 +56,7 @@ from wcpan.synology import (
     SynologyUploadError,
 )
 
-from ._lib import DecoyTestCase, IdentityIds
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds
 
 
 _EPOCH = 0
@@ -218,12 +217,14 @@ class _NodesTestCase(DecoyTestCase):
         wq = create_write_queue()
         tmp = tempfile.mkdtemp(prefix="wcpan_test_")
         spool = self.enterContext(create_spool_area(tmp_dir=Path(tmp)))
-        mirror._nodes.setdefault("p1", _make_dir("p1"))
-        mirror._nodes.setdefault("new-parent", _make_dir("new-parent"))
-        mirror._nodes.setdefault("bad", _make_dir("bad"))
+        mirror._nodes.setdefault(ROOT_ID, _make_dir(ROOT_ID))
+        mirror._nodes.setdefault("mount", _make_dir("mount", ROOT_ID))
+        mirror._nodes.setdefault("p1", _make_dir("p1", "mount"))
+        mirror._nodes.setdefault("new-parent", _make_dir("new-parent", "mount"))
+        mirror._nodes.setdefault("bad", _make_dir("bad", "mount"))
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
-            registry=MountRegistry(mounts=Mounts(), root_ids={}),
+            registry=MountRegistry(mounts=Mounts(root_id=ROOT_ID), root_ids={}),
             store=mirror,  # type: ignore[arg-type]
         )
         node_sync = NodeSyncService(
@@ -494,12 +495,11 @@ class TestUpdateNode(_NodesTestCase):
 
     async def test_virtual_node_forbidden(self):
         # given
-        self.mirror._nodes["root"] = _make_dir("root")
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
             # when
             resp = await client.patch(
-                "/api/v1/nodes/root",
+                f"/api/v1/nodes/{ROOT_ID}",
                 json={"name": "new"},
             )
             # then
@@ -576,7 +576,6 @@ class TestDeleteNode(_NodesTestCase):
 
     async def test_virtual_node_forbidden(self):
         # given
-        self.mirror._nodes["mount"] = _make_dir("mount", SERVER_ROOT_ID)
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
             # when
@@ -641,19 +640,6 @@ class TestUploadNode(_NodesTestCase):
             )
             # then
             self.assertEqual(resp.status, 400)
-
-    async def test_upload_to_virtual_root_forbidden(self):
-        # given
-        app = self._make_app()
-        async with TestClient(TestServer(app)) as client:
-            # when
-            resp = await client.post(
-                "/api/v1/nodes/_/upload",
-                data=b"hello",
-                params={"name": "x.bin"},
-            )
-            # then
-            self.assertEqual(resp.status, 403)
 
     async def test_upload_error(self):
         # given

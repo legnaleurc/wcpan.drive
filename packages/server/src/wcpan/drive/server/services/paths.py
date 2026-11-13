@@ -12,7 +12,6 @@ from pathlib import Path
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from ..lib.root import SERVER_ROOT_ID
 from ..types import VirtualPath
 from .mirror import MirrorStore
 
@@ -67,11 +66,7 @@ class LocalPathService:
         if not self._mounts:
             return None
         node_cache: dict[str, NodeRecord | None]
-        if (
-            not record.parent_id
-            or record.parent_id == SERVER_ROOT_ID
-            or record.parent_id in self._mounts
-        ):
+        if not record.parent_id or record.parent_id in self._mounts:
             node_cache = {}
         else:
             ancestors = await self._mirror.get_ancestors(record.parent_id)
@@ -95,17 +90,17 @@ class VirtualPathService:
         self,
         virtual_path: VirtualPath,
     ) -> NodeId:
-        """Resolve a server virtual path (``/`` = root ``_``) to a directory ``node_id``."""
+        """Resolve a server virtual path (``/`` = the root) to a directory ``node_id``."""
         segments = _virtual_path_segments(virtual_path)
 
-        root = await self._mirror.get_node_by_id(SERVER_ROOT_ID)
+        root = await self._mirror.get_root()
         if root is None:
             raise ValueError("Server root is missing from the database")
         if not root.is_directory:
             raise ValueError("Server root is not a directory in the database")
 
         if not segments:
-            return SERVER_ROOT_ID
+            return root.id
 
         node_id = await self._mirror.resolve_path_to_id(segments)
         if node_id is None:

@@ -19,10 +19,11 @@ from wcpan.drive.server.keys import (
     READY_KEY,
     WRITE_QUEUE_KEY,
 )
-from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import NodeObservation
 from wcpan.drive.server.workers import create_write_queue
+
+from ._mounts import ROOT_ID
 
 
 _EPOCH = 0
@@ -67,6 +68,9 @@ class _FakeMirror:
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)
+
+    async def get_root(self) -> NodeRecord | None:
+        return next((n for n in self._nodes.values() if n.parent_id is None), None)
 
     async def get_cursor(self) -> int:
         return self._cursor
@@ -130,7 +134,7 @@ class TestGetRoot(IsolatedAsyncioTestCase):
         # given
         mirror = _FakeMirror()
         root = NodeRecord(
-            id=SERVER_ROOT_ID,
+            id=ROOT_ID,
             parent_id=None,
             name="root",
             is_directory=True,
@@ -147,7 +151,7 @@ class TestGetRoot(IsolatedAsyncioTestCase):
             height=0,
             ms_duration=0,
         )
-        mirror._nodes[SERVER_ROOT_ID] = root
+        mirror._nodes[ROOT_ID] = root
         app = _make_app(mirror)
         async with TestClient(TestServer(app)) as client:
             # when
@@ -155,7 +159,7 @@ class TestGetRoot(IsolatedAsyncioTestCase):
             # then
             self.assertEqual(resp.status, 200)
             record = node_record_from_dict(await resp.json())
-        self.assertEqual(record.id, SERVER_ROOT_ID)
+        self.assertEqual(record.id, ROOT_ID)
 
     async def test_not_found(self):
         # given

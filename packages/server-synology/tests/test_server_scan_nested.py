@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -26,7 +25,7 @@ from wcpan.drive.server.types import WriteQueue
 from wcpan.drive.server.workers import create_write_queue, metadata_worker
 from wcpan.synology import SynologyPath, SynologyPermanentLink
 
-from ._lib import DecoyTestCase, IdentityIds, make_mounts, mount_id
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts, mount_id
 
 
 def _dir(node_id: str, name: str, parent_id: str | None) -> NodeRecord:
@@ -122,7 +121,7 @@ class TestNewFolders(DecoyTestCase):
         )
         await self.mirror.ensure_schema()
         await self.mirror.bulk_upsert_nodes(
-            [_dir(SERVER_ROOT_ID, "", None), _dir(mount_id("a"), "a", SERVER_ROOT_ID)]
+            [_dir(ROOT_ID, "", None), _dir(mount_id("a"), "a", ROOT_ID)]
         )
         self.store = SynologyStore(
             mirror=self.mirror, ns=self.mirror.namespace("synology")

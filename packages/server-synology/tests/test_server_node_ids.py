@@ -9,7 +9,6 @@ from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.debounce import TaskIdDebouncer
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.ids import NodeIds
 from wcpan.drive.server.services.mirror import MirrorStore, rebuild_backend
 from wcpan.drive.server.services.off_main import OffMainService
@@ -28,7 +27,7 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from ._lib import DecoyTestCase, make_mounts, mount_id
+from ._lib import ROOT_ID, DecoyTestCase, make_mounts, mount_id
 
 
 _READ = ReadSeq(1)
@@ -104,9 +103,9 @@ class TestTwoInstances(DecoyTestCase):
         await self.mirror.ensure_schema()
         await self.mirror.bulk_upsert_nodes(
             [
-                _dir(SERVER_ROOT_ID, None, ""),
-                _dir(mount_id("one"), SERVER_ROOT_ID, "one"),
-                _dir(mount_id("two"), SERVER_ROOT_ID, "two"),
+                _dir(ROOT_ID, None, ""),
+                _dir(mount_id("one"), ROOT_ID, "one"),
+                _dir(mount_id("two"), ROOT_ID, "two"),
             ]
         )
         self.nas1 = _Instance(self.mirror, "nas1", "one")
@@ -207,7 +206,7 @@ class TestTwoInstances(DecoyTestCase):
             store=self.nas1.store,
             node_sync=node_sync,
             syno_paths=self.nas1.paths,
-            mount_registry=MountRegistry(mounts=Mounts(), root_ids={}),
+            mount_registry=MountRegistry(mounts=Mounts(root_id=ROOT_ID), root_ids={}),
         )
         pending = self.decoy.mock(cls=TaskIdDebouncer)
 

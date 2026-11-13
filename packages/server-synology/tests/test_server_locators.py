@@ -7,7 +7,6 @@ from dataclasses import replace
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import (
     MirrorStore,
     cleanup_dangling_nodes,
@@ -17,7 +16,7 @@ from wcpan.drive.server.synology._convert import SynologyLocator
 from wcpan.drive.server.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.types import NodeObservation
 
-from ._lib import mount_id
+from ._lib import ROOT_ID, mount_id
 
 
 _MOUNT = mount_id("docs")
@@ -67,7 +66,7 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
             mirror=self.mirror, ns=self.mirror.namespace("synology")
         )
         await self.mirror.bulk_upsert_nodes(
-            [_node(SERVER_ROOT_ID, None), _node(_MOUNT, SERVER_ROOT_ID)]
+            [_node(ROOT_ID, None), _node(_MOUNT, ROOT_ID)]
         )
 
     async def asyncTearDown(self) -> None:

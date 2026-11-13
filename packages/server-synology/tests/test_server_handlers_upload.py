@@ -57,7 +57,7 @@ from wcpan.synology import (
     SynologyUploadError,
 )
 
-from ._lib import DecoyTestCase, IdentityIds, make_mounts, make_request
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts, make_request
 
 
 _P1 = SynologyFileId(file_id="p1")
@@ -248,19 +248,6 @@ class TestCreateUploadSession(_UploadTestCase):
         )
         # when / then
         with self.assertRaises(web.HTTPBadRequest):
-            await create_upload_session(req)
-
-    async def test_virtual_root_raises_403(self):
-        # given
-        from wcpan.drive.server.services.paths import SERVER_ROOT_ID
-
-        req = make_request(
-            app=await self._make_app(),
-            match_info={"parent_id": SERVER_ROOT_ID},
-            json_body={"name": "file.bin", "size": 1024},
-        )
-        # when / then
-        with self.assertRaises(web.HTTPForbidden):
             await create_upload_session(req)
 
     async def test_media_params_stored_in_media_info(self):

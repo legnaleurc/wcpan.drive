@@ -36,7 +36,6 @@ from wcpan.drive.server.keys import (
     UPLOAD_SERVICE_KEY,
     WRITE_QUEUE_KEY,
 )
-from wcpan.drive.server.services.paths import SERVER_ROOT_ID
 from wcpan.drive.server.services.spool import (
     SpoolArea,
     SpooledFiles,
@@ -58,6 +57,9 @@ from wcpan.drive.server.workers import create_write_queue
 # Test-local slots for the Synology fakes; the backend no longer uses app keys.
 SYNOLOGY_DRIVE_API_KEY: web.AppKey[Any] = web.AppKey("synology_drive_api")
 SYNOLOGY_PATH_KEY: web.AppKey[Any] = web.AppKey("synology_path")
+
+
+ROOT_ID = NodeId("root")
 
 
 _EPOCH = 0
@@ -94,6 +96,9 @@ class _FakeMirror:
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)
+
+    async def get_root(self) -> NodeRecord | None:
+        return next((n for n in self._nodes.values() if n.parent_id is None), None)
 
     async def upsert_node_and_emit_change(self, record: NodeRecord) -> None:
         self._nodes[record.id] = record
@@ -159,7 +164,7 @@ def _make_app(
         ),
     )
     syno_paths = SynologyPathService(
-        registry=MountRegistry(mounts=Mounts(), root_ids={}),
+        registry=MountRegistry(mounts=Mounts(root_id=ROOT_ID), root_ids={}),
         store=mirror,  # type: ignore[arg-type]
         ids=_IdentityIds(),
     )
@@ -358,7 +363,7 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
         # given
         mirror = _FakeMirror()
         root = NodeRecord(
-            id=SERVER_ROOT_ID,
+            id=ROOT_ID,
             parent_id=None,
             name="root",
             is_directory=True,
@@ -375,7 +380,7 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
             height=0,
             ms_duration=0,
         )
-        mirror._nodes[SERVER_ROOT_ID] = root
+        mirror._nodes[ROOT_ID] = root
         app = _make_app(mirror, self._spool)
 
         async with TestClient(TestServer(app)) as client:
@@ -385,7 +390,7 @@ class TestNodeRecordRoundTrip(IsolatedAsyncioTestCase):
             self.assertEqual(resp.status, 200)
             record = node_record_from_dict(await resp.json())
 
-        self.assertEqual(record.id, SERVER_ROOT_ID)
+        self.assertEqual(record.id, ROOT_ID)
         self.assertEqual(record.created_time, _EPOCH)
         self.assertEqual(record.modified_time, _EPOCH)
 

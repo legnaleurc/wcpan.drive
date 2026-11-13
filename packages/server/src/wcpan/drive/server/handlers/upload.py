@@ -4,7 +4,6 @@ from aiohttp import web
 from wcpan.drive.protocol.types import MediaInfo, NodeId
 
 from ..keys import READY_KEY, UPLOAD_SERVICE_KEY
-from ..lib.root import SERVER_ROOT_ID
 from ..services.upload import (
     UploadAccepted,
     UploadBusyError,
@@ -42,9 +41,6 @@ async def create_upload_session(request: web.Request) -> web.Response:
     """POST /api/v1/nodes/{parent_id}/uploads"""
     upload_service: UploadService = request.app[UPLOAD_SERVICE_KEY]
     parent_id = NodeId(request.match_info["parent_id"])
-
-    if parent_id == SERVER_ROOT_ID:
-        raise web.HTTPForbidden(reason="Cannot upload to virtual root")
 
     try:
         body = await request.json()

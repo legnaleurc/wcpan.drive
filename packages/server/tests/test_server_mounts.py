@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sqlite3
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -12,7 +13,6 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID, is_structural
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.mounts import (
     Mounts,
@@ -34,7 +34,7 @@ from wcpan.drive.server.workers import (
     write_worker,
 )
 
-from ._mounts import make_mounts
+from ._mounts import ROOT_ID, make_mounts
 
 
 def _dir(node_id: str, parent_id: str | None) -> NodeRecord:
@@ -211,6 +211,15 @@ class TestBackendOf(IsolatedAsyncioTestCase):
         self.disk.create_folder.assert_not_awaited()
         self.nas.create_folder.assert_not_awaited()
 
+    async def test_upload_to_root_is_not_supported(self) -> None:
+        # when / then
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.find_conflict(_ALL.root_id, "x")
+        with self.assertRaises(OperationNotSupportedError):
+            await self.router.open(
+                _ALL.root_id, "x", 1, mime_type=None, media_info=None
+            )
+
     async def test_move_into_root_is_not_supported(self) -> None:
         # given
         record = _dir("folder", _DOCS.id)
@@ -255,8 +264,8 @@ class TestMountNodes(IsolatedAsyncioTestCase):
         # An opaque mount ID, and a real node whose ID looks like the old grammar.
         await self.mirror.bulk_upsert_nodes(
             [
-                _dir(SERVER_ROOT_ID, None),
-                replace(_dir("m1", SERVER_ROOT_ID), name="docs"),
+                _dir(ROOT_ID, None),
+                replace(_dir("m1", ROOT_ID), name="docs"),
                 _dir("_folder", "m1"),
                 _dir("file", "_folder"),
             ]
@@ -278,7 +287,7 @@ class TestMountNodes(IsolatedAsyncioTestCase):
         new_ids = {mounts["new"].id, mounts["other"].id}
         self.assertEqual(len(new_ids), 2)
         self.assertNotIn("m1", new_ids)
-        self.assertNotIn(SERVER_ROOT_ID, new_ids)
+        self.assertNotIn(ROOT_ID, new_ids)
 
     async def test_ancestors_stop_below_the_mount_node(self) -> None:
         # when
@@ -296,9 +305,7 @@ class TestMountNodes(IsolatedAsyncioTestCase):
 
     async def test_duplicate_mount_nodes_are_rejected(self) -> None:
         # given
-        await self.mirror.bulk_upsert_nodes(
-            [replace(_dir("m2", SERVER_ROOT_ID), name="docs")]
-        )
+        await self.mirror.bulk_upsert_nodes([replace(_dir("m2", ROOT_ID), name="docs")])
         # when / then
         with self.assertRaisesRegex(ValueError, "docs"):
             await load_mounts({"docs": "/docs"}, mirror=self.mirror)
@@ -307,8 +314,8 @@ class TestMountNodes(IsolatedAsyncioTestCase):
         # given
         await self.mirror.bulk_upsert_nodes(
             [
-                replace(_dir("o1", SERVER_ROOT_ID), name="old"),
-                replace(_dir("o2", SERVER_ROOT_ID), name="old"),
+                replace(_dir("o1", ROOT_ID), name="old"),
+                replace(_dir("o2", ROOT_ID), name="old"),
             ]
         )
         # when
@@ -316,15 +323,21 @@ class TestMountNodes(IsolatedAsyncioTestCase):
         # then
         self.assertEqual(mounts["docs"].id, "m1")
 
-    async def test_root_and_mounts_are_structural(self) -> None:
-        # given
-        records = await self.mirror.get_nodes_by_ids(
-            [SERVER_ROOT_ID, NodeId("m1"), NodeId("_folder")]
-        )
+    async def test_root_is_found_by_position(self) -> None:
+        # when
+        root = await self.mirror.get_root()
+        mounts = await load_mounts({"docs": "/docs"}, mirror=self.mirror)
         # then
-        self.assertTrue(is_structural(records[SERVER_ROOT_ID]))
-        self.assertTrue(is_structural(records[NodeId("m1")]))
-        self.assertFalse(is_structural(records[NodeId("_folder")]))
+        assert root is not None
+        self.assertEqual(root.id, ROOT_ID)
+        self.assertEqual(mounts.root_id, ROOT_ID)
+        self.assertEqual(await self.mirror.resolve_path_to_id([]), ROOT_ID)
+        self.assertEqual(await self.mirror.resolve_path_to_id(["docs"]), "m1")
+
+    async def test_second_root_is_rejected(self) -> None:
+        # when / then
+        with self.assertRaises(sqlite3.IntegrityError):
+            await self.mirror.bulk_upsert_nodes([_dir("other", None)])
 
 
 class TestMountRestart(IsolatedAsyncioTestCase):
@@ -370,6 +383,7 @@ class TestMountRestart(IsolatedAsyncioTestCase):
         # when
         second = await self._start({"docs": "/docs", "pics": "/pics"})
         # then
+        self.assertEqual(second.root_id, first.root_id)
         self.assertEqual(second["docs"].id, first["docs"].id)
         self.assertEqual(second["pics"].id, first["pics"].id)
         self.assertEqual(await self.mirror.get_cursor(), cursor)

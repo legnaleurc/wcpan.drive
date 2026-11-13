@@ -11,7 +11,6 @@ import wcpan.drive.server.synology._scan as startup_scan_mod
 from decoy import matchers
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -27,7 +26,7 @@ from wcpan.drive.server.types import (
 from wcpan.drive.server.workers import create_write_queue, metadata_worker
 from wcpan.synology import SynologyClient, SynologyPermanentLink
 
-from ._lib import DecoyTestCase, IdentityIds, make_mounts, mount_id
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts, mount_id
 
 
 def _node(
@@ -153,9 +152,9 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
-                        _node(mount_id("b"), "b", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                        _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
                         _node("x1", "moved.txt", mount_id("a")),
                     ]
                 )
@@ -238,8 +237,8 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
                         _node("dirF", "F", mount_id("a"), is_directory=True),
                         _node("childC", "c.txt", "dirF"),
                     ]
@@ -327,8 +326,8 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
                     ]
                 )
 
@@ -412,8 +411,8 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
                     ]
                 )
 
@@ -498,8 +497,8 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
                         _node("dirF", "F", mount_id("a"), is_directory=True),
                     ]
                 )
@@ -583,8 +582,8 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
                         _node("dirF", "F", mount_id("a"), is_directory=True),
                         _node("childC", "c.txt", "dirF"),
                     ]
@@ -675,8 +674,8 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
                         _node(
                             "perm:dirF",
                             "F",
@@ -793,9 +792,9 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
-                        _node(mount_id("b"), "b", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                        _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
                     ]
                 )
 
@@ -875,9 +874,9 @@ class TestDeferredScan(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", SERVER_ROOT_ID, is_directory=True),
-                        _node(mount_id("b"), "b", SERVER_ROOT_ID, is_directory=True),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                        _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
                         _node("dirX_a", "X", mount_id("a"), is_directory=True),
                         _node("child_a", "c.txt", "dirX_a"),
                         _node("dirX_b", "X", mount_id("b"), is_directory=True),

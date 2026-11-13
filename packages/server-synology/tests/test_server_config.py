@@ -24,7 +24,7 @@ from wcpan.drive.server.synology._config import (
 from wcpan.drive.server.synology._mounts import MountRegistry, create_mount_registry
 from wcpan.synology import SynologyClient
 
-from ._lib import DecoyTestCase, IdentityIds, make_mounts
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts
 
 
 def _settings(**overrides):
@@ -123,7 +123,7 @@ class TestFactory(DecoyTestCase):
         resolve = self.decoy.mock(func=create_mount_registry)
         self.decoy.when(
             await resolve(matchers.Anything(), drive_api=self.client)
-        ).then_return(MountRegistry(mounts=Mounts(), root_ids={}))
+        ).then_return(MountRegistry(mounts=Mounts(root_id=ROOT_ID), root_ids={}))
         for target, mock in (
             (f"{_BACKEND}.create_synology_client", connect),
             (f"{_BACKEND}.create_mount_registry", resolve),

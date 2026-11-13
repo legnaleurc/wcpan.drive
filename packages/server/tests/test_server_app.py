@@ -121,12 +121,13 @@ class TestCreateApp(IsolatedAsyncioTestCase):
         await self.ready()
         # then
         mirror = self.app[MIRROR_KEY]
-        root = await mirror.get_node_by_id(NodeId("_"))
-        self.assertIsNotNone(root)
+        root = await mirror.get_root()
+        assert root is not None
+        self.assertEqual(root.id, self.backend.context.mounts.root_id)
         for name in ("docs", "pics"):
             node = await mirror.get_node_by_id(NodeId(self._mount_id(name)))
             assert node is not None
-            self.assertEqual((node.name, node.parent_id), (name, "_"))
+            self.assertEqual((node.name, node.parent_id), (name, root.id))
 
     async def test_operations_go_to_the_mount_backend(self) -> None:
         # given

@@ -1,8 +1,8 @@
 """Mounts, and the virtual root and mount nodes owned by the core.
 
-A mount's node is the root's child named after the mount. Its ID is assigned
-when the mount is first seen and is opaque; renaming a mount in the config
-makes it a new mount.
+The root is the only node without a parent, and a mount's node is the root's
+child named after the mount. Their IDs are assigned when first seen and are
+opaque; renaming a mount in the config makes it a new mount.
 """
 
 import uuid
@@ -12,14 +12,13 @@ from dataclasses import dataclass
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE, utc_now
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from ..lib.root import SERVER_ROOT_ID
 from ..types import NodeObservation
 from .mirror import MirrorStore
 from .sync import NodeSyncService
 
 
-def _new_mount_id() -> NodeId:
-    """An ID for a mount seen for the first time."""
+def _new_structural_id() -> NodeId:
+    """An ID for the root or a mount seen for the first time."""
     return NodeId(uuid.uuid4().hex)
 
 
@@ -58,20 +57,22 @@ class Mount:
 
 
 class Mounts(Mapping[str, Mount]):
-    """Mounts by name, with lookup by node ID.
+    """Mounts by name, with lookup by node ID, and the root they are under.
 
     The core builds the full set from the config and hands each backend
-    instance the subset it serves. Node IDs of mounts are opaque to backends.
+    instance the subset it serves. Node IDs of the root and mounts are opaque
+    to backends.
     """
 
-    def __init__(self, mounts: Iterable[Mount] = ()) -> None:
+    def __init__(self, mounts: Iterable[Mount] = (), *, root_id: NodeId) -> None:
+        self._root_id = root_id
         self._by_name = {m.name: m for m in mounts}
         self._by_id = {m.id: m for m in self._by_name.values()}
 
     @property
     def root_id(self) -> NodeId:
         """The server root, parent of every mount."""
-        return SERVER_ROOT_ID
+        return self._root_id
 
     def __getitem__(self, name: str) -> Mount:
         return self._by_name[name]
@@ -83,10 +84,14 @@ class Mounts(Mapping[str, Mount]):
         return len(self._by_name)
 
     def __repr__(self) -> str:
-        return f"Mounts({list(self._by_name.values())!r})"
+        return f"Mounts({list(self._by_name.values())!r}, root_id={self._root_id!r})"
 
     def subset(self, names: Iterable[str]) -> "Mounts":
-        return Mounts(self._by_name[name] for name in names)
+        return Mounts((self._by_name[name] for name in names), root_id=self._root_id)
+
+    def replace(self, mounts: Iterable[Mount]) -> "Mounts":
+        """Other *mounts* under the same root."""
+        return Mounts(mounts, root_id=self._root_id)
 
     def by_id(self, node_id: NodeId) -> Mount | None:
         """The mount whose node is *node_id*."""
@@ -111,23 +116,31 @@ class Mounts(Mapping[str, Mount]):
 
 
 async def load_mounts(sources: Mapping[str, str], *, mirror: MirrorStore) -> Mounts:
-    """Mounts named by the keys of *sources*, with the IDs of their mirrored nodes.
+    """Mounts named by the keys of *sources*, with the IDs of the mirrored nodes.
 
-    A mount without a node gets a new ID; ``ensure_mount_nodes`` creates it.
+    The root or a mount without a node gets a new ID; ``ensure_mount_nodes``
+    creates it.
 
     Raises:
         ValueError: If several root children are named after one mount.
     """
+    root = await mirror.get_root()
+    root_id = root.id if root is not None else _new_structural_id()
     existing: dict[str, NodeId] = {}
-    for record in await mirror.get_children(SERVER_ROOT_ID):
+    for record in await mirror.get_children(root_id):
         if record.name in sources and record.name in existing:
             raise ValueError(
                 f"Mount {record.name!r} matches several nodes under the root"
             )
         existing[record.name] = record.id
     return Mounts(
-        Mount(name=name, id=existing.get(name) or _new_mount_id(), source=source)
-        for name, source in sources.items()
+        (
+            Mount(
+                name=name, id=existing.get(name) or _new_structural_id(), source=source
+            )
+            for name, source in sources.items()
+        ),
+        root_id=root_id,
     )
 
 

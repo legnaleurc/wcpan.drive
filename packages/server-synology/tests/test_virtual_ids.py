@@ -7,7 +7,6 @@ from unittest import TestCase
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.backend import Mounts
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.synology._convert import SynologyLocator
 from wcpan.drive.server.synology._mounts import (
     MountRegistry,
@@ -24,7 +23,7 @@ from wcpan.synology import (
     SynologyPath,
 )
 
-from ._lib import DecoyTestCase, IdentityIds, mount_id, mounts_of
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, mount_id, mounts_of
 
 
 def _info(**fields: object) -> SynologyFileInfo:
@@ -61,7 +60,7 @@ class TestSynologyParentRef(_PathTestCase):
         svc = self._service()
         # when / then
         with self.assertRaises(ValueError):
-            await svc.synology_parent_ref(NodeId("_"))
+            await svc.synology_parent_ref(ROOT_ID)
 
     async def test_real_parent_requires_stored_node(self):
         # given
@@ -83,7 +82,9 @@ class TestCreateMountRegistry(_PathTestCase):
 
     async def test_empty_mounts(self):
         # when
-        registry = await create_mount_registry(Mounts(), drive_api=self.drive_api)
+        registry = await create_mount_registry(
+            Mounts(root_id=ROOT_ID), drive_api=self.drive_api
+        )
         # then
         self.assertEqual(registry.paths, {})
         self.assertIsNone(

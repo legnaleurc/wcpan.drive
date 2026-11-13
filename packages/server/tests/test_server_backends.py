@@ -12,7 +12,6 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import (
     BackendNamespace,
     MirrorStore,
@@ -30,7 +29,7 @@ from wcpan.drive.server.workers import (
     write_worker,
 )
 
-from ._mounts import make_mounts, mount_id
+from ._mounts import ROOT_ID, make_mounts, mount_id
 
 
 class _RecordingSchema:
@@ -113,8 +112,11 @@ class TestRootPlacement(IsolatedAsyncioTestCase):
 
     async def test_backend_node_under_the_root_is_refused(self) -> None:
         # given
+        await self.mirror.bulk_upsert_nodes(
+            [replace(_file(ROOT_ID, "p"), parent_id=None)]
+        )
         observation = NodeObservation(
-            record=_file("fx", SERVER_ROOT_ID), locator=None, backend="a"
+            record=_file("fx", ROOT_ID), locator=None, backend="a"
         )
         # when / then
         with self.assertRaises(ValueError):
@@ -135,8 +137,8 @@ class TestRootPlacement(IsolatedAsyncioTestCase):
 
     async def test_core_places_root_and_its_children(self) -> None:
         # given
-        root = replace(_file(SERVER_ROOT_ID, "p"), parent_id=None)
-        mount = _file("m", SERVER_ROOT_ID)
+        root = replace(_file(ROOT_ID, "p"), parent_id=None)
+        mount = _file("m", ROOT_ID)
         # when
         await self.mirror.apply_observations(
             [

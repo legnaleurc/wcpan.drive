@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.enricher import MediaEnrichmentError
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
@@ -46,7 +45,7 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from ._lib import DecoyTestCase, IdentityIds, mount_id, mounts_of
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, mount_id, mounts_of
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -135,8 +134,8 @@ class _RaceTestCase(DecoyTestCase):
         await self.mirror.ensure_schema()
         await self.mirror.bulk_upsert_nodes(
             [
-                _node(SERVER_ROOT_ID, None, name="", is_directory=True),
-                _node(_MOUNT, SERVER_ROOT_ID, name="docs", is_directory=True),
+                _node(ROOT_ID, None, name="", is_directory=True),
+                _node(_MOUNT, ROOT_ID, name="docs", is_directory=True),
             ]
         )
         self.write_queue = create_write_queue()

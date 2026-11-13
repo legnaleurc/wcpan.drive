@@ -22,7 +22,6 @@ from wcpan.drive.sqlite import (
     read_write as _read_write,
 )
 
-from ..lib.root import SERVER_ROOT_ID
 from ..types import BackendLocator, NodeObservation
 from ._schema import CORE_TABLES, DDL, SCHEMA_VERSION
 from .off_main import OffMainService
@@ -93,6 +92,8 @@ class BackendSchema(Protocol):
 
 
 _MAX_CHANGES_PER_PAGE = 1000
+
+_ROOT_ID_SQL = "SELECT id FROM nodes WHERE parent_id IS NULL"
 
 _UPSERT_NODE_SQL = """
             INSERT INTO nodes
@@ -202,7 +203,7 @@ def _with_schema(instances: _Instances) -> list[_Instance]:
 
 
 def _observer_of(
-    instances: _Instances, observation: NodeObservation
+    instances: _Instances, observation: NodeObservation, *, root_id: NodeId | None
 ) -> _Instance | None:
     """The registered instance that made *observation*; None for a core node.
 
@@ -219,7 +220,7 @@ def _observer_of(
             raise ValueError(f"Untagged observation of {record.id} has a locator")
         return None
     instance = _registered(instances, observation.backend)
-    if record.parent_id is None or record.parent_id == SERVER_ROOT_ID:
+    if record.parent_id is None or record.parent_id == root_id:
         raise ValueError(
             f"Backend {observation.backend!r} placed {record.id} at the root"
         )
@@ -470,11 +471,12 @@ def _apply_observations(
         return set()
     applied: set[NodeId] = set()
     with _read_write(dsn) as con:
+        root_id = _root_id(con)
         for observation in observations:
             record = observation.record
             # Before the parent check, so an invalid observation is refused
             # whatever the mirror holds.
-            owner = _observer_of(instances, observation)
+            owner = _observer_of(instances, observation, root_id=root_id)
             if record.parent_id is not None and not _node_exists(con, record.parent_id):
                 continue
             before = _select_node_row(con, record.id)
@@ -560,6 +562,20 @@ def _get_nodes_by_ids(
     return {NodeId(row["id"]): row_to_record(row) for row in rows}
 
 
+def _root_id(con: sqlite3.Connection) -> NodeId | None:
+    """The server root's ID, or ``None`` before the root is created."""
+    with closing(con.execute(_ROOT_ID_SQL)) as cur:
+        row = cur.fetchone()
+    return NodeId(row["id"]) if row is not None else None
+
+
+def _get_root(dsn: str) -> NodeRecord | None:
+    with _read_only(dsn) as con:
+        with closing(con.execute("SELECT * FROM nodes WHERE parent_id IS NULL")) as cur:
+            row = cur.fetchone()
+    return row_to_record(row) if row is not None else None
+
+
 def _get_children(dsn: str, parent_id: NodeId) -> list[NodeRecord]:
     with _read_only(dsn) as con:
         with closing(
@@ -598,12 +614,13 @@ def _get_ancestors(dsn: str, node_id: NodeId) -> list[NodeRecord]:
         UNION ALL
         SELECT n.* FROM nodes n
         JOIN ancestors a ON n.id = a.parent_id
-        WHERE n.parent_id IS NOT NULL AND n.parent_id != ?
+        JOIN nodes p ON p.id = n.parent_id
+        WHERE p.parent_id IS NOT NULL
     )
     SELECT * FROM ancestors
     """
     with _read_only(dsn) as con:
-        with closing(con.execute(sql, (str(node_id), str(SERVER_ROOT_ID)))) as cur:
+        with closing(con.execute(sql, (str(node_id),))) as cur:
             return [row_to_record(r) for r in cur.fetchall()]
 
 
@@ -629,9 +646,10 @@ def _deferred_removal_roots(
         SELECT n.id, n.parent_id FROM nodes n
         JOIN descendants d ON n.parent_id = d.node_id
     )
-    SELECT node_id, parent_id FROM descendants WHERE parent_id != ?
+    SELECT node_id, parent_id FROM descendants
+    WHERE parent_id NOT IN (SELECT id FROM nodes WHERE parent_id IS NULL)
     """
-    params = tuple(str(_) for _ in scope) + (str(SERVER_ROOT_ID),)
+    params = tuple(str(_) for _ in scope)
     with _read_only(dsn) as con:
         with closing(con.execute(sql, params)) as cur:
             rows = cur.fetchall()
@@ -733,13 +751,14 @@ def row_to_record(row: sqlite3.Row) -> NodeRecord:
 
 _GC_CREATE_SQL = """
     CREATE TEMP TABLE _dangling AS
-    WITH RECURSIVE reachable(node_id, owner) AS (
-        SELECT ?, NULL
+    WITH RECURSIVE reachable(node_id, owner, is_root) AS (
+        SELECT id, NULL, 1 FROM nodes WHERE parent_id IS NULL
         UNION ALL
         SELECT n.id,
-               CASE WHEN r.node_id = ?
+               CASE WHEN r.is_root
                     THEN (SELECT o.key FROM temp._owners o WHERE o.name = n.name)
-                    ELSE r.owner END
+                    ELSE r.owner END,
+               0
         FROM nodes n
         JOIN reachable r ON n.parent_id = r.node_id
         WHERE r.owner IS NULL
@@ -772,7 +791,7 @@ def cleanup_dangling_nodes(dsn: str, *, mounts: Mapping[str, str] | None = None)
             """,
             list((mounts or {}).items()),
         )
-        con.execute(_GC_CREATE_SQL, (str(SERVER_ROOT_ID), str(SERVER_ROOT_ID)))
+        con.execute(_GC_CREATE_SQL)
         with closing(con.execute("SELECT COUNT(*) AS n FROM temp._dangling")) as cur:
             count = int(cur.fetchone()["n"])
         if count > 0:
@@ -950,8 +969,7 @@ def reset_change_history(dsn: str) -> int:
         con.execute("DELETE FROM changes")
         con.execute(
             "INSERT INTO changes (node_id, is_removed)"
-            " SELECT id, 0 FROM nodes WHERE id != ?",
-            (str(SERVER_ROOT_ID),),
+            " SELECT id, 0 FROM nodes WHERE parent_id IS NOT NULL"
         )
         with closing(con.execute("SELECT COUNT(*) AS n FROM changes")) as cur:
             return int(cur.fetchone()["n"])
@@ -971,10 +989,12 @@ def _build_deferred_preserved_set(
 def _resolve_path_to_id(dsn: str, segments: list[str]) -> NodeId | None:
     """Resolve a list of directory names to a final node_id using one recursive query.
 
-    Matches only nodes where is_directory = 1.
+    Matches only nodes where is_directory = 1. No segments name the root;
+    ``None`` if there is no such directory.
     """
     if not segments:
-        return SERVER_ROOT_ID
+        with _read_only(dsn) as con:
+            return _root_id(con)
 
     # We build a 'path_segments' CTE that gives each name an index (lvl).
     # Then we recursively join 'nodes' where parent_id matches the previous
@@ -996,7 +1016,8 @@ def _resolve_path_to_id(dsn: str, segments: list[str]) -> NodeId | None:
         SELECT n.id, 0
         FROM nodes n
         JOIN path_segments ps ON n.name = ps.name AND ps.lvl = 0
-        WHERE n.parent_id = ? AND n.is_directory = 1
+        WHERE n.parent_id = (SELECT id FROM nodes WHERE parent_id IS NULL)
+          AND n.is_directory = 1
         UNION ALL
         SELECT n.id, t.lvl + 1
         FROM nodes n
@@ -1007,7 +1028,7 @@ def _resolve_path_to_id(dsn: str, segments: list[str]) -> NodeId | None:
     SELECT node_id FROM traversal
     WHERE lvl = ?
     """
-    params = list(segments) + [str(SERVER_ROOT_ID), len(segments) - 1]
+    params = list(segments) + [len(segments) - 1]
 
     with _read_only(dsn) as con:
         with closing(con.execute(sql, params)) as cur:
@@ -1156,6 +1177,10 @@ class MirrorStore:
 
     async def resolve_path_to_id(self, segments: list[str]) -> NodeId | None:
         return await self._off_main(_resolve_path_to_id, self._dsn, segments)
+
+    async def get_root(self) -> NodeRecord | None:
+        """The server root: the only node without a parent."""
+        return await self._off_main(_get_root, self._dsn)
 
     async def get_node_by_id(self, node_id: NodeId) -> NodeRecord | None:
         return await self._off_main(_get_node_by_id, self._dsn, node_id)

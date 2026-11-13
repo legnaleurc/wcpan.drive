@@ -20,7 +20,8 @@ from wcpan.drive.server.services.mirror import (
     reset_change_history,
 )
 from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.services.paths import SERVER_ROOT_ID
+
+from ._mounts import ROOT_ID
 
 
 _NOW = 1_704_067_200
@@ -29,7 +30,7 @@ _NOW = 1_704_067_200
 def _make_node(
     node_id: str,
     *,
-    parent_id: str | None = SERVER_ROOT_ID,
+    parent_id: str | None = ROOT_ID,
     name: str = "test.txt",
     is_directory: bool = False,
     is_image: bool = False,
@@ -86,7 +87,12 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
             with ThreadPoolExecutor() as pool:
                 mirror = _make_mirror(db_path, pool)
                 await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes([_make_node("node-001")])
+                await mirror.bulk_upsert_nodes(
+                    [
+                        _make_node(ROOT_ID, parent_id=None, is_directory=True),
+                        _make_node("node-001"),
+                    ]
+                )
                 # when
                 count = cleanup_dangling_nodes(db_path)
                 # then
@@ -143,7 +149,8 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 await mirror.ensure_schema()
                 reachable = _make_node("node-001")
                 orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
-                await mirror.bulk_upsert_nodes([reachable, orphan])
+                root = _make_node(ROOT_ID, parent_id=None, is_directory=True)
+                await mirror.bulk_upsert_nodes([root, reachable, orphan])
                 # when
                 count = cleanup_dangling_nodes(db_path)
                 # then
@@ -162,7 +169,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 mirror = _make_mirror(db_path, pool)
                 await mirror.ensure_schema()
                 root = _make_node(
-                    SERVER_ROOT_ID,
+                    ROOT_ID,
                     parent_id=None,
                     name="",
                     is_directory=True,
@@ -171,7 +178,7 @@ class TestCleanupDanglingNodes(IsolatedAsyncioTestCase):
                 # when
                 cleanup_dangling_nodes(db_path)
                 # then
-                self.assertIsNotNone(await mirror.get_node_by_id(SERVER_ROOT_ID))
+                self.assertIsNotNone(await mirror.get_node_by_id(ROOT_ID))
         finally:
             os.unlink(db_path)
 
@@ -226,7 +233,7 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 mirror = _make_mirror(db_path, pool)
                 await mirror.ensure_schema()
                 root = _make_node(
-                    SERVER_ROOT_ID,
+                    ROOT_ID,
                     parent_id=None,
                     name="",
                     is_directory=True,
@@ -237,7 +244,7 @@ class TestResetChangeHistory(IsolatedAsyncioTestCase):
                 # then
                 changes, _, _ = await mirror.get_changes_since(0, 1000)
                 ids = [c[0] for c in changes]
-                self.assertNotIn(SERVER_ROOT_ID, ids)
+                self.assertNotIn(ROOT_ID, ids)
         finally:
             os.unlink(db_path)
 
@@ -346,7 +353,7 @@ class TestPerBackendGc(IsolatedAsyncioTestCase):
         }
         await self.mirror.bulk_upsert_nodes(
             [
-                _make_node(SERVER_ROOT_ID, parent_id=None, is_directory=True),
+                _make_node(ROOT_ID, parent_id=None, is_directory=True),
                 _make_node("m-docs", name="docs", is_directory=True),
                 _make_node("m-pics", name="pics", is_directory=True),
                 _make_node("m-old", name="old", is_directory=True),
@@ -461,7 +468,7 @@ class TestLifecycle(IsolatedAsyncioTestCase):
         }
         await self.mirror.bulk_upsert_nodes(
             [
-                _make_node(SERVER_ROOT_ID, parent_id=None, is_directory=True),
+                _make_node(ROOT_ID, parent_id=None, is_directory=True),
                 _make_node("m-docs", name="docs", is_directory=True),
                 _make_node("m-pics", name="pics", is_directory=True),
             ]

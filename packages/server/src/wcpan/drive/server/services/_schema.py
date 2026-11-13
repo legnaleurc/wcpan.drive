@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 CREATE INDEX IF NOT EXISTS ix_nodes_parent_id ON nodes(parent_id);
 
+-- The server root is the only node without a parent; its ID is opaque.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_nodes_root ON nodes((parent_id IS NULL))
+    WHERE parent_id IS NULL;
+
 CREATE TABLE IF NOT EXISTS changes (
     change_id  INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id    TEXT    NOT NULL,

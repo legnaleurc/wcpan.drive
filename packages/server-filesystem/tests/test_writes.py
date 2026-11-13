@@ -13,7 +13,6 @@ from unittest.mock import patch
 from wcpan.drive.protocol.types import MediaInfo, NodeRecord
 from wcpan.drive.server.filesystem._operations import FilesystemFile
 from wcpan.drive.server.filesystem._reading import STAGING_PREFIX
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.operations import (
     OperationConflictError,
     OperationInvalidError,
@@ -26,7 +25,7 @@ from wcpan.drive.server.services.upload import (
     UploadTransientError,
 )
 
-from ._harness import DOCS, ScanTestCase
+from ._harness import DOCS, ROOT_ID, ScanTestCase
 
 
 async def _content(*chunks: bytes) -> AsyncIterator[bytes]:
@@ -86,7 +85,7 @@ class TestCreateFolder(_WriteTestCase):
     async def test_server_root_is_not_writable(self) -> None:
         # when / then
         with self.assertRaises(OperationNotSupportedError):
-            await self.operations.create_folder(SERVER_ROOT_ID, "x")
+            await self.operations.create_folder(ROOT_ID, "x")
 
 
 class TestRenameAndMove(_WriteTestCase):

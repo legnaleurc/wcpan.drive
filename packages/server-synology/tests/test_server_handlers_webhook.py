@@ -23,7 +23,7 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from ._lib import DecoyTestCase, IdentityIds, make_mounts
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -88,7 +88,9 @@ class _WebhookTestCase(DecoyTestCase):
     def _create_service(
         self, mount_registry: MountRegistry | None = None
     ) -> WebhookService:
-        registry = mount_registry or MountRegistry(mounts=Mounts(), root_ids={})
+        registry = mount_registry or MountRegistry(
+            mounts=Mounts(root_id=ROOT_ID), root_ids={}
+        )
         return WebhookService(
             drive_api=self.drive_api,
             mirror=self.mirror,
@@ -194,7 +196,7 @@ class TestFetchAndEnrich(_WebhookTestCase):
     async def test_parent_resolved_via_mount(self):
         # given
         registry = MountRegistry(
-            mounts=Mounts(),
+            mounts=Mounts(root_id=ROOT_ID),
             root_ids={
                 SynologyFileId(file_id="real-parent"): NodeId("_docs"),
             },

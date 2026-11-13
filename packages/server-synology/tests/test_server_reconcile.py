@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import VirtualPathService
@@ -30,7 +29,7 @@ from wcpan.drive.server.workers import (
 )
 from wcpan.synology import SynologyClient, SynologyPath
 
-from ._lib import DecoyTestCase, IdentityIds, make_mounts, mount_id
+from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts, mount_id
 
 
 _TS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp())
@@ -156,8 +155,8 @@ class TestVirtualPathToDirectoryNodeId(IsolatedAsyncioTestCase):
         await mirror.ensure_schema()
         await mirror.bulk_upsert_nodes(
             [
-                _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                _node(mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True),
+                _node(ROOT_ID, "", None, is_directory=True),
+                _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                 _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
             ]
         )
@@ -171,14 +170,14 @@ class TestVirtualPathToDirectoryNodeId(IsolatedAsyncioTestCase):
         # when / then
         self.assertEqual(
             await self.svc.resolve_to_directory_node_id("/"),
-            SERVER_ROOT_ID,
+            ROOT_ID,
         )
 
     async def test_root_empty(self) -> None:
         # when / then
         self.assertEqual(
             await self.svc.resolve_to_directory_node_id("  "),
-            SERVER_ROOT_ID,
+            ROOT_ID,
         )
 
     async def test_mount_only(self) -> None:
@@ -221,10 +220,8 @@ class TestReconcileSubtree(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(
-                            mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True
-                        ),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                         _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
                         _node("f-1", "x.txt", "dir-1", size=0, width=42),
                     ]
@@ -272,10 +269,8 @@ class TestReconcileSubtree(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(
-                            mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True
-                        ),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                         _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
                         _node("f-1", "x.txt", "dir-1", size=0),
                     ]
@@ -320,10 +315,8 @@ class TestReconcileSubtree(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(
-                            mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True
-                        ),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                         _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
                     ]
                 )
@@ -371,10 +364,8 @@ class TestReconcileSubtree(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(
-                            mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True
-                        ),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                     ]
                 )
                 mounts = {"docs": "/volume1/docs"}
@@ -392,7 +383,7 @@ class TestReconcileSubtree(DecoyTestCase):
                     mirror,
                     mounts,
                     drive_api,
-                    SERVER_ROOT_ID,
+                    ROOT_ID,
                     dry_run=False,
                     list_children_side_effect=_list_children,
                 )
@@ -418,10 +409,8 @@ class TestReconcileSubtree(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(
-                            mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True
-                        ),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                         _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
                     ]
                 )
@@ -463,10 +452,8 @@ class TestReconcileSubtree(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(
-                            mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True
-                        ),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                         _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
                         _node("f-1", "keep.txt", "dir-1"),
                         _node("f-2", "deleted.txt", "dir-1"),
@@ -512,10 +499,8 @@ class TestReconcileSubtree(DecoyTestCase):
                 await mirror.ensure_schema()
                 await mirror.bulk_upsert_nodes(
                     [
-                        _node(SERVER_ROOT_ID, "", None, is_directory=True),
-                        _node(
-                            mount_id("docs"), "docs", SERVER_ROOT_ID, is_directory=True
-                        ),
+                        _node(ROOT_ID, "", None, is_directory=True),
+                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                         _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
                         _node("f-1", "keep.txt", "dir-1"),
                         _node("f-2", "deleted.txt", "dir-1"),

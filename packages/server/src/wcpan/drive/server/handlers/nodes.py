@@ -4,11 +4,11 @@ from logging import getLogger
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
-from wcpan.drive.protocol.types import NodeId
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 from ..keys import MIRROR_KEY, NODE_OPERATIONS_KEY, UPLOAD_SERVICE_KEY
 from ..lib.names import normalize_name
-from ..lib.root import SERVER_ROOT_ID, is_structural
+from ..services.mirror import MirrorStore
 from ..services.operations import OperationConflictError, OperationUnavailableError
 from ..services.upload import (
     UploadConflictError,
@@ -94,6 +94,18 @@ async def create_node(request: web.Request) -> web.Response:
     return web.json_response(record_to_response(record), status=201)
 
 
+async def _is_structural(record: NodeRecord, *, mirror: MirrorStore) -> bool:
+    """Whether *record* is the server root or a mount node.
+
+    The root is the only node without a parent, and mounts are its only
+    children, so both are recognized by position in the tree.
+    """
+    if record.parent_id is None:
+        return True
+    parent = await mirror.get_node_by_id(record.parent_id)
+    return parent is not None and parent.parent_id is None
+
+
 @require_ready
 async def update_node(request: web.Request) -> web.Response:
     """Rename and/or move a node."""
@@ -104,7 +116,7 @@ async def update_node(request: web.Request) -> web.Response:
     record = await mirror.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
-    if is_structural(record):
+    if await _is_structural(record, mirror=mirror):
         raise web.HTTPForbidden(reason="Cannot modify virtual nodes")
 
     body = await request.json()
@@ -135,7 +147,7 @@ async def delete_node(request: web.Request) -> web.Response:
     record = await mirror.get_node_by_id(node_id)
     if record is None:
         raise web.HTTPNotFound()
-    if is_structural(record):
+    if await _is_structural(record, mirror=mirror):
         raise web.HTTPForbidden(reason="Cannot delete virtual nodes")
 
     await operations.delete(record)
@@ -146,9 +158,6 @@ async def delete_node(request: web.Request) -> web.Response:
 async def upload_node(request: web.Request) -> web.Response:
     upload_service: UploadService = request.app[UPLOAD_SERVICE_KEY]
     parent_id = NodeId(request.match_info["parent_id"])
-
-    if parent_id == SERVER_ROOT_ID:
-        raise web.HTTPForbidden(reason="Cannot upload to virtual root")
 
     name = request.rel_url.query.get("name", "")
     if not name:

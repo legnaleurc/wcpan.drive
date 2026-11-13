@@ -589,7 +589,7 @@ in one transaction.
 ### Identity map
 
 The core owns `node_ids(id PRIMARY KEY, instance, native, UNIQUE(instance,
-native))`. The root (`_`) and mount IDs are core IDs without map rows.
+native))`. The root and mount IDs are core IDs without map rows.
 
 ID spaces: every ID a backend exchanges with the core is public, in
 observations (`id` and `parent_id`), deletions, mirror reads, ordering, and

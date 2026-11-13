@@ -32,7 +32,7 @@ def check_mounts(mounts: Mounts) -> Mounts:
     for name, mount in mounts.items():
         if not os.path.isabs(mount.source):
             raise ValueError(f"Mount {name!r} source {mount.source!r} is not absolute")
-    normalized = Mounts(
+    normalized = mounts.replace(
         replace(m, source=os.path.normpath(m.source)) for m in mounts.values()
     )
     sources = sorted(m.source for m in normalized.values())

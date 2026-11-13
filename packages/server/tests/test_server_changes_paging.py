@@ -9,7 +9,8 @@ from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
 from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
-from wcpan.drive.server.services.paths import SERVER_ROOT_ID
+
+from ._mounts import ROOT_ID
 
 
 _NOW = 1_704_067_200
@@ -18,7 +19,7 @@ _NOW = 1_704_067_200
 def _make_node(
     node_id: str,
     *,
-    parent_id: str | None = SERVER_ROOT_ID,
+    parent_id: str | None = ROOT_ID,
     is_directory: bool = False,
 ) -> NodeRecord:
     return NodeRecord(
