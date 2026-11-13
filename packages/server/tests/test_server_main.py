@@ -13,7 +13,7 @@ from unittest.mock import patch
 import yaml
 from wcpan.drive.server.config import parse_config
 from wcpan.drive.server.main import main
-from wcpan.drive.server.services.mirror import MirrorStore, registered_backends
+from wcpan.drive.server.services.mirror import MirrorStore, registered_instances
 from wcpan.drive.server.services.off_main import OffMainService
 
 from . import _fake_backend
@@ -58,7 +58,7 @@ def _register(tmp: str, *names: str) -> str:
             mirror = MirrorStore(db, off_main=OffMainService(pool=pool))
             await mirror.ensure_schema()
             for name in names:
-                await mirror.register_backend(name)
+                await mirror.register_instance(name)
 
     asyncio.run(register())
     return db
@@ -74,7 +74,7 @@ class TestLifecycleCommands(unittest.TestCase):
             # then
             self.assertIsNone(code)
             self.assertIn("rediscovered on the next start", out)
-            self.assertEqual(registered_backends(db), ["one"])
+            self.assertEqual(registered_instances(db), ["one"])
 
     def test_drop_refuses_a_configured_instance(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,7 +85,7 @@ class TestLifecycleCommands(unittest.TestCase):
             # then
             self.assertEqual(code, 1)
             self.assertIn("remove it from the config first", err)
-            self.assertEqual(registered_backends(db), ["one"])
+            self.assertEqual(registered_instances(db), ["one"])
 
     def test_drop_an_instance_no_longer_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -96,7 +96,7 @@ class TestLifecycleCommands(unittest.TestCase):
             # then
             self.assertIsNone(code)
             self.assertIn("Dropped backend 'gone'", out)
-            self.assertEqual(registered_backends(db), ["one"])
+            self.assertEqual(registered_instances(db), ["one"])
 
     def test_unconfigured_instance_accepts_only_drop(self):
         with tempfile.TemporaryDirectory() as tmp:

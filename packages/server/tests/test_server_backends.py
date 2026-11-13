@@ -57,6 +57,10 @@ class _RecordingSchema:
         pass
 
 
+class _OtherSchema(_RecordingSchema):
+    name = "other"
+
+
 def _file(node_id: str, parent_id: str) -> NodeRecord:
     return NodeRecord(
         id=NodeId(node_id),
@@ -218,7 +222,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         await mirror.ensure_schema()
         # then
         self.assertEqual(await mirror.register_schema("a", _RecordingSchema()), ns)
-        self.assertEqual(await mirror.registered_backends(), ["a", "b"])
+        self.assertEqual(await mirror.registered_instances(), ["a", "b"])
 
     async def test_rejects_another_schema_version(self) -> None:
         mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
@@ -233,11 +237,19 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         with self.assertRaises(SchemaVersionError):
             await mirror.register_schema("c", _RecordingSchema(version=2))
 
-    async def test_rejects_another_backend_type(self) -> None:
-        # given
-        await self.mirror.register_backend("c", "pkg.create_backend")
+    async def test_rejects_another_backend_schema(self) -> None:
+        # given: "a" holds rows of the recording backend's tables
         mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
         await mirror.ensure_schema()
         # when / then
         with self.assertRaises(SchemaVersionError):
-            await mirror.register_backend("c", "other.create_backend")
+            await mirror.register_schema("a", _OtherSchema())
+
+    async def test_new_instance_takes_any_schema(self) -> None:
+        # registered before its backend loads, so no schema is bound yet
+        await self.mirror.register_instance("c")
+        await self.mirror.register_schema("c", _OtherSchema())
+        mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
+        await mirror.ensure_schema()
+        with self.assertRaises(SchemaVersionError):
+            await mirror.register_schema("c", _RecordingSchema())

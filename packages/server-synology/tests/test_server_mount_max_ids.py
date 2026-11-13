@@ -40,9 +40,9 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
         key = self.mirror.namespace("synology").key
         con = sqlite3.connect(self.db_path)
         con.execute(
-            "INSERT INTO synology_mounts (backend, name, max_id, path)"
+            "INSERT INTO synology_mounts (instance, name, max_id, path)"
             " VALUES (?, ?, ?, ?)"
-            " ON CONFLICT(backend, name) DO UPDATE SET"
+            " ON CONFLICT(instance, name) DO UPDATE SET"
             " max_id = excluded.max_id,"
             " path = excluded.path",
             (key, name, max_id, path),
@@ -115,7 +115,7 @@ class TestSetMountState(IsolatedAsyncioTestCase):
         con = sqlite3.connect(self.db_path)
         key = self.mirror.namespace("synology").key
         row = con.execute(
-            "SELECT max_id, path FROM synology_mounts WHERE backend = ? AND name = ?",
+            "SELECT max_id, path FROM synology_mounts WHERE instance = ? AND name = ?",
             (key, name),
         ).fetchone()
         con.close()

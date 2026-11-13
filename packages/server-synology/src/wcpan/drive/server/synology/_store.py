@@ -41,10 +41,10 @@ class SynologySchema:
     ) -> None:
         con.execute(
             """
-            INSERT INTO synology_locators (node_id, backend, file_id)
+            INSERT INTO synology_locators (node_id, instance, file_id)
             VALUES (?, ?, ?)
             ON CONFLICT(node_id) DO UPDATE SET
-                backend = excluded.backend,
+                instance = excluded.instance,
                 file_id = excluded.file_id
             """,
             (str(node_id), ns.key, locator),
@@ -56,14 +56,14 @@ class SynologySchema:
         placeholders = ",".join("?" * len(node_ids))
         con.execute(
             "DELETE FROM synology_locators"
-            f" WHERE backend = ? AND node_id IN ({placeholders})",
+            f" WHERE instance = ? AND node_id IN ({placeholders})",
             [ns.key, *node_ids],
         )
 
     def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         con.execute(
             "DELETE FROM synology_locators"
-            " WHERE backend = ? AND node_id NOT IN (SELECT id FROM nodes)",
+            " WHERE instance = ? AND node_id NOT IN (SELECT id FROM nodes)",
             (ns.key,),
         )
 
@@ -107,7 +107,7 @@ def _get_mount_max_ids(
     with closing(
         con.execute(
             "SELECT name, max_id, path FROM synology_mounts"
-            f" WHERE backend = ? AND name IN ({placeholders})",
+            f" WHERE instance = ? AND name IN ({placeholders})",
             [ns.key, *names],
         )
     ) as cur:
@@ -133,8 +133,8 @@ def _set_mount_state(
     """Save per-mount last_max_id and syno_path atomically."""
     con.execute(
         """
-        INSERT INTO synology_mounts (backend, name, max_id, path) VALUES (?, ?, ?, ?)
-        ON CONFLICT(backend, name) DO UPDATE SET
+        INSERT INTO synology_mounts (instance, name, max_id, path) VALUES (?, ?, ?, ?)
+        ON CONFLICT(instance, name) DO UPDATE SET
             max_id = excluded.max_id,
             path = excluded.path
         """,
@@ -150,7 +150,7 @@ def _get_node_by_locator(
             """
             SELECT n.* FROM synology_locators l
             JOIN nodes n ON n.id = l.node_id
-            WHERE l.backend = ? AND l.file_id = ?
+            WHERE l.instance = ? AND l.file_id = ?
             """,
             (ns.key, locator),
         )
@@ -168,7 +168,7 @@ def _get_locators(
     with closing(
         con.execute(
             "SELECT node_id, file_id FROM synology_locators"
-            f" WHERE backend = ? AND node_id IN ({placeholders})",
+            f" WHERE instance = ? AND node_id IN ({placeholders})",
             [ns.key, *(str(_) for _ in node_ids)],
         )
     ) as cur:

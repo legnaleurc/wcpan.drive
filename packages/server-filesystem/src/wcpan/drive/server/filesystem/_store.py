@@ -63,10 +63,10 @@ class FilesystemSchema:
         con.execute(
             """
             INSERT INTO fs_entries
-                (node_id, backend, identity, size, mtime_ns, ctime_ns)
+                (node_id, instance, identity, size, mtime_ns, ctime_ns)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(node_id) DO UPDATE SET
-                backend = excluded.backend,
+                instance = excluded.instance,
                 identity = excluded.identity,
                 size = excluded.size,
                 mtime_ns = excluded.mtime_ns,
@@ -87,14 +87,14 @@ class FilesystemSchema:
     ) -> None:
         placeholders = ",".join("?" * len(node_ids))
         con.execute(
-            f"DELETE FROM fs_entries WHERE backend = ? AND node_id IN ({placeholders})",
+            f"DELETE FROM fs_entries WHERE instance = ? AND node_id IN ({placeholders})",
             [ns.key, *node_ids],
         )
 
     def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         con.execute(
             "DELETE FROM fs_entries"
-            " WHERE backend = ? AND node_id NOT IN (SELECT id FROM nodes)",
+            " WHERE instance = ? AND node_id NOT IN (SELECT id FROM nodes)",
             (ns.key,),
         )
 
@@ -132,7 +132,7 @@ def _get_entries(
     with closing(
         con.execute(
             "SELECT node_id, identity, size, mtime_ns, ctime_ns"
-            f" FROM fs_entries WHERE backend = ? AND node_id IN ({placeholders})",
+            f" FROM fs_entries WHERE instance = ? AND node_id IN ({placeholders})",
             [ns.key, *(str(_) for _ in node_ids)],
         )
     ) as cur:
@@ -156,7 +156,7 @@ def _nodes_by_identity(
             """
             SELECT e.node_id FROM fs_entries e
             JOIN nodes n ON n.id = e.node_id
-            WHERE e.backend = ? AND e.identity = ?
+            WHERE e.instance = ? AND e.identity = ?
             ORDER BY e.node_id
             """,
             (ns.key, identity),
@@ -170,7 +170,7 @@ def _get_mount_fsid(
 ) -> str | None:
     with closing(
         con.execute(
-            "SELECT path, fsid FROM fs_mounts WHERE backend = ? AND name = ?",
+            "SELECT path, fsid FROM fs_mounts WHERE instance = ? AND name = ?",
             (ns.key, name),
         )
     ) as cur:
@@ -185,8 +185,8 @@ def _set_mount_fsid(
 ) -> None:
     con.execute(
         """
-        INSERT INTO fs_mounts (backend, name, path, fsid) VALUES (?, ?, ?, ?)
-        ON CONFLICT(backend, name) DO UPDATE SET
+        INSERT INTO fs_mounts (instance, name, path, fsid) VALUES (?, ?, ?, ?)
+        ON CONFLICT(instance, name) DO UPDATE SET
             path = excluded.path,
             fsid = excluded.fsid
         """,

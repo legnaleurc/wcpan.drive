@@ -82,7 +82,7 @@ def _lookup(
         with closing(
             con.execute(
                 "SELECT id, native FROM node_ids"
-                f" WHERE backend = ? AND native IN ({placeholders})",
+                f" WHERE instance = ? AND native IN ({placeholders})",
                 (key, *chunk),
             )
         ) as cur:
@@ -95,7 +95,7 @@ def _mint(
 ) -> dict[str, NodeId]:
     # Another writer may have minted some meanwhile; theirs win.
     con.executemany(
-        "INSERT OR IGNORE INTO node_ids (id, backend, native) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO node_ids (id, instance, native) VALUES (?, ?, ?)",
         [(new_node_id(), key, native) for native in natives],
     )
     return _lookup(con, key, natives)
@@ -104,7 +104,7 @@ def _mint(
 def _native_of(con: sqlite3.Connection, key: str, node_id: NodeId) -> str | None:
     with closing(
         con.execute(
-            "SELECT native FROM node_ids WHERE id = ? AND backend = ?",
+            "SELECT native FROM node_ids WHERE id = ? AND instance = ?",
             (str(node_id), key),
         )
     ) as cur:

@@ -128,7 +128,7 @@ async def managed_core(
     offline commands, which run with the server stopped.
     """
     mirror = await create_mirror_store(config.database_url, off_main=off_main)
-    for name in await mirror.registered_backends():
+    for name in await mirror.registered_instances():
         if name not in config.backends:
             # Kept until dropped, so a config typo does not discard a mirror.
             _L.warning(
@@ -194,7 +194,7 @@ async def entered_backends(
         backends: dict[str, Backend] = {}
         for name in selected:
             settings = config.backends[name]
-            key = await core.mirror.register_backend(name, settings.type)
+            key = await core.mirror.register_instance(name)
             context = BackendContext(
                 name=name,
                 mounts=core.mounts.subset(config.mounts_of(name)),

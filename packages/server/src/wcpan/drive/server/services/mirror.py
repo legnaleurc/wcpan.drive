@@ -40,7 +40,7 @@ class BackendNamespace:
     """The rows of one backend instance in the shared backend tables.
 
     ``key`` is the instance's registry key; backend tables store it in their
-    ``backend`` column, and every lookup filters by it.
+    ``instance`` column, and every lookup filters by it.
     """
 
     key: str
@@ -49,8 +49,8 @@ class BackendNamespace:
 class BackendSchema(Protocol):
     """Backend-owned tables, maintained on the core's connection and transaction.
 
-    The tables are shared by every instance of the backend. Each has a
-    ``backend`` column holding the instance key (``BackendNamespace.key``), which
+    The tables are shared by every instance of the backend. Each has an
+    ``instance`` column holding the instance key (``BackendNamespace.key``), which
     every query filters by, so an instance never sees another's rows; ``drop``
     and ``rebuild`` delete an instance's rows through that column without loading
     the backend. Rows stay keyed by public node ID. Hooks must not commit, roll
@@ -266,48 +266,47 @@ def _run_write[R](
         return fn(con, *args, **kwargs)
 
 
-def _register_backend(dsn: str, name: str, type_: str) -> str:
-    """The registry key of instance *name*, registering it on first sight.
-
-    Raises:
-        SchemaVersionError: If *name* was registered with another backend type.
-    """
+def _register_instance(dsn: str, name: str) -> str:
+    """The registry key of instance *name*, registering it on first sight."""
     with _read_write(dsn) as con:
         with closing(
-            con.execute("SELECT key, type FROM backends WHERE name = ?", (name,))
+            con.execute("SELECT key FROM backend_instances WHERE name = ?", (name,))
         ) as cur:
             row = cur.fetchone()
         if row is not None:
-            if type_ and row["type"] and row["type"] != type_:
-                raise SchemaVersionError(
-                    f"backend {name!r} was registered as {row['type']!r},"
-                    f" not {type_!r}; a backend cannot change type"
-                )
-            if type_ and not row["type"]:
-                con.execute(
-                    "UPDATE backends SET type = ? WHERE name = ?", (type_, name)
-                )
             return str(row["key"])
         while True:
             key = secrets.token_hex(4)
             cur = con.execute(
-                "INSERT OR IGNORE INTO backends (name, key, type) VALUES (?, ?, ?)",
-                (name, key, type_),
+                "INSERT OR IGNORE INTO backend_instances (name, key) VALUES (?, ?)",
+                (name, key),
             )
             if cur.rowcount:
                 return key
 
 
-def _register_schema(dsn: str, ns: BackendNamespace, schema: BackendSchema) -> None:
-    """Create a backend's tables and drop an instance's rows whose nodes went
-    away meanwhile.
+def _register_schema(
+    dsn: str, name: str, ns: BackendNamespace, schema: BackendSchema
+) -> None:
+    """Create a backend's tables, bind instance *name* to them, and drop its
+    rows whose nodes went away meanwhile.
 
     Offline ``gc`` runs without loading backends, so it cannot clean their rows.
 
     Raises:
-        SchemaVersionError: If the backend's tables have another version.
+        SchemaVersionError: If the backend's tables have another version, or
+            *name* holds rows of another backend's tables.
     """
     with _read_write(dsn) as con:
+        with closing(
+            con.execute("SELECT schema FROM backend_instances WHERE name = ?", (name,))
+        ) as cur:
+            bound = cur.fetchone()["schema"]
+        if bound is not None and bound != schema.name:
+            raise SchemaVersionError(
+                f"backend {name!r} holds rows of backend schema {bound!r},"
+                f" not {schema.name!r}; drop it to change its backend"
+            )
         with closing(
             con.execute(
                 "SELECT version FROM backend_schemas WHERE name = ?", (schema.name,)
@@ -326,6 +325,11 @@ def _register_schema(dsn: str, ns: BackendNamespace, schema: BackendSchema) -> N
                 "INSERT INTO backend_schemas (name, version) VALUES (?, ?)",
                 (schema.name, schema.version),
             )
+        if bound is None:
+            con.execute(
+                "UPDATE backend_instances SET schema = ? WHERE name = ?",
+                (schema.name, name),
+            )
         schema.forget_orphans(con, ns)
 
 
@@ -334,7 +338,7 @@ def _owner_of(dsn: str, node_id: NodeId) -> str | None:
         with closing(
             con.execute(
                 """
-                SELECT b.name FROM node_ids i JOIN backends b ON b.key = i.backend
+                SELECT b.name FROM node_ids i JOIN backend_instances b ON b.key = i.instance
                 WHERE i.id = ?
                 """,
                 (str(node_id),),
@@ -347,7 +351,7 @@ def _owner_of(dsn: str, node_id: NodeId) -> str | None:
 def _claim_id(con: sqlite3.Connection, node_id: NodeId, instance: _Instance) -> None:
     """Give a node minted by its backend (``NodeIdMap.mint``) its map row."""
     con.execute(
-        "INSERT OR IGNORE INTO node_ids (id, backend, native) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO node_ids (id, instance, native) VALUES (?, ?, ?)",
         (str(node_id), instance.ns.key, str(node_id)),
     )
 
@@ -483,20 +487,20 @@ def _mark_enrichment_pending(
             _claim_id(con, node_id, owner)
         con.execute(
             """
-            INSERT INTO pending_enrichment (node_id, backend) VALUES (?, ?)
-            ON CONFLICT(node_id) DO UPDATE SET backend = excluded.backend
+            INSERT INTO pending_enrichment (node_id, instance) VALUES (?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET instance = excluded.instance
             """,
-            (str(node_id), backend or ""),
+            (str(node_id), owner.ns.key if owner is not None else ""),
         )
 
 
-def _get_pending_enrichment(dsn: str, backend: str | None) -> list[NodeId]:
+def _get_pending_enrichment(dsn: str, key: str) -> list[NodeId]:
     with _read_only(dsn) as con:
         with closing(
             con.execute(
-                "SELECT node_id FROM pending_enrichment WHERE backend = ?"
+                "SELECT node_id FROM pending_enrichment WHERE instance = ?"
                 " ORDER BY node_id",
-                (backend or "",),
+                (key,),
             )
         ) as cur:
             return [NodeId(row["node_id"]) for row in cur.fetchall()]
@@ -721,7 +725,7 @@ _GC_CREATE_SQL = """
         JOIN reachable r ON n.parent_id = r.node_id
         WHERE r.owner IS NULL
            OR EXISTS (
-               SELECT 1 FROM node_ids i WHERE i.id = n.id AND i.backend = r.owner
+               SELECT 1 FROM node_ids i WHERE i.id = n.id AND i.instance = r.owner
            )
     )
     SELECT id AS node_id FROM nodes
@@ -745,7 +749,7 @@ def cleanup_dangling_nodes(dsn: str, *, mounts: Mapping[str, str] | None = None)
         con.executemany(
             """
             INSERT INTO temp._owners (name, key) VALUES
-                (?, COALESCE((SELECT key FROM backends WHERE name = ?), ''))
+                (?, COALESCE((SELECT key FROM backend_instances WHERE name = ?), ''))
             """,
             list((mounts or {}).items()),
         )
@@ -776,7 +780,7 @@ def cleanup_dangling_nodes(dsn: str, *, mounts: Mapping[str, str] | None = None)
     return count
 
 
-def registered_backends(dsn: str) -> list[str]:
+def registered_instances(dsn: str) -> list[str]:
     """Names of the instances registered in database *dsn*; none if it is new.
 
     Reads without creating or checking the schema, so command-line parsing can
@@ -786,7 +790,9 @@ def registered_backends(dsn: str) -> list[str]:
         return []
     try:
         with _read_only(dsn) as con:
-            with closing(con.execute("SELECT name FROM backends ORDER BY name")) as cur:
+            with closing(
+                con.execute("SELECT name FROM backend_instances ORDER BY name")
+            ) as cur:
                 return [str(row["name"]) for row in cur]
     except sqlite3.Error:
         return []
@@ -794,7 +800,7 @@ def registered_backends(dsn: str) -> list[str]:
 
 def _instance_key(con: sqlite3.Connection, name: str) -> str:
     with closing(
-        con.execute("SELECT key FROM backends WHERE name = ?", (name,))
+        con.execute("SELECT key FROM backend_instances WHERE name = ?", (name,))
     ) as cur:
         row = cur.fetchone()
     if row is None:
@@ -803,7 +809,7 @@ def _instance_key(con: sqlite3.Connection, name: str) -> str:
 
 
 def _backend_tables(con: sqlite3.Connection) -> list[str]:
-    """Backend tables: those outside the core with a ``backend`` column (see
+    """Backend tables: those outside the core with an ``instance`` column (see
     ``BackendSchema``)."""
     with closing(
         con.execute(
@@ -811,7 +817,7 @@ def _backend_tables(con: sqlite3.Connection) -> list[str]:
             SELECT m.name FROM sqlite_master m
             WHERE m.type = 'table'
               AND EXISTS (
-                SELECT 1 FROM pragma_table_info(m.name) WHERE name = 'backend'
+                SELECT 1 FROM pragma_table_info(m.name) WHERE name = 'instance'
               )
             ORDER BY m.name
             """
@@ -827,7 +833,7 @@ def _forget_instance(con: sqlite3.Connection, name: str, key: str) -> int:
     Returns the number of nodes removed. Clients do not cascade removals, so
     each node gets its own tombstone.
     """
-    owned_sql = "SELECT id FROM node_ids WHERE backend = ?"
+    owned_sql = "SELECT id FROM node_ids WHERE instance = ?"
     with closing(
         con.execute(
             f"SELECT COUNT(*) AS n FROM nodes WHERE id IN ({owned_sql})", (key,)
@@ -841,12 +847,12 @@ def _forget_instance(con: sqlite3.Connection, name: str, key: str) -> int:
     )
     con.execute(f"DELETE FROM nodes WHERE id IN ({owned_sql})", (key,))
     con.execute(
-        f"DELETE FROM pending_enrichment WHERE backend = ? OR node_id IN ({owned_sql})",
-        (name, key),
+        f"DELETE FROM pending_enrichment WHERE instance = ? OR node_id IN ({owned_sql})",
+        (key, key),
     )
     for table in _backend_tables(con):
         quoted = table.replace('"', '""')
-        con.execute(f'DELETE FROM "{quoted}" WHERE backend = ?', (key,))
+        con.execute(f'DELETE FROM "{quoted}" WHERE instance = ?', (key,))
     return count
 
 
@@ -861,8 +867,8 @@ def drop_backend(dsn: str, name: str) -> int:
     with _read_write(dsn) as con:
         key = _instance_key(con, name)
         count = _forget_instance(con, name, key)
-        con.execute("DELETE FROM node_ids WHERE backend = ?", (key,))
-        con.execute("DELETE FROM backends WHERE name = ?", (name,))
+        con.execute("DELETE FROM node_ids WHERE instance = ?", (key,))
+        con.execute("DELETE FROM backend_instances WHERE name = ?", (name,))
     return count
 
 
@@ -898,8 +904,8 @@ def _release_reassigned_mounts(
                 con.execute(
                     """
                     SELECT n.id FROM nodes n JOIN node_ids i ON i.id = n.id
-                    WHERE n.parent_id = ? AND i.backend IS NOT
-                        (SELECT key FROM backends WHERE name = ?)
+                    WHERE n.parent_id = ? AND i.instance IS NOT
+                        (SELECT key FROM backend_instances WHERE name = ?)
                     """,
                     (str(mount), backend),
                 )
@@ -1022,16 +1028,12 @@ class MirrorStore:
         for backend, schema in self._initial_schemas.items():
             await self.register_schema(backend, schema)
 
-    async def register_backend(self, backend: str, type_: str = "") -> str:
-        """Register instance *backend* of backend *type_*; returns its key.
-
-        Raises:
-            SchemaVersionError: If *backend* was registered with another type.
-        """
+    async def register_instance(self, backend: str) -> str:
+        """Register instance *backend*; returns its key."""
         instance = self._instances.get(backend)
         if instance is not None:
             return instance.ns.key
-        key = await self._off_main(_register_backend, self._dsn, backend, type_)
+        key = await self._off_main(_register_instance, self._dsn, backend)
         self._instances[backend] = _Instance(ns=BackendNamespace(key))
         return key
 
@@ -1043,11 +1045,12 @@ class MirrorStore:
         Returns the namespace that scopes the instance's rows.
 
         Raises:
-            SchemaVersionError: If the backend's tables have another version.
+            SchemaVersionError: If the backend's tables have another version,
+                or *backend* holds rows of another backend's tables.
         """
-        await self.register_backend(backend)
+        await self.register_instance(backend)
         ns = self._instances[backend].ns
-        await self._off_main(_register_schema, self._dsn, ns, schema)
+        await self._off_main(_register_schema, self._dsn, backend, ns, schema)
         self._instances[backend] = _Instance(ns=ns, schema=schema)
         return ns
 
@@ -1055,9 +1058,9 @@ class MirrorStore:
         """The namespace of registered instance *backend*."""
         return self._instances[backend].ns
 
-    async def registered_backends(self) -> list[str]:
+    async def registered_instances(self) -> list[str]:
         """Names of every instance this database has seen, configured or not."""
-        return await self._off_main(registered_backends, self._dsn)
+        return await self._off_main(registered_instances, self._dsn)
 
     async def release_reassigned_mounts(self, mounts: Mapping[NodeId, str]) -> int:
         """Remove what other instances left under mounts now served by another.
@@ -1123,7 +1126,14 @@ class MirrorStore:
         )
 
     async def get_pending_enrichment(self, backend: str | None = None) -> list[NodeId]:
-        return await self._off_main(_get_pending_enrichment, self._dsn, backend)
+        """Withheld nodes of instance *backend*, or of no instance if None."""
+        if backend is None:
+            key = ""
+        elif (instance := self._instances.get(backend)) is not None:
+            key = instance.ns.key
+        else:
+            return []
+        return await self._off_main(_get_pending_enrichment, self._dsn, key)
 
     async def resolve_path_to_id(self, segments: list[str]) -> NodeId | None:
         return await self._off_main(_resolve_path_to_id, self._dsn, segments)

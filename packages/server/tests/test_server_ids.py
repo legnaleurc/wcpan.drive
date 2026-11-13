@@ -24,10 +24,10 @@ class TestNodeIds(IsolatedAsyncioTestCase):
         self.mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
         await self.mirror.ensure_schema()
         self.a = NodeIds(
-            mirror=self.mirror, key=await self.mirror.register_backend("a")
+            mirror=self.mirror, key=await self.mirror.register_instance("a")
         )
         self.b = NodeIds(
-            mirror=self.mirror, key=await self.mirror.register_backend("b")
+            mirror=self.mirror, key=await self.mirror.register_instance("b")
         )
 
     async def asyncTearDown(self) -> None:

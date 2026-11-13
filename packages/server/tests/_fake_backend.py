@@ -24,7 +24,7 @@ class FakeSchema:
 
     def ensure_schema(self, con: sqlite3.Connection) -> None:
         con.execute(
-            "CREATE TABLE IF NOT EXISTS fake_backend (backend TEXT NOT NULL, x INTEGER)"
+            "CREATE TABLE IF NOT EXISTS fake_backend (instance TEXT NOT NULL, x INTEGER)"
         )
 
     def bind_locator(

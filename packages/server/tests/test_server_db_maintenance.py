@@ -16,7 +16,7 @@ from wcpan.drive.server.services.mirror import (
     cleanup_dangling_nodes,
     drop_backend,
     rebuild_backend,
-    registered_backends,
+    registered_instances,
     reset_change_history,
 )
 from wcpan.drive.server.services.off_main import OffMainService
@@ -342,7 +342,7 @@ class TestPerBackendGc(IsolatedAsyncioTestCase):
         self.mirror = _make_mirror(self.db_path, self.pool)
         await self.mirror.ensure_schema()
         self.keys = {
-            name: await self.mirror.register_backend(name) for name in ("a", "b")
+            name: await self.mirror.register_instance(name) for name in ("a", "b")
         }
         await self.mirror.bulk_upsert_nodes(
             [
@@ -372,7 +372,7 @@ class TestPerBackendGc(IsolatedAsyncioTestCase):
         con = sqlite3.connect(self.db_path)
         try:
             con.executemany(
-                "INSERT INTO node_ids (id, backend, native) VALUES (?, ?, ?)",
+                "INSERT INTO node_ids (id, instance, native) VALUES (?, ?, ?)",
                 [
                     (node_id, self.keys[name], node_id)
                     for name, ids in owned.items()
@@ -428,7 +428,7 @@ class _Schema:
     version = 1
 
     def ensure_schema(self, con: sqlite3.Connection) -> None:
-        con.execute("CREATE TABLE IF NOT EXISTS state (backend TEXT NOT NULL)")
+        con.execute("CREATE TABLE IF NOT EXISTS state (instance TEXT NOT NULL)")
 
     def bind_locator(self, *_: object) -> None:
         pass
@@ -438,7 +438,7 @@ class _Schema:
 
     def forget_orphans(self, con: sqlite3.Connection, ns: BackendNamespace) -> None:
         # stands in for backend state written while serving
-        con.execute("INSERT INTO state (backend) VALUES (?)", (ns.key,))
+        con.execute("INSERT INTO state (instance) VALUES (?)", (ns.key,))
 
 
 class TestLifecycle(IsolatedAsyncioTestCase):
@@ -486,7 +486,7 @@ class TestLifecycle(IsolatedAsyncioTestCase):
             con.close()
 
     def _state(self) -> list[str]:
-        return sorted(str(row[0]) for row in self._query("SELECT backend FROM state"))
+        return sorted(str(row[0]) for row in self._query("SELECT instance FROM state"))
 
     async def _removed(self) -> set[str]:
         changes, _, _ = await self.mirror.get_changes_since(self.cursor, 1000)
@@ -502,12 +502,12 @@ class TestLifecycle(IsolatedAsyncioTestCase):
         self.assertIsNone(await self.mirror.get_node_by_id(self.a_dir))
         self.assertIsNotNone(await self.mirror.get_node_by_id(self.b_file))
         self.assertIsNotNone(await self.mirror.get_node_by_id("m-docs"))
-        self.assertEqual(registered_backends(self.db_path), ["b"])
+        self.assertEqual(registered_instances(self.db_path), ["b"])
         self.assertEqual(self._state(), [self.ns["b"].key])
         self.assertEqual(await self.mirror.get_pending_enrichment("a"), [])
         self.assertEqual(
             self._query(
-                f"SELECT COUNT(*) FROM node_ids WHERE backend = '{self.ns['a'].key}'"
+                f"SELECT COUNT(*) FROM node_ids WHERE instance = '{self.ns['a'].key}'"
             ),
             [(0,)],
         )
@@ -519,7 +519,7 @@ class TestLifecycle(IsolatedAsyncioTestCase):
         # then
         self.assertEqual(count, 2)
         self.assertEqual(await self._removed(), {self.a_dir, self.a_file})
-        self.assertEqual(registered_backends(self.db_path), ["a", "b"])
+        self.assertEqual(registered_instances(self.db_path), ["a", "b"])
         self.assertEqual(self._state(), [self.ns["b"].key])
 
         # when: the instance starts again
@@ -570,5 +570,5 @@ class TestLifecycle(IsolatedAsyncioTestCase):
 
     def test_registered_backends_of_a_missing_database(self) -> None:
         missing = self.db_path + ".missing"
-        self.assertEqual(registered_backends(missing), [])
+        self.assertEqual(registered_instances(missing), [])
         self.assertFalse(os.path.exists(missing))

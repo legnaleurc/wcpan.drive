@@ -39,7 +39,7 @@ from .services.mirror import (
     cleanup_dangling_nodes,
     drop_backend,
     rebuild_backend,
-    registered_backends,
+    registered_instances,
     reset_change_history,
 )
 from .types import ServerConfig
@@ -229,7 +229,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     except (ConfigVersionError, ValueError) as e:
         _fail(e)
         return
-    args = _parser(config, registered_backends(config.database_url)).parse_args(argv)
+    args = _parser(config, registered_instances(config.database_url)).parse_args(argv)
 
     try:
         if args.command == "gc":

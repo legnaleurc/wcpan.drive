@@ -570,7 +570,7 @@ The README only says node ID collisions "are not expected".
 
 Two changes fix this separately:
 
-- Public node IDs are minted by the core and mapped to `(backend, native ID)`,
+- Public node IDs are minted by the core and mapped to `(instance, native ID)`,
   so they are unique by construction and carry no backend spelling.
 - Backend-owned state is scoped by backend instance, so its lookups cannot see
   another instance's rows.
@@ -588,7 +588,7 @@ in one transaction.
 
 ### Identity map
 
-The core owns `node_ids(id PRIMARY KEY, backend, native, UNIQUE(backend,
+The core owns `node_ids(id PRIMARY KEY, instance, native, UNIQUE(instance,
 native))`. The root (`_`) and mount IDs are core IDs without map rows.
 
 ID spaces: every ID a backend exchanges with the core is public, in
@@ -653,23 +653,25 @@ The README note "collisions are not expected" becomes a guarantee.
 ### Backend tables
 
 Backend-owned tables (`BackendSchema`: locators, entries, checkpoints) have
-fixed names and are shared by every instance of the backend. Each carries a
-`backend` column holding the instance's registry key. The registry records, per
-instance: name, type, and key (an opaque `[0-9a-f]` token assigned the first
-time the instance is seen, as mount IDs are). Renaming an instance in the config
-makes it a new backend.
+fixed names and are shared by every instance of the backend. Each carries an
+`instance` column holding the instance's registry key. The registry
+(`backend_instances`) records, per instance: name, key (an opaque `[0-9a-f]`
+token assigned the first time the instance is seen, as mount IDs are), and the
+`BackendSchema.name` of the tables holding its rows, bound when the backend first
+registers them; an instance whose backend changes is refused until dropped.
+Renaming an instance in the config makes it a new backend.
 
 - The hooks (`bind_locator`, `forget_nodes`, `forget_orphans`) receive the
   instance's namespace (its key); backend stores are built per instance, so
   they hold it and bind it into every query.
 - Backend rows stay keyed by public node ID, which is unique across instances.
   Lookups by `file_id` and `identity` and mount checkpoints are keyed by
-  `(backend, ...)`, so they read only the instance's own rows.
+  `(instance, ...)`, so they read only the instance's own rows.
 - Backend schema versions are per backend (`BackendSchema.name`, recorded in
   `backend_schemas`), since its instances share the tables; they are checked at
   startup like the core `user_version`, and a mismatch requires a new database.
 - The core finds backend tables without loading backends: every non-core table
-  with a `backend` column. `drop` and `rebuild` delete the instance's rows from
+  with an `instance` column. `drop` and `rebuild` delete the instance's rows from
   them.
 
 Per-instance tables (`<name>_<key>`) were implemented first and replaced: they
@@ -779,9 +781,9 @@ state where two Synology instances already collide.
      observation or withheld enrichment record, in that transaction
      (`_claim_id`), so a filesystem scan does not pay one transaction per new
      file.
-   - The registry key is 8 hex characters and fills the `backend` column of
+   - The registry key is 8 hex characters and fills the `instance` column of
      backend tables; `register_schema` returns the namespace holding it. The registry also refuses a change of an instance's backend
-     type.
+     schema.
    - `gc` is one pass: reachability carries the owner of each configured mount,
      and a mount not in the config keeps everything below it. Backend rows of
      removed nodes are still dropped when the instance next registers
@@ -794,7 +796,7 @@ state where two Synology instances already collide.
      backend; instances registered but not configured are valid names. `drop`
      refuses a configured instance and `rebuild` an unconfigured one.
    - Both commands delete the instance's rows from every backend table (a
-     non-core table with a `backend` column). Backend tables are shared, so
+     non-core table with an `instance` column). Backend tables are shared, so
      `rebuild` cannot recover from a backend schema version mismatch; that
      needs a new database.
    - Mount reassignment runs at every start, before backends are entered:
