@@ -30,7 +30,6 @@ from wcpan.drive.server.handlers.upload import (
     patch_upload_chunk,
 )
 from wcpan.drive.server.keys import (
-    CHANGE_SERVICE_KEY,
     MIRROR_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
@@ -179,7 +178,6 @@ def _make_app(
     app[OFF_MAIN_KEY] = off_main
     app[WRITE_QUEUE_KEY] = wq
     app[SYNOLOGY_PATH_KEY] = syno_paths
-    app[CHANGE_SERVICE_KEY] = node_sync
     app[SYNOLOGY_DRIVE_API_KEY] = drive_api
     uploader = SynologyUploader(
         drive_api=drive_api,

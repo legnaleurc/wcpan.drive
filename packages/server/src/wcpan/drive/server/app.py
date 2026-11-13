@@ -45,7 +45,6 @@ from .handlers.upload import (
     patch_upload_chunk,
 )
 from .keys import (
-    CHANGE_SERVICE_KEY,
     CONFIG_KEY,
     MIRROR_KEY,
     NODE_OPERATIONS_KEY,
@@ -231,7 +230,6 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             app[MIRROR_KEY] = core.mirror
             app[OFF_MAIN_KEY] = off_main
             app[WRITE_QUEUE_KEY] = core.write_queue
-            app[CHANGE_SERVICE_KEY] = core.node_sync
 
             await ensure_mount_nodes(
                 core.mounts, mirror=core.mirror, node_sync=core.node_sync

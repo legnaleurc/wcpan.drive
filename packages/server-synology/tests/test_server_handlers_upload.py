@@ -22,7 +22,6 @@ from wcpan.drive.server.handlers.upload import (
     patch_upload_chunk,
 )
 from wcpan.drive.server.keys import (
-    CHANGE_SERVICE_KEY,
     MIRROR_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
@@ -125,7 +124,6 @@ class _UploadTestCase(DecoyTestCase):
         app[OFF_MAIN_KEY] = off_main  # type: ignore[assignment]
         app[MIRROR_KEY] = mirror
         app[WRITE_QUEUE_KEY] = wq
-        app[CHANGE_SERVICE_KEY] = node_sync
         uploader = SynologyUploader(
             drive_api=self.drive_api,
             syno_paths=syno_paths,

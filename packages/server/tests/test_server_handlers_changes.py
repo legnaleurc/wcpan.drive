@@ -14,7 +14,6 @@ from wcpan.drive.server.handlers.changes import (
     get_root,
 )
 from wcpan.drive.server.keys import (
-    CHANGE_SERVICE_KEY,
     MIRROR_KEY,
     OFF_MAIN_KEY,
     READY_KEY,
@@ -95,13 +94,6 @@ def _make_app(mirror: _FakeMirror) -> web.Application:
     app[MIRROR_KEY] = mirror
     app[OFF_MAIN_KEY] = off_main
     app[WRITE_QUEUE_KEY] = wq
-    app[CHANGE_SERVICE_KEY] = NodeSyncService(
-        mirror=mirror,
-        write_queue=wq,
-        off_main=off_main,
-        mounts={},
-        metadata_queue=asyncio.Queue(),
-    )  # type: ignore[arg-type]
 
     app.router.add_get("/api/v1/cursor", get_cursor)
     app.router.add_get("/api/v1/root", get_root)

@@ -22,7 +22,6 @@ from wcpan.drive.server.handlers.nodes import (
     upload_node,
 )
 from wcpan.drive.server.keys import (
-    CHANGE_SERVICE_KEY,
     MIRROR_KEY,
     NODE_OPERATIONS_KEY,
     OFF_MAIN_KEY,
@@ -238,7 +237,7 @@ class _NodesTestCase(DecoyTestCase):
         app[MIRROR_KEY] = mirror
         app[OFF_MAIN_KEY] = off_main
         app[WRITE_QUEUE_KEY] = wq
-        app[CHANGE_SERVICE_KEY] = node_sync
+        self.node_sync = node_sync
         app[NODE_OPERATIONS_KEY] = SynologyNodeOperations(
             drive_api=self.drive_api,
             syno_paths=syno_paths,
@@ -437,7 +436,7 @@ class TestUpdateNode(_NodesTestCase):
         # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
-        node_sync = app[CHANGE_SERVICE_KEY]
+        node_sync = self.node_sync
         self.decoy.when(await self.drive_api.get_file(_N1)).then_return(
             {
                 "file_id": "n2",
