@@ -201,12 +201,29 @@ def _with_schema(instances: _Instances) -> list[_Instance]:
     return [i for i in instances.values() if i.schema is not None]
 
 
-def _instance_for(instances: _Instances, backend: str | None) -> _Instance | None:
-    if backend is not None:
-        return instances.get(backend)
-    # An untagged observation is unambiguous with a single backend schema.
-    candidates = _with_schema(instances)
-    return candidates[0] if len(candidates) == 1 else None
+def _observer_of(
+    instances: _Instances, observation: NodeObservation
+) -> _Instance | None:
+    """The registered instance that made *observation*; None for a core node.
+
+    Raises:
+        ValueError: If the observation names an unregistered instance, or
+            carries a locator without naming its instance.
+    """
+    if observation.backend is None:
+        if observation.locator is not None:
+            raise ValueError(
+                f"Untagged observation of {observation.record.id} has a locator"
+            )
+        return None
+    return _registered(instances, observation.backend)
+
+
+def _registered(instances: _Instances, backend: str) -> _Instance:
+    instance = instances.get(backend)
+    if instance is None:
+        raise ValueError(f"Backend instance {backend!r} is not registered")
+    return instance
 
 
 def _new_epoch() -> str:
@@ -457,19 +474,13 @@ def _apply_observations(
                     "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
                     (str(record.id),),
                 )
-            if observation.backend is not None:
-                owner = instances.get(observation.backend)
-                if owner is not None:
-                    _claim_id(con, record.id, owner)
-            instance = _instance_for(instances, observation.backend)
-            if (
-                observation.locator is not None
-                and instance is not None
-                and instance.schema is not None
-            ):
-                instance.schema.bind_locator(
-                    con, instance.ns, record.id, observation.locator
-                )
+            owner = _observer_of(instances, observation)
+            if owner is not None:
+                _claim_id(con, record.id, owner)
+                if observation.locator is not None and owner.schema is not None:
+                    owner.schema.bind_locator(
+                        con, owner.ns, record.id, observation.locator
+                    )
             con.execute(
                 "DELETE FROM pending_enrichment WHERE node_id = ?", (str(record.id),)
             )
@@ -478,19 +489,18 @@ def _apply_observations(
 
 
 def _mark_enrichment_pending(
-    dsn: str, node_id: NodeId, backend: str | None, instances: _Instances
+    dsn: str, node_id: NodeId, backend: str, instances: _Instances
 ) -> None:
+    owner = _registered(instances, backend)
     with _read_write(dsn) as con:
         # A withheld node keeps its ID, and stays routable, before it is published.
-        owner = instances.get(backend) if backend is not None else None
-        if owner is not None:
-            _claim_id(con, node_id, owner)
+        _claim_id(con, node_id, owner)
         con.execute(
             """
             INSERT INTO pending_enrichment (node_id, instance) VALUES (?, ?)
             ON CONFLICT(node_id) DO UPDATE SET instance = excluded.instance
             """,
-            (str(node_id), owner.ns.key if owner is not None else ""),
+            (str(node_id), owner.ns.key),
         )
 
 
@@ -1118,22 +1128,22 @@ class MirrorStore:
             _apply_observations, self._dsn, observations, self._instances
         )
 
-    async def mark_enrichment_pending(
-        self, node_id: NodeId, backend: str | None = None
-    ) -> None:
+    async def mark_enrichment_pending(self, node_id: NodeId, backend: str) -> None:
+        """Withhold *node_id*, observed by instance *backend*, until a retry.
+
+        Raises:
+            ValueError: If *backend* is not registered.
+        """
         await self._off_main(
             _mark_enrichment_pending, self._dsn, node_id, backend, self._instances
         )
 
-    async def get_pending_enrichment(self, backend: str | None = None) -> list[NodeId]:
-        """Withheld nodes of instance *backend*, or of no instance if None."""
-        if backend is None:
-            key = ""
-        elif (instance := self._instances.get(backend)) is not None:
-            key = instance.ns.key
-        else:
+    async def get_pending_enrichment(self, backend: str) -> list[NodeId]:
+        """Withheld nodes of instance *backend*; none if it is not registered."""
+        instance = self._instances.get(backend)
+        if instance is None:
             return []
-        return await self._off_main(_get_pending_enrichment, self._dsn, key)
+        return await self._off_main(_get_pending_enrichment, self._dsn, instance.ns.key)
 
     async def resolve_path_to_id(self, segments: list[str]) -> NodeId | None:
         return await self._off_main(_resolve_path_to_id, self._dsn, segments)

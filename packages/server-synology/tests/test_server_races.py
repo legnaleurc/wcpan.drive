@@ -85,7 +85,9 @@ def _node(
 
 
 def _obs(record: NodeRecord) -> NodeObservation:
-    return NodeObservation(record=record, locator=SynologyLocator(record.id))
+    return NodeObservation(
+        record=record, locator=SynologyLocator(record.id), backend="synology"
+    )
 
 
 def _syno_item(
@@ -148,7 +150,7 @@ class _RaceTestCase(DecoyTestCase):
             off_main=off_main,
             mounts={},
             metadata_queue=self.metadata_queue,
-        )
+        ).for_backend("synology")
         self.tasks = [
             asyncio.create_task(write_worker(self.write_queue, noop_after_write)),
             asyncio.create_task(
@@ -566,11 +568,13 @@ class TestPendingEnrichment(_RaceTestCase):
         # then
         self.assertEqual(await self.mirror.get_node_by_id(self.old.id), self.old)
         self.assertEqual(await self.mirror.get_cursor(), self.cursor)
-        self.assertEqual(await self.mirror.get_pending_enrichment(), [self.old.id])
+        self.assertEqual(
+            await self.mirror.get_pending_enrichment("synology"), [self.old.id]
+        )
 
     async def test_retry_publishes_and_clears_pending(self) -> None:
         # given
-        await self.mirror.mark_enrichment_pending(self.old.id)
+        await self.mirror.mark_enrichment_pending(self.old.id, "synology")
         self.fail_enrichment(failing=False)
 
         async def locate(_node_id: NodeId) -> NodeObservation:
@@ -584,12 +588,12 @@ class TestPendingEnrichment(_RaceTestCase):
         stored = await self.mirror.get_node_by_id(self.old.id)
         assert stored is not None
         self.assertEqual((stored.name, stored.width), ("renamed", 20))
-        self.assertEqual(await self.mirror.get_pending_enrichment(), [])
+        self.assertEqual(await self.mirror.get_pending_enrichment("synology"), [])
 
     async def test_retry_of_missing_node_removes_it(self) -> None:
         # given
-        await self.mirror.mark_enrichment_pending(self.old.id)
-        await self.mirror.mark_enrichment_pending(NodeId("never-published"))
+        await self.mirror.mark_enrichment_pending(self.old.id, "synology")
+        await self.mirror.mark_enrichment_pending(NodeId("never-published"), "synology")
 
         async def locate(_node_id: NodeId) -> None:
             return None
@@ -600,11 +604,11 @@ class TestPendingEnrichment(_RaceTestCase):
 
         # then
         self.assertIsNone(await self.mirror.get_node_by_id(self.old.id))
-        self.assertEqual(await self.mirror.get_pending_enrichment(), [])
+        self.assertEqual(await self.mirror.get_pending_enrichment("synology"), [])
 
     async def test_undecided_retry_keeps_pending(self) -> None:
         # given
-        await self.mirror.mark_enrichment_pending(self.old.id)
+        await self.mirror.mark_enrichment_pending(self.old.id, "synology")
 
         async def locate(_node_id: NodeId) -> None:
             raise LocateUndecidedError("down")
@@ -614,7 +618,9 @@ class TestPendingEnrichment(_RaceTestCase):
         await self.drain()
 
         # then
-        self.assertEqual(await self.mirror.get_pending_enrichment(), [self.old.id])
+        self.assertEqual(
+            await self.mirror.get_pending_enrichment("synology"), [self.old.id]
+        )
 
     async def test_stale_failure_is_not_marked_after_newer_apply(self) -> None:
         # given
@@ -639,4 +645,4 @@ class TestPendingEnrichment(_RaceTestCase):
         await self.drain()
 
         # then
-        self.assertEqual(await self.mirror.get_pending_enrichment(), [])
+        self.assertEqual(await self.mirror.get_pending_enrichment("synology"), [])

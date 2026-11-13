@@ -208,6 +208,33 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         self.assertEqual(await self.mirror.owner_of(NodeId("withheld")), "b")
         self.assertIsNone(await self.mirror.owner_of(mount_id("one")))
 
+    async def test_unregistered_backend_cannot_withhold(self) -> None:
+        # when / then
+        with self.assertRaises(ValueError):
+            await self.mirror.mark_enrichment_pending(NodeId("fx"), "unknown")
+        self.assertEqual(await self.mirror.get_pending_enrichment("unknown"), [])
+
+    async def test_observation_of_unregistered_backend_is_refused(self) -> None:
+        # given
+        observation = NodeObservation(
+            record=_file("fx", mount_id("one")), locator=None, backend="unknown"
+        )
+        # when / then
+        with self.assertRaises(ValueError):
+            await self.mirror.apply_observations([observation])
+        self.assertIsNone(await self.mirror.get_node_by_id(NodeId("fx")))
+
+    async def test_untagged_locator_is_refused(self) -> None:
+        # given
+        observation = NodeObservation(
+            record=_file("fx", mount_id("one")), locator=BackendLocator("lx")
+        )
+        # when / then
+        with self.assertRaises(ValueError):
+            await self.mirror.apply_observations([observation])
+        self.assertIsNone(await self.mirror.get_node_by_id(NodeId("fx")))
+        self.assertEqual((self.a.bound, self.b.bound), ([], []))
+
     async def test_instances_have_their_own_namespaces(self) -> None:
         a = self.mirror.namespace("a")
         b = self.mirror.namespace("b")

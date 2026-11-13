@@ -52,7 +52,7 @@ class TestScannerWriteBack(DecoyTestCase):
                 off_main=off_main,
                 mounts={},
                 metadata_queue=asyncio.Queue(),
-            )
+            ).for_backend("synology")
             drain = asyncio.create_task(self._drain_writes(q))
             try:
                 with patch.object(

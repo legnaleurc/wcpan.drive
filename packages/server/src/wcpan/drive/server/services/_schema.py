@@ -33,9 +33,8 @@ CREATE INDEX IF NOT EXISTS ix_changes_node_id ON changes(node_id);
 -- complete version (or stays unpublished) until a retry or newer observation.
 CREATE TABLE IF NOT EXISTS pending_enrichment (
     node_id  TEXT PRIMARY KEY,
-    -- Key of the backend instance whose observation was withheld; empty if
-    -- the observation named none.
-    instance TEXT NOT NULL DEFAULT ''
+    -- Key of the backend instance whose observation was withheld.
+    instance TEXT NOT NULL
 );
 
 -- Server-wide values. ``epoch`` names this change history: it is random when

@@ -47,6 +47,7 @@ def _obs(record: NodeRecord, locator: str | None) -> NodeObservation:
     return NodeObservation(
         record=record,
         locator=SynologyLocator(locator) if locator is not None else None,
+        backend="synology",
     )
 
 

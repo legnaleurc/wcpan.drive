@@ -144,7 +144,7 @@ class TestNewFolders(DecoyTestCase):
             off_main=off_main,
             mounts={},
             metadata_queue=mq,
-        )
+        ).for_backend("synology")
         for task in (
             asyncio.create_task(_slow_drain(q)),
             asyncio.create_task(

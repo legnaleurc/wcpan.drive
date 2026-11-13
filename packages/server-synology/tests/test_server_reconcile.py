@@ -57,7 +57,7 @@ async def _reconcile_with_worker(
             off_main=off_main,
             mounts={},
             metadata_queue=mq,
-        )
+        ).for_backend("synology")
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
             registry=MountRegistry(mounts=Mounts.from_sources(mounts), root_ids={}),

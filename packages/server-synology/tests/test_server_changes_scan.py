@@ -177,7 +177,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)
@@ -269,7 +269,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)
@@ -356,7 +356,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)
@@ -441,7 +441,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)
@@ -528,7 +528,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)
@@ -616,7 +616,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)
@@ -698,6 +698,7 @@ class TestDeferredScan(DecoyTestCase):
                                 "perm:dirF", "F", mount_id("a"), is_directory=True
                             ),
                             locator=SynologyLocator("dirF"),
+                            backend="synology",
                         )
                     ]
                 )
@@ -734,7 +735,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)
@@ -815,7 +816,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)
@@ -917,7 +918,7 @@ class TestDeferredScan(DecoyTestCase):
                     off_main=off_main,
                     mounts={},
                     metadata_queue=mq,
-                )
+                ).for_backend("synology")
                 drain = asyncio.create_task(self._drain_writes(q))
                 meta_drain = asyncio.create_task(
                     metadata_worker(mq, cs.process_metadata_item)

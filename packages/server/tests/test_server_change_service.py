@@ -117,9 +117,11 @@ class _FakeMirror:
         self._bulk: list[NodeRecord] = []
         self._observations: list[list[NodeRecord]] = []
         self._pending: set[str] = set()
+        self._pending_backends: set[str] = set()
 
-    async def mark_enrichment_pending(self, node_id: str, backend: str | None) -> None:
+    async def mark_enrichment_pending(self, node_id: str, backend: str) -> None:
         self._pending.add(node_id)
+        self._pending_backends.add(backend)
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)
@@ -156,6 +158,16 @@ def _make_service(
     *,
     metadata_queue: asyncio.Queue | None = None,
 ) -> tuple[NodeSyncService, _FakeMirror, asyncio.Queue]:
+    cs, mirror, wq = _make_core_service(mirror, metadata_queue=metadata_queue)
+    return cs.for_backend("b"), mirror, wq
+
+
+def _make_core_service(
+    mirror: _FakeMirror | None = None,
+    *,
+    metadata_queue: asyncio.Queue | None = None,
+) -> tuple[NodeSyncService, _FakeMirror, asyncio.Queue]:
+    """The unscoped service, as the core uses it for its own nodes."""
     mirror = mirror or _FakeMirror()
     wq: asyncio.Queue = asyncio.Queue()
     off_main = _FakeOffMain()
@@ -217,6 +229,32 @@ class TestNodeSyncServiceInit(IsolatedAsyncioTestCase):
         # then
         self.assertEqual(mirror._observations, [])
         self.assertEqual(mirror._pending, {record.id})
+        self.assertEqual(mirror._pending_backends, {"b"})
+
+    async def test_untagged_enrichment_failure_raises(self):
+        # given
+        cs, mirror, wq = _make_core_service()
+        record = _make_record(is_image=True)
+        with patch(
+            "wcpan.drive.server.services.enricher.MediaEnrichService.enrich",
+            new_callable=AsyncMock,
+            side_effect=MediaEnrichmentError(record, Path("/tmp/bad.jpg")),
+        ):
+            # when / then
+            async with cs.observe() as read:
+                with self.assertRaises(ValueError):
+                    await cs.upsert(_obs(record), read=read)
+        self.assertEqual(wq.qsize(), 0)
+        self.assertEqual(mirror._pending, set())
+
+    async def test_untagged_retry_raises(self):
+        # given
+        cs, _, _ = _make_core_service()
+        locate = AsyncMock()
+        # when / then
+        with self.assertRaises(ValueError):
+            await cs.retry_pending_enrichment(locate=locate)
+        locate.assert_not_awaited()
 
 
 class TestNodeSyncServiceDelete(IsolatedAsyncioTestCase):

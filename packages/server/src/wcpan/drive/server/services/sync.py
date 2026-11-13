@@ -225,6 +225,12 @@ class NodeSyncService:
         try:
             enriched = await self._enricher.enrich(record, force_refresh=force_refresh)
         except MediaEnrichmentError as e:
+            if observation.backend is None:
+                # Only backend views observe files; the core's own nodes are
+                # directories and never need enrichment.
+                raise ValueError(
+                    f"Untagged observation of {record.id} needs enrichment"
+                ) from e
             _L.warning(
                 "Withholding node %s (%s) after media enrichment failed at %s",
                 record.id,
@@ -238,7 +244,7 @@ class NodeSyncService:
         return replace(observation, record=enriched)
 
     async def _mark_enrichment_pending(
-        self, node_id: NodeId, backend: str | None, *, read: ReadSeq
+        self, node_id: NodeId, backend: str, *, read: ReadSeq
     ) -> None:
         """Persist retry work unless a later read already observed the node."""
         self._order.hold(read)
@@ -294,6 +300,8 @@ class NodeSyncService:
         longer has is removed, which also clears its entry.
         Used by: scanner, after the startup scan.
         """
+        if self._backend is None:
+            raise ValueError("Only a backend view retries pending enrichment")
         for node_id in await self._mirror.get_pending_enrichment(self._backend):
             async with self.observe() as read:
                 try:
