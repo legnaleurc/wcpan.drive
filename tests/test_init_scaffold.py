@@ -14,7 +14,6 @@ from wcpan.drive.client.config._cfg import (
 from wcpan.drive.server.app import entered_backends, managed_core, managed_off_main
 from wcpan.drive.server.config import parse_config
 from wcpan.drive.server.scaffold import create_config_scaffold as server_scaffold
-from wcpan.drive.server.workers import noop_after_write
 
 
 def _fill(section: dict[str, Any], **values: Any) -> None:
@@ -42,9 +41,7 @@ class TestServerScaffold(IsolatedAsyncioTestCase):
             # when
             async with (
                 managed_off_main() as off_main,
-                managed_core(
-                    config, off_main=off_main, after_write=noop_after_write
-                ) as core,
+                managed_core(config, off_main=off_main) as core,
                 entered_backends(config, core, offline=True) as backends,
             ):
                 # then

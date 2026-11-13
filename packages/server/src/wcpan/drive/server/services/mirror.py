@@ -10,9 +10,6 @@ from typing import Concatenate, Protocol
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.sqlite import (
-    checkpoint as _checkpoint,
-)
-from wcpan.drive.sqlite import (
     initialize as initialize_database,
 )
 from wcpan.drive.sqlite import (
@@ -1136,9 +1133,6 @@ class MirrorStore:
     ) -> R:
         """Run *fn* in one write transaction; call it from the write queue."""
         return await self._off_main(_run_write, self._dsn, fn, args, kwargs)
-
-    async def checkpoint(self) -> None:
-        await self._off_main.untimed(_checkpoint, self._dsn)
 
     async def bulk_upsert_nodes(self, records: list[NodeRecord]) -> None:
         await self._off_main(_bulk_upsert_nodes, self._dsn, records)

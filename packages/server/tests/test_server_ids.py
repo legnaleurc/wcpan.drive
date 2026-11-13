@@ -16,7 +16,6 @@ from wcpan.drive.server.services.mirror import MirrorStore
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.workers import (
     create_write_queue,
-    noop_after_write,
     write_worker,
 )
 
@@ -30,9 +29,7 @@ class TestNodeIds(IsolatedAsyncioTestCase):
         self.mirror = MirrorStore(self.db_path, off_main=OffMainService(pool=self.pool))
         await self.mirror.ensure_schema()
         self.write_queue = create_write_queue()
-        self.worker = asyncio.create_task(
-            write_worker(self.write_queue, noop_after_write)
-        )
+        self.worker = asyncio.create_task(write_worker(self.write_queue))
         self.a = NodeIds(
             mirror=self.mirror,
             write_queue=self.write_queue,

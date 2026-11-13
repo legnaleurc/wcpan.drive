@@ -25,7 +25,6 @@ from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
     metadata_worker,
-    noop_after_write,
     write_worker,
 )
 
@@ -174,7 +173,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
             metadata_queue=mq,
         )
         self.tasks = [
-            asyncio.create_task(write_worker(wq, noop_after_write)),
+            asyncio.create_task(write_worker(wq)),
             asyncio.create_task(
                 metadata_worker(mq, self.node_sync.process_metadata_item)
             ),

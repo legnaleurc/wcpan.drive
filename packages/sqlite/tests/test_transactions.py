@@ -2,7 +2,7 @@ import sqlite3
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from wcpan.drive.sqlite import checkpoint, connect, initialize, read_only, read_write
+from wcpan.drive.sqlite import connect, initialize, read_only, read_write
 
 
 class TransactionTestCase(TestCase):
@@ -14,13 +14,12 @@ class TransactionTestCase(TestCase):
             con.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT)")
             con.execute("INSERT INTO items VALUES (1, 'before')")
 
-    def test_settings_and_checkpoint(self) -> None:
+    def test_settings(self) -> None:
         with connect(self.dsn) as con:
             self.assertEqual(con.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             self.assertEqual(con.execute("PRAGMA synchronous").fetchone()[0], 2)
             self.assertEqual(con.execute("PRAGMA foreign_keys").fetchone()[0], 0)
             self.assertFalse(con.in_transaction)
-        checkpoint(self.dsn)
         with self.assertRaises(sqlite3.ProgrammingError):
             con.execute("SELECT 1")
 

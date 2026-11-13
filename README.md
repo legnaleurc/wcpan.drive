@@ -55,7 +55,7 @@ helpers use `autocommit=True` to disable Python's implicit transaction managemen
 and issue SQL `BEGIN`, `COMMIT`, and `ROLLBACK` explicitly. Callers must not commit,
 roll back, or include transaction commands in schema scripts. Cancelling an async
 caller does not stop work already running in an executor. Schemas, executor
-ownership, and server write-queue/checkpoint scheduling remain package-owned.
+ownership, and the server write queue remain package-owned.
 
 The generic server (`wcpan-drive-server`) holds the mirror, change feed, HTTP
 API, and reconciliation, and defines the contract a storage backend implements.

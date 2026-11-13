@@ -24,7 +24,6 @@ from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
     metadata_worker,
-    noop_after_write,
     write_worker,
 )
 from wcpan.synology import SynologyClient, SynologyPath
@@ -67,7 +66,7 @@ async def _reconcile_with_worker(
             syno_paths=syno_paths,
             node_sync=cs,
         )
-        write_task = asyncio.create_task(write_worker(q, noop_after_write))
+        write_task = asyncio.create_task(write_worker(q))
         meta_task = asyncio.create_task(metadata_worker(mq, cs.process_metadata_item))
         try:
             with patch.object(

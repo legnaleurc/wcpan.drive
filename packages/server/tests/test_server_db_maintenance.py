@@ -23,7 +23,6 @@ from wcpan.drive.server.services.mirror import (
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.workers import (
     create_write_queue,
-    noop_after_write,
     write_worker,
 )
 
@@ -469,7 +468,7 @@ class TestLifecycle(IsolatedAsyncioTestCase):
             for name in ("a", "b")
         }
         self.write_queue = create_write_queue()
-        worker = asyncio.create_task(write_worker(self.write_queue, noop_after_write))
+        worker = asyncio.create_task(write_worker(self.write_queue))
         self.addCleanup(worker.cancel)
         self.ids = {
             name: NodeIds(mirror=self.mirror, write_queue=self.write_queue, key=ns.key)

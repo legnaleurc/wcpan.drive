@@ -55,9 +55,3 @@ def read_write(dsn: str, /, *, timeout: float = 5.0) -> Generator[sqlite3.Connec
     """
     with connect(dsn, timeout=timeout) as con, _transaction(con, write=True):
         yield con
-
-
-def checkpoint(dsn: str, /, *, timeout: float = 5.0) -> None:
-    """Request WAL truncation outside a transaction; readers may prevent it."""
-    with connect(dsn, timeout=timeout) as con:
-        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")

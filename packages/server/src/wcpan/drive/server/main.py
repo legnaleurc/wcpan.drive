@@ -43,7 +43,6 @@ from .services.mirror import (
     reset_change_history,
 )
 from .types import ServerConfig
-from .workers import noop_after_write
 
 
 _L = logging.getLogger(__name__)
@@ -139,9 +138,7 @@ async def run_backend_command(
     """Enter instance *name* offline and run its command; the server must be stopped."""
     async with AsyncExitStack() as stack:
         off_main = await stack.enter_async_context(managed_off_main())
-        core = await stack.enter_async_context(
-            managed_core(config, off_main=off_main, after_write=noop_after_write)
-        )
+        core = await stack.enter_async_context(managed_core(config, off_main=off_main))
         backends = await stack.enter_async_context(
             entered_backends(config, core, offline=True, names=[name])
         )

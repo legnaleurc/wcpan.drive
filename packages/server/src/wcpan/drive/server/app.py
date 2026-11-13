@@ -3,7 +3,6 @@
 import asyncio
 from collections.abc import (
     AsyncGenerator,
-    Callable,
     Coroutine,
     Generator,
     Iterable,
@@ -67,7 +66,6 @@ from .services.upload import UploadService, UploadSessionStore
 from .types import MetadataQueue, ServerConfig, WriteQueue
 from .workers import (
     METADATA_WORKER_COUNT,
-    create_checkpoint_scheduler,
     create_metadata_queue,
     create_write_queue,
     metadata_worker,
@@ -121,7 +119,6 @@ async def managed_core(
     config: ServerConfig,
     *,
     off_main: OffMainService,
-    after_write: Callable[[], None] | None = None,
 ) -> AsyncGenerator[Core, None]:
     """The mirror store, the write and metadata workers, and ``NodeSyncService``.
 
@@ -155,13 +152,7 @@ async def managed_core(
     )
     async with AsyncExitStack() as stack:
         group = await stack.enter_async_context(asyncio.TaskGroup())
-        if after_write is None:
-            checkpoints = create_checkpoint_scheduler(group, mirror, write_queue)
-            stack.callback(checkpoints.cancel)
-            after_write = checkpoints
-        await stack.enter_async_context(
-            _background(group, write_worker(write_queue, after_write))
-        )
+        await stack.enter_async_context(_background(group, write_worker(write_queue)))
         for _ in range(METADATA_WORKER_COUNT):
             await stack.enter_async_context(
                 _background(

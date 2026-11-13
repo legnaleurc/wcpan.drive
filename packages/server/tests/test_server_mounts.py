@@ -30,7 +30,6 @@ from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
-    noop_after_write,
     write_worker,
 )
 
@@ -360,7 +359,7 @@ class TestMountRestart(IsolatedAsyncioTestCase):
             mounts={},
             metadata_queue=create_metadata_queue(),
         )
-        self.writer = asyncio.create_task(write_worker(write_queue, noop_after_write))
+        self.writer = asyncio.create_task(write_worker(write_queue))
 
     async def asyncTearDown(self) -> None:
         self.writer.cancel()

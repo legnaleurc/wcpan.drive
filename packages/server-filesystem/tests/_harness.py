@@ -29,7 +29,6 @@ from wcpan.drive.server.workers import (
     create_metadata_queue,
     create_write_queue,
     metadata_worker,
-    noop_after_write,
     write_worker,
 )
 
@@ -96,7 +95,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             key=self.mirror.namespace("fs").key,
         )
         self.tasks = [
-            asyncio.create_task(write_worker(self.write_queue, noop_after_write)),
+            asyncio.create_task(write_worker(self.write_queue)),
             asyncio.create_task(
                 metadata_worker(
                     self.metadata_queue, self.node_sync.process_metadata_item

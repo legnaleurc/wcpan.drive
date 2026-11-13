@@ -23,7 +23,6 @@ from wcpan.drive.server.synology._webhook import WebhookService
 from wcpan.drive.server.types import ReadSeq, WriteQueue
 from wcpan.drive.server.workers import (
     create_write_queue,
-    noop_after_write,
     write_worker,
 )
 from wcpan.synology import (
@@ -110,7 +109,7 @@ class TestTwoInstances(DecoyTestCase):
         )
         await self.mirror.ensure_schema()
         self.write_queue = create_write_queue()
-        worker = asyncio.create_task(write_worker(self.write_queue, noop_after_write))
+        worker = asyncio.create_task(write_worker(self.write_queue))
         self.addCleanup(worker.cancel)
         await self.mirror.bulk_upsert_nodes(
             [
