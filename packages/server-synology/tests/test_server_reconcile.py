@@ -12,10 +12,8 @@ from unittest.mock import patch
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import MirrorStore
-from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.paths import VirtualPathService
 from wcpan.drive.server.services.sync import NodeSyncService
@@ -32,7 +30,7 @@ from wcpan.drive.server.workers import (
 )
 from wcpan.synology import SynologyClient, SynologyPath
 
-from ._lib import DecoyTestCase, IdentityIds
+from ._lib import DecoyTestCase, IdentityIds, make_mounts, mount_id
 
 
 _TS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp())
@@ -60,7 +58,7 @@ async def _reconcile_with_worker(
         ).for_backend("synology")
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
-            registry=MountRegistry(mounts=Mounts.from_sources(mounts), root_ids={}),
+            registry=MountRegistry(mounts=make_mounts(mounts), root_ids={}),
             store=SynologyStore(mirror=mirror, ns=mirror.namespace("synology")),
         )
         bf = BackfillService(

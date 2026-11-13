@@ -223,7 +223,7 @@ class _NodesTestCase(DecoyTestCase):
         mirror._nodes.setdefault("bad", _make_dir("bad"))
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
-            registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
+            registry=MountRegistry(mounts=Mounts(), root_ids={}),
             store=mirror,  # type: ignore[arg-type]
         )
         node_sync = NodeSyncService(

@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest import TestCase
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.services.paths import (
     MountSource,
     map_by_prefix,
@@ -12,6 +11,8 @@ from wcpan.drive.server.services.paths import (
 from wcpan.drive.server.services.paths import (
     _resolve_local_path as resolve_local_path,
 )
+
+from ._mounts import mount_id
 
 
 def _mount(

@@ -12,7 +12,6 @@ from wcpan.drive.server.lib.debounce import TaskIdDebouncer
 from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.ids import NodeIds
 from wcpan.drive.server.services.mirror import MirrorStore, rebuild_backend
-from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology._convert import SynologyLocator
@@ -29,7 +28,7 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from ._lib import DecoyTestCase
+from ._lib import DecoyTestCase, make_mounts, mount_id
 
 
 _READ = ReadSeq(1)
@@ -83,7 +82,7 @@ class _Instance:
         self.ids = NodeIds(mirror=mirror, key=ns.key)
         self.paths = SynologyPathService(
             registry=MountRegistry(
-                mounts=Mounts.from_sources({mount: f"/{mount}"}),
+                mounts=make_mounts({mount: f"/{mount}"}),
                 root_ids={SynologyFileId("root"): self.mount},
             ),
             store=self.store,

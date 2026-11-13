@@ -16,7 +16,7 @@ from wcpan.drive.server.services.mirror import (
     MirrorStore,
     SchemaVersionError,
 )
-from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes, mount_id
+from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.types import BackendLocator, NodeObservation
@@ -27,6 +27,8 @@ from wcpan.drive.server.workers import (
     noop_after_write,
     write_worker,
 )
+
+from ._mounts import make_mounts, mount_id
 
 
 class _RecordingSchema:
@@ -83,7 +85,7 @@ def _file(node_id: str, parent_id: str) -> NodeRecord:
 
 
 def _mounts(*names: str) -> Mounts:
-    return Mounts.from_sources({name: f"/{name}" for name in names})
+    return make_mounts({name: f"/{name}" for name in names})
 
 
 class TestBackendViews(IsolatedAsyncioTestCase):

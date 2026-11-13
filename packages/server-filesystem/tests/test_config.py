@@ -18,6 +18,8 @@ from wcpan.drive.server.filesystem import create_backend
 from wcpan.drive.server.filesystem._config import FilesystemConfig, check_mounts
 from wcpan.drive.server.filesystem._handles import filesystem_id
 
+from ._harness import make_mounts
+
 
 class TestFilesystemSettings(TestCase):
     def test_defaults(self) -> None:
@@ -37,23 +39,17 @@ class TestFilesystemSettings(TestCase):
     def test_mounts_must_be_absolute(self) -> None:
         # when / then
         with self.assertRaises(ValueError):
-            check_mounts(Mounts.from_sources({"docs": "relative/docs"}))
+            check_mounts(make_mounts({"docs": "relative/docs"}))
 
     def test_nested_mounts_are_rejected(self) -> None:
         # when / then
         with self.assertRaises(ValueError):
-            check_mounts(
-                Mounts.from_sources({"a": "/srv/data", "b": "/srv/data/inner/"})
-            )
+            check_mounts(make_mounts({"a": "/srv/data", "b": "/srv/data/inner/"}))
 
     def test_sibling_prefix_is_not_nested(self) -> None:
         # when / then
         self.assertEqual(
-            _sources(
-                check_mounts(
-                    Mounts.from_sources({"a": "/srv/data", "b": "/srv/data2/"})
-                )
-            ),
+            _sources(check_mounts(make_mounts({"a": "/srv/data", "b": "/srv/data2/"}))),
             {"a": "/srv/data", "b": "/srv/data2"},
         )
 
@@ -67,7 +63,7 @@ def _context(mounts: dict[str, str]) -> BackendContext:
     mirror.register_schema = AsyncMock()
     return BackendContext(
         name="disk",
-        mounts=Mounts.from_sources(mounts),
+        mounts=make_mounts(mounts),
         core=CoreServices(
             mirror=mirror, node_sync=MagicMock(), off_main=MagicMock(), ids=MagicMock()
         ),

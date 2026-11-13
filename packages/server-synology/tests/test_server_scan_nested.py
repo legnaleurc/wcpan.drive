@@ -13,10 +13,8 @@ from unittest.mock import patch
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.root import SERVER_ROOT_ID
 from wcpan.drive.server.services.mirror import MirrorStore
-from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.synology._backfill import BackfillService
@@ -28,7 +26,7 @@ from wcpan.drive.server.types import WriteQueue
 from wcpan.drive.server.workers import create_write_queue, metadata_worker
 from wcpan.synology import SynologyPath, SynologyPermanentLink
 
-from ._lib import DecoyTestCase, IdentityIds
+from ._lib import DecoyTestCase, IdentityIds, make_mounts, mount_id
 
 
 def _dir(node_id: str, name: str, parent_id: str | None) -> NodeRecord:
@@ -131,9 +129,7 @@ class TestNewFolders(DecoyTestCase):
         )
         self.syno_paths = SynologyPathService(
             ids=IdentityIds(),
-            registry=MountRegistry(
-                mounts=Mounts.from_sources({"a": "/vol/a"}), root_ids={}
-            ),
+            registry=MountRegistry(mounts=make_mounts({"a": "/vol/a"}), root_ids={}),
             store=self.store,
         )
         q = create_write_queue()

@@ -159,7 +159,7 @@ def _make_app(
         ),
     )
     syno_paths = SynologyPathService(
-        registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
+        registry=MountRegistry(mounts=Mounts(), root_ids={}),
         store=mirror,  # type: ignore[arg-type]
         ids=_IdentityIds(),
     )

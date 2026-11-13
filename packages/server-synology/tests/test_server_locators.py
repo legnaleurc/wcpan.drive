@@ -12,11 +12,12 @@ from wcpan.drive.server.services.mirror import (
     MirrorStore,
     cleanup_dangling_nodes,
 )
-from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.synology._convert import SynologyLocator
 from wcpan.drive.server.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.types import NodeObservation
+
+from ._lib import mount_id
 
 
 _MOUNT = mount_id("docs")

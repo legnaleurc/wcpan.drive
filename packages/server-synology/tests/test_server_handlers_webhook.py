@@ -23,7 +23,7 @@ from wcpan.synology import (
     SynologyPermanentLink,
 )
 
-from ._lib import DecoyTestCase, IdentityIds
+from ._lib import DecoyTestCase, IdentityIds, make_mounts
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -47,7 +47,7 @@ _FAKE_SYNO_INFO: SynologyFileInfo = {
 }
 
 _VIDEO_MOUNT = MountRegistry(
-    mounts=Mounts.from_sources({"video": "/team-folders/video/L"}), root_ids={}
+    mounts=make_mounts({"video": "/team-folders/video/L"}), root_ids={}
 )
 
 
@@ -88,9 +88,7 @@ class _WebhookTestCase(DecoyTestCase):
     def _create_service(
         self, mount_registry: MountRegistry | None = None
     ) -> WebhookService:
-        registry = mount_registry or MountRegistry(
-            mounts=Mounts.from_sources({}), root_ids={}
-        )
+        registry = mount_registry or MountRegistry(mounts=Mounts(), root_ids={})
         return WebhookService(
             drive_api=self.drive_api,
             mirror=self.mirror,
@@ -196,7 +194,7 @@ class TestFetchAndEnrich(_WebhookTestCase):
     async def test_parent_resolved_via_mount(self):
         # given
         registry = MountRegistry(
-            mounts=Mounts.from_sources({}),
+            mounts=Mounts(),
             root_ids={
                 SynologyFileId(file_id="real-parent"): NodeId("_docs"),
             },
@@ -551,7 +549,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         # given
         await self._stub_source(_make_node("f1", NodeId("_video")))
         registry = MountRegistry(
-            mounts=Mounts.from_sources({"video": "/team-folders/video/L"}),
+            mounts=make_mounts({"video": "/team-folders/video/L"}),
             root_ids={
                 SynologyFileId(file_id="mount-root"): NodeId("_video"),
             },

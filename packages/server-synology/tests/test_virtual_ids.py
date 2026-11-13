@@ -8,7 +8,6 @@ from decoy import matchers
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.lib.root import SERVER_ROOT_ID
-from wcpan.drive.server.services.mounts import mount_id
 from wcpan.drive.server.synology._convert import SynologyLocator
 from wcpan.drive.server.synology._mounts import (
     MountRegistry,
@@ -25,7 +24,7 @@ from wcpan.synology import (
     SynologyPath,
 )
 
-from ._lib import DecoyTestCase, IdentityIds, mounts_of
+from ._lib import DecoyTestCase, IdentityIds, mount_id, mounts_of
 
 
 def _info(**fields: object) -> SynologyFileInfo:

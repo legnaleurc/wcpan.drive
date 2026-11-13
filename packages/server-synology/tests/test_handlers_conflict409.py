@@ -154,7 +154,7 @@ def _make_app(
     mirror._nodes.setdefault("parent-a", _make_dir("parent-a"))
     syno_paths = SynologyPathService(
         ids=IdentityIds(),
-        registry=MountRegistry(mounts=Mounts.from_sources({}), root_ids={}),
+        registry=MountRegistry(mounts=Mounts(), root_ids={}),
         store=mirror,  # type: ignore[arg-type]
     )
     node_sync = NodeSyncService(

@@ -14,7 +14,6 @@ from aiohttp.streams import StreamReader
 from aiohttp.test_utils import make_mocked_request
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server.backend import Mounts
 from wcpan.drive.server.handlers.upload import (
     create_upload_session,
     delete_upload_session,
@@ -58,7 +57,7 @@ from wcpan.synology import (
     SynologyUploadError,
 )
 
-from ._lib import DecoyTestCase, IdentityIds, make_request
+from ._lib import DecoyTestCase, IdentityIds, make_mounts, make_request
 
 
 _P1 = SynologyFileId(file_id="p1")
@@ -108,7 +107,7 @@ class _UploadTestCase(DecoyTestCase):
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
             registry=MountRegistry(
-                mounts=Mounts.from_sources({"tmp": "/team-folders/download"}),
+                mounts=make_mounts({"tmp": "/team-folders/download"}),
                 root_ids={},
             ),
             store=store,

@@ -33,6 +33,8 @@ from wcpan.drive.server.workers import (
     write_worker,
 )
 
+from ._mounts import make_mounts
+
 
 def _dir(node_id: str, parent_id: str | None) -> NodeRecord:
     return NodeRecord(
@@ -80,7 +82,7 @@ class _Ancestors:
         return chain
 
 
-_ALL = Mounts.from_sources({"docs": "/docs", "pics": "/pics"})
+_ALL = make_mounts({"docs": "/docs", "pics": "/pics"})
 _DOCS = _ALL["docs"]
 _PICS = _ALL["pics"]
 

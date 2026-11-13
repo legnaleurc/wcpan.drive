@@ -4,6 +4,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
@@ -21,7 +22,7 @@ from wcpan.drive.server.filesystem._store import FILESYSTEM_SCHEMA, FilesystemSt
 from wcpan.drive.server.filesystem._watch import DirectoryWatcher
 from wcpan.drive.server.services.ids import NodeIds
 from wcpan.drive.server.services.mirror import MirrorStore
-from wcpan.drive.server.services.mounts import Mounts, ensure_mount_nodes, mount_id
+from wcpan.drive.server.services.mounts import Mount, Mounts, ensure_mount_nodes
 from wcpan.drive.server.services.off_main import OffMainService
 from wcpan.drive.server.services.sync import NodeSyncService
 from wcpan.drive.server.workers import (
@@ -31,6 +32,19 @@ from wcpan.drive.server.workers import (
     noop_after_write,
     write_worker,
 )
+
+
+def mount_id(name: str) -> NodeId:
+    """The fixed ID ``make_mounts`` gives the mount *name*."""
+    return NodeId(f"_{name}")
+
+
+def make_mounts(sources: Mapping[str, str]) -> Mounts:
+    """Mounts named by the keys of *sources*, with IDs from ``mount_id``."""
+    return Mounts(
+        Mount(name=name, id=mount_id(name), source=source)
+        for name, source in sources.items()
+    )
 
 
 DOCS = mount_id("docs")
@@ -76,7 +90,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             ),
         ]
         self.store = FilesystemStore(mirror=self.mirror, ns=self.mirror.namespace("fs"))
-        self.mounts = Mounts.from_sources({"docs": str(self.source)})
+        self.mounts = make_mounts({"docs": str(self.source)})
         self.paths = NodePaths(mirror=self.mirror, mounts=self.mounts)
         blocking = Blocking(executor=self.io_pool)
         self.watcher = DirectoryWatcher.create() if self.watch else None

@@ -9,14 +9,27 @@ from aiohttp.streams import StreamReader
 from aiohttp.test_utils import make_mocked_request
 from decoy import Decoy
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server.backend import Mounts
+from wcpan.drive.server.backend import Mount, Mounts
 from wcpan.drive.server.services.ids import UnknownNodeError, new_node_id
 from wcpan.synology import SynologyPath
 
 
+def mount_id(name: str) -> NodeId:
+    """The fixed ID ``make_mounts`` gives the mount *name*."""
+    return NodeId(f"_{name}")
+
+
+def make_mounts(sources: Mapping[str, str]) -> Mounts:
+    """Mounts named by the keys of *sources*, with IDs from ``mount_id``."""
+    return Mounts(
+        Mount(name=name, id=mount_id(name), source=source)
+        for name, source in sources.items()
+    )
+
+
 def mounts_of(paths: Mapping[str, SynologyPath]) -> Mounts:
     """Mounts with the given Synology paths as their sources."""
-    return Mounts.from_sources({name: p.path for name, p in paths.items()})
+    return make_mounts({name: p.path for name, p in paths.items()})
 
 
 class IdentityIds:

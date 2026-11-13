@@ -23,11 +23,6 @@ def _new_mount_id() -> NodeId:
     return NodeId(uuid.uuid4().hex)
 
 
-def mount_id(name: str) -> NodeId:
-    """A fixed ID derived from *name*, for mounts built without the mirror."""
-    return NodeId(f"_{name}")
-
-
 def _virtual_directory(
     node_id: NodeId, parent_id: NodeId | None, name: str
 ) -> NodeRecord:
@@ -72,18 +67,6 @@ class Mounts(Mapping[str, Mount]):
     def __init__(self, mounts: Iterable[Mount] = ()) -> None:
         self._by_name = {m.name: m for m in mounts}
         self._by_id = {m.id: m for m in self._by_name.values()}
-
-    @classmethod
-    def from_sources(cls, sources: Mapping[str, str]) -> "Mounts":
-        """Mounts named by the keys of *sources*, with IDs derived from the names.
-
-        For mounts that never meet a mirror, such as test fixtures; the server
-        uses ``load_mounts``.
-        """
-        return cls(
-            Mount(name=name, id=mount_id(name), source=source)
-            for name, source in sources.items()
-        )
 
     @property
     def root_id(self) -> NodeId:
