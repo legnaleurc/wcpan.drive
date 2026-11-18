@@ -280,7 +280,7 @@ class SynologyBackend:
             uploader = SynologyUploader(
                 drive_api=c.drive_api,
                 syno_paths=c.syno_paths,
-                node_sync=core.node_sync,
+                scans=core.scans,
             )
             # The Drive API takes a file in one request, so media is spooled
             # and probed before it is sent.
@@ -289,7 +289,7 @@ class SynologyBackend:
                 operations=SynologyNodeOperations(
                     drive_api=c.drive_api,
                     syno_paths=c.syno_paths,
-                    node_sync=core.node_sync,
+                    scans=core.scans,
                 ),
                 uploader=SpoolingUploader(uploader=uploader, files=files),
                 files=files,
@@ -305,7 +305,7 @@ class SynologyBackend:
                     drive_api=c.drive_api,
                     mirror=core.mirror,
                     store=store,
-                    node_sync=core.node_sync,
+                    scans=core.scans,
                     syno_paths=c.syno_paths,
                     mount_registry=c.registry,
                     hints=core.hints,

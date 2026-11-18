@@ -35,6 +35,7 @@ from wcpan.drive.server._lib.write_queue import (
 )
 from wcpan.drive.server._services.media.probe.runner import ProbeRunner
 from wcpan.drive.server._services.media.probing import MediaProbing
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._services.upload.service import (
     UploadService,
@@ -256,12 +257,12 @@ class _NodesTestCase(DecoyTestCase):
         app[NODE_OPERATIONS_KEY] = SynologyNodeOperations(
             drive_api=self.drive_api,
             syno_paths=syno_paths,
-            node_sync=node_sync,
+            scans=ScanRunner(mirror=mirror, node_sync=node_sync),
         )
         uploader = SynologyUploader(
             drive_api=self.drive_api,
             syno_paths=syno_paths,
-            node_sync=node_sync,
+            scans=ScanRunner(mirror=mirror, node_sync=node_sync),
         )
         app[UPLOAD_SERVICE_KEY] = UploadService(
             store=UploadSessionStore(),

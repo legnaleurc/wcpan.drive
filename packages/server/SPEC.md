@@ -204,8 +204,8 @@ Not yet built: read-only scans, the core-owned lifecycle, the
 narrowed `core.enrichment` surface, and `core.reconcile`. The filesystem backend's scans run
 through `core.scans`, its writes through `core.observe`, and its change events through
 `core.hints`. Synology's startup scan runs through `core.scans` and its webhooks through
-`core.hints`. The filesystem's startup and media retries, and Synology's API writes, webhook
-facts, and backfill, still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
+`core.hints`, and its API writes, uploads, and webhook facts through `core.observe`. The
+filesystem's startup and media retries, and Synology's scan bookkeeping and backfill, still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
 
 ### Goal
 
@@ -326,7 +326,7 @@ core.media        # register, probe_upload
 core.enrichment   # drain, scope, retry_failures(locate), retrying(locate),
                   # retrying_with(callback), prune_failures(before)
 core.hints        # publish(raw_event), later(key, delay, fn)
-core.scans        # await run(scanner), await walk(scanner, root)
+core.scans        # await run(scanner), await walk(lister, root)
 core.observe(exclusive=False)   # the one way a backend produces facts
 core.enqueue_write(fn)          # fn(con) as one ordered transaction, for backend state
 await core.bind_schema(schema)
@@ -401,7 +401,7 @@ async def handle(self, event):
         await changes.landed()
     root = await self._moved_root(event)
     if not skip_walk and root is not None:
-        await core.scans.walk(self._walk_scanner(), root)
+        await core.scans.walk(self._subtree_lister(), root)
 ```
 
 A directory-create handler also calls `landed()` before returning, so the next hint can
@@ -452,8 +452,8 @@ already submitted, so the next pass cannot mint a second ID for a file still bei
 The drain fails promptly if a worker has stopped. Only holds the pass still owns are released
 by it; holds handed to a queue stay with their jobs. Cancellation at shutdown does not drain.
 
-`walk(scanner, root)` lists a subtree without the pass lock, reconcile session, removals, or
-finish hooks, and never calls `skip`. The scanner given to it returns every convertible child
+`walk(lister, root)` lists a subtree without the pass lock, reconcile session, removals, or
+finish hooks. A lister needs only `list_folder`, and returns every convertible child
 in `changed`, without incremental filtering. Directory writes land before descending. File
 enrichment is submitted and not awaited. A failed listing raises.
 

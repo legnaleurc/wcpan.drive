@@ -12,6 +12,7 @@ from wcpan.drive.server._backend import Mounts
 from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import NodeObservation, ReadSeq
 from wcpan.drive.server.backend.synology._backend import SynologyBackend, _Serving
@@ -22,6 +23,7 @@ from wcpan.drive.server.backend.synology._store import SynologyStore
 from wcpan.drive.server.backend.synology._webhook import (
     PENDING_FILE_DELAY,
     WebhookService,
+    _SubtreeLister,
 )
 from wcpan.drive.server.types import ChangeHandler, CoreServices, HintStage
 from wcpan.synology.types import (
@@ -105,7 +107,7 @@ class _WebhookTestCase(DecoyTestCase):
             drive_api=self.drive_api,
             mirror=self.mirror,
             store=self.store,
-            node_sync=self.node_sync,
+            scans=ScanRunner(mirror=self.mirror, node_sync=self.node_sync),
             syno_paths=SynologyPathService(
                 registry=registry, store=self.store, ids=IdentityIds()
             ),
@@ -147,7 +149,8 @@ class TestFetchAndEnrich(_WebhookTestCase):
         )
         # then
         self.decoy.verify(
-            await self.node_sync.upsert(matchers.Anything(), read=_READ), times=1
+            await self.node_sync.upsert(matchers.Anything(), read=_READ, strict=False),
+            times=1,
         )
 
     async def test_no_parent_id_skips(self):
@@ -227,7 +230,9 @@ class TestFetchAndEnrich(_WebhookTestCase):
         # then
         # parent_id should have been resolved to _docs
         observation = matchers.Captor()
-        self.decoy.verify(await self.node_sync.upsert(observation, read=_READ))
+        self.decoy.verify(
+            await self.node_sync.upsert(observation, read=_READ, strict=False)
+        )
         upserted: NodeObservation = observation.value
         self.assertEqual(upserted.record.parent_id, "_docs")
         self.assertEqual(upserted.locator, "f1")
@@ -469,7 +474,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             plan.parent_file_ref,
             plan.event_type,
         )
-        self.decoy.verify(await self.node_sync.flush(), times=1)
+        self.decoy.verify(await self.node_sync.barrier(), times=1)
         self._verify_not_scheduled()
 
     async def test_deletes_when_plan_requests_removal(self):
@@ -560,7 +565,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             plan.parent_file_ref,
             plan.event_type,
         )
-        self.decoy.verify(await self.node_sync.flush(), times=1)
+        self.decoy.verify(await self.node_sync.barrier(), times=1)
         mock_scan.assert_not_awaited()
 
     async def test_mirrored_directory_move_to_mount_root_skips_scanning(self):
@@ -592,7 +597,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
 
         # then
         mock_fetch.assert_awaited_once()
-        self.decoy.verify(await self.node_sync.flush(), times=1)
+        self.decoy.verify(await self.node_sync.barrier(), times=1)
         mock_scan.assert_not_awaited()
 
     async def _assert_scans(self, service: WebhookService) -> None:
@@ -815,9 +820,29 @@ class TestWebhookFailuresPropagate(_WebhookTestCase):
             "list_children",
             new=AsyncMock(side_effect=OSError("NAS unavailable")),
         ):
-            with self.assertRaises(ExceptionGroup) as raised:
+            with self.assertRaisesRegex(OSError, "NAS unavailable"):
                 await service._scan_moved_dir_subtree(NodeId("d1"))
-        self.assertTrue(raised.exception.subgroup(OSError))
+
+
+class TestSubtreeLister(IsolatedAsyncioTestCase):
+    async def test_lists_every_child_and_descends_into_folders(self) -> None:
+        # given
+        folder = {"type": "dir"}
+        file = {"type": "file"}
+        folder_fact = NodeObservation(record=_make_node(NodeId("d")), locator=None)
+        file_fact = NodeObservation(record=_make_node(NodeId("f")), locator=None)
+        paths: Any = MagicMock()
+        paths.list_children = AsyncMock(return_value=[folder, file])
+        paths.convert = AsyncMock(
+            return_value=[(folder, folder_fact), (file, file_fact)]
+        )
+        lister = _SubtreeLister(MagicMock(), paths)
+        # when
+        listing = await lister.list_folder(NodeId("root"))
+        # then
+        self.assertEqual(listing.changed, [folder_fact, file_fact])
+        self.assertEqual(listing.seen, [NodeId("d"), NodeId("f")])
+        self.assertEqual(listing.subfolders, [NodeId("d")])
 
 
 # ---------------------------------------------------------------------------

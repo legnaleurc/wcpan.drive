@@ -12,7 +12,7 @@ from wcpan.drive.server.exceptions import (
     UploadTransientError,
 )
 from wcpan.drive.server.lib import normalize_name
-from wcpan.drive.server.types import NodeSyncService, ProbeFailure, ReadSeq
+from wcpan.drive.server.types import Changes, ProbeFailure, ScanRunner
 from wcpan.synology.exceptions import (
     SynologyApiError,
     SynologyError,
@@ -39,11 +39,11 @@ class SynologyUploader:
         *,
         drive_api: SynologyClient,
         syno_paths: SynologyPathService,
-        node_sync: NodeSyncService,
+        scans: ScanRunner,
     ) -> None:
         self._drive_api = drive_api
         self._syno_paths = syno_paths
-        self._node_sync = node_sync
+        self._scans = scans
 
     async def find_conflict(self, parent_id: NodeId, name: str) -> NodeRecord | None:
         # A missing child is the expected answer; a missing parent is not.
@@ -77,7 +77,7 @@ class SynologyUploader:
         media_info: MediaInfo | None,
     ) -> NodeRecord:
         parent_ref = await self._syno_paths.synology_parent_ref(parent_id)
-        async with self._node_sync.observe() as read:
+        async with self._scans.observe() as changes:
             try:
                 info = await self._drive_api.upload(
                     parent_path=parent_ref,
@@ -100,7 +100,7 @@ class SynologyUploader:
                     info=info,
                     parent_id=parent_id,
                     media_info=media_info,
-                    read=read,
+                    changes=changes,
                 )
             except MediaEnrichmentError as e:
                 # Only when the Drive classifies as media a file whose name
@@ -163,7 +163,7 @@ class SynologyUploader:
         info: SynologyFileInfo,
         parent_id: NodeId,
         media_info: MediaInfo | None,
-        read: ReadSeq,
+        changes: Changes,
     ) -> NodeRecord:
         observation = await self._syno_paths.convert_one(info, parent_id)
         if observation is None:
@@ -180,4 +180,4 @@ class SynologyUploader:
                 height=media_info.height,
             )
             observation = replace(observation, record=record)
-        return await self._node_sync.upsert(observation, read=read, strict=True)
+        return await changes.upserted(observation, strict=True)

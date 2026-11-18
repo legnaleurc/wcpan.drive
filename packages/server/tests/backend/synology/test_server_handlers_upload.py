@@ -34,6 +34,7 @@ from wcpan.drive.server._services.media.probing import MediaProbing
 from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._services.upload.service import (
     _L,
@@ -142,7 +143,7 @@ class _UploadTestCase(DecoyTestCase):
         uploader = SynologyUploader(
             drive_api=self.drive_api,
             syno_paths=syno_paths,
-            node_sync=node_sync,
+            scans=ScanRunner(mirror=mirror, node_sync=node_sync),
         )
         self._files = SpooledFiles(
             uploader=uploader,

@@ -44,6 +44,7 @@ from ._services.sync.hints import HintStage as HintStage
 from ._services.sync.ordering import NodeOrdering as NodeOrdering
 from ._services.sync.reconcile import ReconcileSession as ReconcileSession
 from ._services.sync.scan import Changes as Changes
+from ._services.sync.scan import FolderLister as FolderLister
 from ._services.sync.scan import Listing as Listing
 from ._services.sync.scan import Scanner as Scanner
 from ._services.sync.scan import ScanPlan as ScanPlan
@@ -74,6 +75,7 @@ __all__ = (
     "CommandParser",
     "CoreServices",
     "FileOpener",
+    "FolderLister",
     "HintStage",
     "Listing",
     "Locate",

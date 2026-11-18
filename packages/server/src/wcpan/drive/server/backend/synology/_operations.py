@@ -12,7 +12,7 @@ from wcpan.drive.server.exceptions import (
     OperationUnavailableError,
     UnknownNodeError,
 )
-from wcpan.drive.server.types import NodeObservation, NodeSyncService
+from wcpan.drive.server.types import NodeObservation, ScanRunner
 from wcpan.synology.exceptions import (
     SynologyApiError,
     SynologyNetworkError,
@@ -39,11 +39,11 @@ class SynologyNodeOperations:
         *,
         drive_api: SynologyClient,
         syno_paths: SynologyPathService,
-        node_sync: NodeSyncService,
+        scans: ScanRunner,
     ) -> None:
         self._drive_api = drive_api
         self._syno_paths = syno_paths
-        self._node_sync = node_sync
+        self._scans = scans
 
     async def _stable_node_ref(self, record: NodeRecord) -> SynologyPermanentLink:
         try:
@@ -54,7 +54,7 @@ class SynologyNodeOperations:
             ) from e
 
     async def create_folder(self, parent_id: NodeId, name: str) -> NodeRecord:
-        async with self._node_sync.observe() as read:
+        async with self._scans.observe() as changes:
             parent_ref = await self._syno_paths.synology_parent_ref(parent_id)
             try:
                 info = await self._drive_api.create_folder(parent_ref, name)
@@ -95,11 +95,8 @@ class SynologyNodeOperations:
                 width=0,
                 height=0,
             )
-            return await self._node_sync.upsert(
-                NodeObservation(
-                    record=record, locator=SynologyLocator(info["file_id"])
-                ),
-                read=read,
+            return await changes.upserted(
+                NodeObservation(record=record, locator=SynologyLocator(info["file_id"]))
             )
 
     async def update(
@@ -109,7 +106,7 @@ class SynologyNodeOperations:
         name: str | None,
         parent_id: NodeId | None,
     ) -> NodeRecord:
-        async with self._node_sync.observe() as read:
+        async with self._scans.observe() as changes:
             updated = record
             locator: SynologyLocator | None = None
 
@@ -166,14 +163,14 @@ class SynologyNodeOperations:
                     updated = actual.record
                     locator = actual.locator
                     if updated.id != record.id:
-                        await self._node_sync.delete(record.id, read=read)
+                        await changes.removed(record.id)
 
-            return await self._node_sync.upsert(
-                NodeObservation(record=updated, locator=locator), read=read
+            return await changes.upserted(
+                NodeObservation(record=updated, locator=locator)
             )
 
     async def delete(self, record: NodeRecord) -> None:
-        async with self._node_sync.observe() as read:
+        async with self._scans.observe() as changes:
             try:
                 await self._drive_api.delete(await self._stable_node_ref(record))
             except SynologyNotFoundError:
@@ -183,7 +180,7 @@ class SynologyNodeOperations:
                 raise OperationUnavailableError(str(e)) from e
             except SynologyApiError as e:
                 raise operation_error(e) from e
-            await self._node_sync.delete(record.id, read=read)
+            await changes.removed(record.id)
 
     @asynccontextmanager
     async def download(
@@ -213,7 +210,7 @@ class SynologyNodeOperations:
 
     async def _upsert_existing_child(self, parent_id: NodeId, name: str) -> NodeRecord:
         """Mirror the node that holds *name* under *parent_id* (conflict recovery)."""
-        async with self._node_sync.observe() as read:
+        async with self._scans.observe() as changes:
             info = await self._syno_paths.find_child_by_name(
                 self._drive_api, parent_id, name
             )
@@ -226,7 +223,7 @@ class SynologyNodeOperations:
                 raise OperationUnavailableError(
                     "Synology API response missing permanent_link"
                 )
-            return await self._node_sync.upsert(observation, read=read)
+            return await changes.upserted(observation)
 
     async def _resolve_after_move(
         self, record: NodeRecord, parent_id: NodeId

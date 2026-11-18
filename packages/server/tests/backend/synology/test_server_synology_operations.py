@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from aiohttp import ClientResponse
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server._services.operations import OperationUnavailableError
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server.backend.synology._operations import SynologyNodeOperations
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.synology.exceptions import SynologyNetworkError
@@ -61,7 +61,7 @@ class TestDownload(DecoyTestCase):
         self.operations = SynologyNodeOperations(
             drive_api=self.drive_api,
             syno_paths=syno_paths,
-            node_sync=self.decoy.mock(cls=NodeSyncService),
+            scans=self.decoy.mock(cls=ScanRunner),
         )
 
     def _respond(

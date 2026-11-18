@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
+from typing import Protocol
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
@@ -87,6 +88,12 @@ class Scanner[F](ABC):
         *complete* is true if every root was fully covered and nothing in scope
         was preserved as unusable.
         """
+
+
+class FolderLister[F](Protocol):
+    """What ``ScanRunner.walk`` needs; every ``Scanner`` is one."""
+
+    async def list_folder(self, folder: F) -> Listing[F]: ...
 
 
 class Changes:
@@ -175,8 +182,8 @@ class ScanRunner:
                 await _settle_after(failed, self._node_sync.wait_enrichment_drained)
                 raise
 
-    async def walk[F](self, scanner: Scanner[F], root: F) -> None:
-        """Write everything *scanner* lists under *root*, removing nothing.
+    async def walk[F](self, lister: FolderLister[F], root: F) -> None:
+        """Write everything *lister* lists under *root*, removing nothing.
 
         Takes no pass lock and calls neither ``skip`` nor the finish hooks.
         Directories land before their children are listed. File enrichment is
@@ -188,7 +195,7 @@ class ScanRunner:
 
         async def visit(folder: F) -> list[F]:
             async with self._node_sync.observe() as read:
-                listing = await scanner.list_folder(folder)
+                listing = await lister.list_folder(folder)
                 await self._submit(listing, read, land_directories=True)
             return listing.subfolders
 

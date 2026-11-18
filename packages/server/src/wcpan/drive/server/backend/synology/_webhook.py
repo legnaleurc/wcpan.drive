@@ -4,14 +4,13 @@ from dataclasses import dataclass
 from logging import getLogger
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib import parallel_bfs
 from wcpan.drive.server.types import (
     ChangeHandler,
+    Changes,
     HintStage,
+    Listing,
     MirrorStore,
-    NodeObservation,
-    NodeSyncService,
-    ReadSeq,
+    ScanRunner,
 )
 from wcpan.synology.types import (
     SynologyClient,
@@ -47,6 +46,26 @@ class _WebhookActionPlan:
     schedule_delayed_upsert: bool = False
 
 
+class _SubtreeLister:
+    """Lists every child, since a moved-in subtree may predate any checkpoint."""
+
+    def __init__(
+        self, drive_api: SynologyClient, syno_paths: SynologyPathService
+    ) -> None:
+        self._drive_api = drive_api
+        self._syno_paths = syno_paths
+
+    async def list_folder(self, folder: NodeId) -> Listing[NodeId]:
+        items = await self._syno_paths.list_children(self._drive_api, folder)
+        listed = await self._syno_paths.convert(items, folder)
+        return Listing(
+            seen=[o.record.id for _, o in listed],
+            changed=[o for _, o in listed],
+            subfolders=[o.record.id for item, o in listed if item["type"] == "dir"],
+            keep=[],
+        )
+
+
 class WebhookService(ChangeHandler[SynologyWebhookEvent]):
     """Applies Synology webhook events, one at a time.
 
@@ -61,7 +80,7 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
         drive_api: SynologyClient,
         mirror: MirrorStore,
         store: SynologyStore,
-        node_sync: NodeSyncService,
+        scans: ScanRunner,
         syno_paths: SynologyPathService,
         mount_registry: MountRegistry,
         hints: HintStage,
@@ -69,7 +88,7 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
         self._drive_api = drive_api
         self._mirror = mirror
         self._store = store
-        self._node_sync = node_sync
+        self._scans = scans
         self._syno_paths = syno_paths
         self._mount_registry = mount_registry
         self._hints = hints
@@ -85,9 +104,9 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
         parent_file_ref: SynologyFileId | None,
         event_type: str,
     ) -> None:
-        async with self._node_sync.observe() as read:
+        async with self._scans.observe() as changes:
             await self._fetch_and_apply(
-                file_ref, permanent_link_ref, parent_file_ref, event_type, read=read
+                file_ref, permanent_link_ref, parent_file_ref, event_type, changes
             )
 
     async def _fetch_and_apply(
@@ -96,8 +115,7 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
         permanent_link_ref: SynologyPermanentLink,
         parent_file_ref: SynologyFileId | None,
         event_type: str,
-        *,
-        read: ReadSeq,
+        changes: Changes,
     ) -> None:
         if parent_file_ref is None:
             _L.warning(
@@ -119,7 +137,7 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
                             "file_id %s moved outside configured mounts; deleting from mirror",
                             file_ref.file_id,
                         )
-                        await self._node_sync.delete(existing.id, read=read)
+                        await changes.removed(existing.id)
                 else:
                     _L.warning(
                         "parent_id %s for %s (%s) not in DB and not a known mount; skipping",
@@ -149,7 +167,7 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
                 permanent_link_ref.permanent_link,
                 info.get("permanent_link"),
             )
-        await self._node_sync.upsert(observation, read=read)
+        await changes.upserted(observation)
 
     def _classify_webhook_item(
         self,
@@ -250,7 +268,8 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
                 plan.event_type,
             )
         if plan.wait_for_writes:
-            await self._node_sync.flush()
+            async with self._scans.observe() as changes:
+                await changes.landed()
         if plan.scan_moved_dir_subtree and not skip_moved_dir_subtree_scan:
             subtree_root_id = await self._resolve_moved_dir_root_id(
                 plan.file_ref,
@@ -268,8 +287,8 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
             # An unknown permanent link was never mirrored: nothing to delete.
             node_id = await self._syno_paths.ids.lookup(plan.delete_link)
             if node_id is not None:
-                async with self._node_sync.observe() as read:
-                    await self._node_sync.delete(node_id, read=read)
+                async with self._scans.observe() as changes:
+                    await changes.removed(node_id)
         if plan.schedule_delayed_upsert:
             self._hints.later(
                 plan.schedule_key,
@@ -318,32 +337,9 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
         return await mounts.containing(node.id, mirror=self._mirror) is not None
 
     async def _scan_moved_dir_subtree(self, folder_id: NodeId) -> None:
-        """BFS-populate children of a moved directory not delivered by the webhook."""
-
-        async def _visit(current_id: NodeId) -> list[NodeId]:
-            async with self._node_sync.observe() as read:
-                return await _visit_observed(current_id, read)
-
-        async def _visit_observed(current_id: NodeId, read: ReadSeq) -> list[NodeId]:
-            # A failed listing propagates (see ``run``).
-            items = await self._syno_paths.list_children(self._drive_api, current_id)
-            dir_records: list[NodeObservation] = []
-            file_records: list[NodeObservation] = []
-            children: list[NodeId] = []
-            for item, observation in await self._syno_paths.convert(items, current_id):
-                if item["type"] == "dir":
-                    dir_records.append(observation)
-                    children.append(observation.record.id)
-                else:
-                    file_records.append(observation)
-            if dir_records:
-                await self._node_sync.upsert_batch(dir_records, read=read)
-                await self._node_sync.flush()
-            if file_records:
-                await self._node_sync.upsert_file_batch(file_records, read=read)
-            return children
-
-        await parallel_bfs([folder_id], _visit)
+        """Populate the children of a moved directory the webhook did not deliver."""
+        lister = _SubtreeLister(self._drive_api, self._syno_paths)
+        await self._scans.walk(lister, folder_id)
 
     async def _resolve_moved_dir_root_id(
         self,

@@ -22,6 +22,7 @@ from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
 from wcpan.drive.server._services.off_main import OffMainService
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import (
     ReadSeq,
@@ -221,7 +222,7 @@ class TestTwoInstances(DecoyTestCase):
             drive_api=self.decoy.mock(cls=SynologyClient),
             mirror=self.mirror,
             store=self.nas1.store,
-            node_sync=node_sync,
+            scans=ScanRunner(mirror=self.mirror, node_sync=node_sync),
             syno_paths=self.nas1.paths,
             mount_registry=MountRegistry(mounts=Mounts(root_id=ROOT_ID), root_ids={}),
             hints=HintStage(),
@@ -251,6 +252,34 @@ class TestTwoInstances(DecoyTestCase):
         )
         self.assertIsNone(await self.nas1.ids.lookup("never-seen"))
 
+    async def test_move_that_changes_the_link_replaces_the_node(self) -> None:
+        # given: the Drive reports the moved file under another permanent link
+        folder_info = _info(link="folder-link", file_id="8")
+        folder_info["type"] = "dir"
+        folder = await self._mirror(self.nas1, folder_info)
+        record = await self.mirror.get_node_by_id(
+            await self._mirror(self.nas1, _info())
+        )
+        assert record is not None
+        drive_api = self.decoy.mock(cls=SynologyClient)
+        moved = {**_info(link="new-link"), "parent_id": "8"}
+        self.decoy.when(
+            await drive_api.get_file(SynologyPermanentLink("link"))
+        ).then_return(moved)
+        node_sync = self.decoy.mock(cls=NodeSyncService)
+        self.decoy.when(node_sync.observe()).then_enter_with(_READ)
+        operations = SynologyNodeOperations(
+            drive_api=drive_api,
+            syno_paths=self.nas1.paths,
+            scans=ScanRunner(mirror=self.mirror, node_sync=node_sync),
+        )
+
+        # when
+        await operations.update(record, name=None, parent_id=folder)
+
+        # then
+        self.decoy.verify(await node_sync.delete(record.id, read=_READ), times=1)
+
     async def test_move_keeps_the_node_when_its_link_is_unchanged(self) -> None:
         # given: a node mirrored under a folder of the mount
         folder_info = _info(link="folder-link", file_id="8")
@@ -268,7 +297,9 @@ class TestTwoInstances(DecoyTestCase):
         node_sync = self.decoy.mock(cls=NodeSyncService)
         self.decoy.when(node_sync.observe()).then_enter_with(_READ)
         operations = SynologyNodeOperations(
-            drive_api=drive_api, syno_paths=self.nas1.paths, node_sync=node_sync
+            drive_api=drive_api,
+            syno_paths=self.nas1.paths,
+            scans=ScanRunner(mirror=self.mirror, node_sync=node_sync),
         )
 
         # when
@@ -288,6 +319,7 @@ class TestTwoInstances(DecoyTestCase):
                     {"record": matchers.HasAttributes({"id": record.id})}
                 ),
                 read=_READ,
+                strict=False,
             ),
             times=1,
         )
