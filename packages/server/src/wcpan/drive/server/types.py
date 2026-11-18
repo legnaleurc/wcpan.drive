@@ -41,6 +41,11 @@ from ._services.operations import NodeOperations as NodeOperations
 from ._services.paths import VirtualPathService as VirtualPathService
 from ._services.sync.ordering import NodeOrdering as NodeOrdering
 from ._services.sync.reconcile import ReconcileSession as ReconcileSession
+from ._services.sync.scan import Changes as Changes
+from ._services.sync.scan import Listing as Listing
+from ._services.sync.scan import Scanner as Scanner
+from ._services.sync.scan import ScanPlan as ScanPlan
+from ._services.sync.scan import ScanRunner as ScanRunner
 from ._services.sync.service import NodeSyncService as NodeSyncService
 from ._services.upload.service import FileOpener as FileOpener
 from ._services.upload.service import Uploader as Uploader
@@ -62,9 +67,11 @@ __all__ = (
     "BackendNamespace",
     "BackendRoutes",
     "BackendSchema",
+    "Changes",
     "CommandParser",
     "CoreServices",
     "FileOpener",
+    "Listing",
     "Locate",
     "MediaFailure",
     "MediaProbing",
@@ -84,6 +91,9 @@ __all__ = (
     "ReadCoreServices",
     "ReadSeq",
     "ReconcileSession",
+    "ScanPlan",
+    "ScanRunner",
+    "Scanner",
     "SpoolArea",
     "Uploader",
     "VirtualPath",

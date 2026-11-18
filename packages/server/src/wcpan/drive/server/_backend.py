@@ -46,6 +46,7 @@ from ._services.mounts import Mounts
 from ._services.off_main import OffMainService
 from ._services.operations import NodeOperations
 from ._services.sync.ordering import NodeOrdering
+from ._services.sync.scan import Changes, ScanRunner
 from ._services.sync.service import NodeSyncService
 from ._services.upload.service import FileOpener, Uploader
 
@@ -66,7 +67,8 @@ class CoreServices:
     ``node_sync`` tags every observation with the instance name. ``ids`` maps
     the instance's native IDs to the public node IDs it uses with the core.
     ``media`` probes the instance's files through the source it registers while
-    connected, and probes upload spools.
+    connected, and probes upload spools. ``scans`` runs the instance's scan
+    passes, and ``observe`` is the scope for writing what a source read found.
     """
 
     mirror: MirrorStore
@@ -74,6 +76,17 @@ class CoreServices:
     off_main: OffMainService
     ids: NodeIdMap
     media: MediaProbing
+    scans: ScanRunner = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        scans = ScanRunner(mirror=self.mirror, node_sync=self.node_sync)
+        object.__setattr__(self, "scans", scans)
+
+    def observe(
+        self, *, exclusive: bool = False
+    ) -> AbstractAsyncContextManager[Changes]:
+        """Number a source read; see ``ScanRunner.observe``."""
+        return self.scans.observe(exclusive=exclusive)
 
     async def bind_schema(self, schema: BackendSchema) -> BackendNamespace:
         """Register the instance with *schema* (tables, orphan cleanup)."""

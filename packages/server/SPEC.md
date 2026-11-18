@@ -194,6 +194,305 @@ Notifications, a replayable event stream, ordered source revisions, and
 checkpoints are all optional; polling and full traversal are valid. Backends are
 not modeled as a Synology scan with renamed fields.
 
+## Backend framework
+
+This section is the target design for the backend API. Implemented so far:
+`CoreServices.observe` with `Changes`, and `CoreServices.scans` with `Scanner`, `ScanPlan`,
+and `Listing`. Not yet built: read-only scans, the hint stage, the core-owned lifecycle, the
+narrowed `core.enrichment` surface, and `core.reconcile`. The built-in backends still use
+`NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
+
+### Goal
+
+The core runs the sync flow. A backend extends small classes and fills in what is
+specific to its source, using only public core modules. Every mirror change, whatever
+produced it, travels through the same stages.
+
+### Model
+
+- A **fact** says what a node is, or that it is gone, as of one numbered source read.
+- A **hint** says something may have changed. It carries no trustworthy node state, and
+  a backend turns it into facts by reading the source.
+
+#### Stages
+
+| Stage | Turns | Workers | Allowed work | Order | Capacity | Failure |
+|---|---|---|---|---|---|---|
+| Hint | raw event into facts | 1 per backend | source and mirror reads | FIFO | unbounded | backend policy |
+| Enrich | fact into enriched fact | several, shared | media probes, mirror reads | none | bounded | withhold and retry; an unavailable probe tool stops the server |
+| Write | fact into committed rows | 1, shared | synchronous SQL only | FIFO | bounded | stops the server |
+
+Enrichment is a step that can run two ways. `Changes.upserted` runs it in the caller,
+because the caller needs the result and should not queue behind a scan backlog; it still
+shares probe capacity with the workers. The scan runner submits file batches to the
+enrichment queue. Directories need no probe, and a file whose dimensions can be reused
+goes straight to Write.
+
+#### Pipelines
+
+| Source | Path |
+|---|---|
+| Webhook | hint -> source read -> enrich in caller -> write |
+| Delayed webhook fetch | timer -> source read -> enrich in caller -> write |
+| inotify | merged hint -> scan pass |
+| Scan pass | listing -> directories (write) -> files (enrich queue or reused dimensions, write) |
+| Subtree walk | listing -> same as scan, without removals |
+| Create, move, delete | source change -> enrich in caller -> write -> API barrier |
+| Upload | probe staged file if needed -> source change -> enrich in caller -> write -> API barrier |
+| Media retry, single file (Synology) | timer -> source read -> enrich queue -> write |
+| Media retry, by folder (filesystem) | timer -> scan pass over the parent folder |
+| Checkpoint, backend state | write only |
+
+#### Rules
+
+1. **Work flows downstream.** A stage may wait on later stages, never on itself or an
+   earlier stage. Hint may wait on Enrich and Write; Enrich may wait on Write; Write waits
+   on nothing. Work going upstream, such as a media retry, starts from a timer or a
+   non-blocking publish, and nothing downstream waits for it.
+2. **The read number is taken at entry,** before the first source read that contributes
+   to a fact, and is held until the write is applied or dropped. Queue position does not
+   establish source-read order.
+3. **Draining joins stages in order:** enrichment, then writes. It does not wait for
+   retry tasks, delayed fetches, or hints.
+4. **Bounded stages slow producers.** Publishing a hint never blocks.
+5. **The pass lock sits above the stages.** Its holder may wait on Enrich and Write.
+   Enrich and Write never wait for it. Nothing holding it may start a scan.
+
+Scan removals and the exclusive lock span stages and are specified separately.
+
+### What a backend supplies
+
+Unchanged hooks: `NodeOperations`, `Uploader`, `FileOpener`, `WritableFile`,
+`MediaSource`, `BackendSchema`.
+
+```python
+class Scanner[F](ABC):                  # one instance per scan pass or walk
+    concurrent_roots = True             # False: traverse one root at a time
+
+    @abstractmethod
+    async def prepare(self) -> ScanPlan[F]: ...
+    @abstractmethod
+    def folder_id(self, folder: F) -> NodeId: ...
+    @abstractmethod
+    async def list_folder(self, folder: F) -> Listing[F]: ...
+    @abstractmethod
+    async def locate(self, node_id: NodeId) -> NodeObservation | None: ...
+
+    async def skip(self, folder: F) -> bool:
+        return False
+    async def root_finished(self, root: F, complete: bool) -> None:
+        pass
+    async def pass_finished(self, complete: bool) -> None:
+        pass
+
+@dataclass
+class ScanPlan[F]:
+    scope: set[NodeId]                 # effective reconcile scope, after normalizing
+    roots: list[F]                     # folders to traverse
+    preserved: list[NodeId]            # in scope but unusable
+
+@dataclass
+class Listing[F]:
+    seen: list[NodeId]                 # every child this listing accounted for
+    changed: list[NodeObservation]     # subset to write
+    subfolders: list[F]                # visit next
+    keep: list[NodeId]                 # deliberately not visited; subtree preserved
+
+class ChangeHandler[E](ABC):
+    @abstractmethod
+    async def handle(self, event: E) -> None: ...
+
+class BackendRuntime(ABC):
+    def startup_scanner(self) -> Scanner: ...
+    def change_handler(self) -> ChangeHandler | None: ...
+    async def before_scan(self) -> None: ...   # start change sources
+    async def run(self) -> None: ...           # started after the startup scan
+```
+
+### What the core provides
+
+```python
+core.mirror       # read-only node access, plus read(fn) for backend tables
+core.ids          # NodeIdMap: public() persists its row at once; mint() is provisional
+                  # until the node's first applied observation
+core.media        # register, probe_upload
+core.enrichment   # drain, scope, retry_failures(locate), retrying(locate),
+                  # retrying_with(callback), prune_failures(before)
+core.hints        # publish(raw_event), later(key, delay, fn)
+core.scans        # await run(scanner), await walk(scanner, root)
+core.observe(exclusive=False)   # the one way a backend produces facts
+core.enqueue_write(fn)          # fn(con) as one ordered transaction, for backend state
+await core.bind_schema(schema)
+```
+
+`NodeSyncService` and `MirrorStore` stop being public once the built-in backends have moved.
+
+#### Producing facts
+
+```python
+async with core.observe(exclusive=True) as changes:    # read number taken here
+    result = await source.move(...)
+    record = await changes.upserted(observation, strict=True)
+    await changes.removed(old_id)
+# every fact from this block has landed
+```
+
+- `upserted` enriches in the caller, queues the write, and returns the enriched record.
+  With `strict=True`, a failed probe raises inside the block.
+- `removed` queues today's subtree removal, including its ordering check and schema
+  cleanup.
+- The block must start before the earliest source read its facts depend on.
+- A non-exclusive block does not wait on exit, so a hint handler keeps today's throughput.
+  `await changes.landed()` waits with a barrier for writes queued so far, not for later
+  writers. API visibility stays with the router's barrier after each mutation.
+- `exclusive=True` holds the pass lock and runs that barrier on exit, including when the
+  block raises, before releasing the lock. A scan must not be started inside the block.
+- A barrier fails promptly if the write worker stops. If the block already raised, its
+  exception propagates with the barrier failure as context, and the lock is released.
+- The block is an ordering scope, not one transaction. Each write is its own transaction.
+- Source first, then mirror. No transaction is open during a source call. A crash between
+  them is repaired by the next scan, and clients resolve lost responses by sync and hash
+  comparison.
+- Node-tied backend state uses `BackendSchema` hooks in the node's transaction. Checkpoints
+  and other progress use `enqueue_write`, ordered after the work they cover.
+
+Read-only commands receive a core without `hints`, `observe`, or `enqueue_write`, with
+provisional IDs and a schema check that does not write. Their scans report would-be changes
+and do not persist IDs, write, probe, or call finish hooks. This differs from a backend's
+own `read_only` setting: a read-only filesystem source still writes the mirror and probes
+while serving.
+
+Backfill stays on a lower-level public API at first: `core.reconcile(scope, locate=...)`
+for read ordering, coverage, and removal candidates, plus `reconcile_insert`,
+`reconcile_update`, and `core.enrichment.scope()`.
+
+### Hint stage
+
+`publish` does no reads and accepts a raw backend event. One consumer per backend calls
+`handle(event)` for one event at a time. Everything in `handle` runs in source-code order,
+so read-before-write and read-after-write are ordinary sequencing. Facts come from
+`core.observe`. A value read before the block must not become an observation.
+
+`later(key, delay, fn)` runs `fn` as its own supervised task after the delay. A newer call
+with the same key cancels only a pending timer, never running work. `fn` takes its own read
+number when it starts. It does not block the consumer and does not count toward readiness.
+
+Synology folder move:
+
+```python
+async def handle(self, event):
+    # Old source and destination membership, read before this event's write.
+    skip_walk = await self._move_stays_inside_mounts(event)
+    async with core.observe() as changes:
+        match await self._fetch(event):
+            case OutsideMounts(node_id):
+                await changes.removed(node_id)         # found by ids.lookup, never minted
+            case NodeObservation() as fact:
+                await changes.upserted(fact)
+            case None:
+                pass
+        await changes.landed()
+    root = await self._moved_root(event)
+    if not skip_walk and root is not None:
+        await core.scans.walk(self._walk_scanner(), root)
+```
+
+A directory-create handler also calls `landed()` before returning, so the next hint can
+resolve the new parent. Plain file removals and upserts do not wait.
+
+Filesystem:
+
+```python
+async def run(self):
+    while True:
+        await watcher.wait()
+        await asyncio.sleep(settle_delay)
+        dirty, overflow = watcher.take()
+        core.hints.publish(FolderChanges(dirty, overflow))
+
+async def handle(self, event):
+    await core.scans.run(self._scanner(None if event.overflow else event.dirty))
+```
+
+### Scan runner
+
+A `Scanner` instance serves one pass or walk, and the caller creates it. Passes run one at
+a time, whether started by startup, a handler, a timer, a media retry, or
+an API operation. For each pass the core:
+
+1. Takes the pass lock, creates a Scanner, and calls `prepare()`. The filesystem swaps a
+   vanished or replaced dirty folder for its parent here. The core opens one reconcile
+   session over `plan.scope`, before any listing, and preserves `plan.preserved`. Values
+   read in `prepare` never become observations.
+2. Traverses the roots, concurrently unless `concurrent_roots` is false. Each work item
+   carries its root, and completeness is tracked per root. For each folder, one read number
+   covers `skip` and `list_folder` and is held until resulting writes are applied.
+3. Records `seen` and `keep`, submits directories, then files. File enrichment waits for
+   directory writes when there are files. Descending does not wait: `F` must carry what is
+   needed to list the folder. If `list_folder` raises, its subtree is preserved and its root
+   is incomplete. `skip` returning true preserves the subtree without making the root
+   incomplete. A `skip` that raises counts as a failed listing.
+4. Confirms and commits removals through `locate`. Computing candidates drains enrichment,
+   so files found by this pass are published or withheld before the lock is released;
+   otherwise a later pass could mint a second ID for the same new file.
+5. Drains, calls `root_finished` for each root, calls `pass_finished`, and releases the lock.
+
+`pass_finished(complete)` is true only if every root is complete and `plan.preserved` is
+empty. If `prepare` raises, the pass reconciles nothing. A failed finish hook fails the pass.
+A failed pass raises to its caller. Before releasing the lock, a failed pass drains work it
+already submitted, so the next pass cannot mint a second ID for a file still being enriched.
+The drain fails promptly if a worker has stopped. Only holds the pass still owns are released
+by it; holds handed to a queue stay with their jobs. Cancellation at shutdown does not drain.
+
+`walk(scanner, root)` lists a subtree without the pass lock, reconcile session, removals, or
+finish hooks, and never calls `skip`. The scanner given to it returns every convertible child
+in `changed`, without incremental filtering. Directory writes land before descending. File
+enrichment is submitted and not awaited. A failed listing raises.
+
+`list_folder` installs any watch before its first source read. Synology sets
+`concurrent_roots = False`, keeps per-mount state keyed by root, handles the mount level in
+`list_folder`, and keeps the watermark read before the scan as its checkpoint. Its
+`pass_finished` calls `retry_failures` during startup. The filesystem's `pass_finished`
+prunes failure records after a full pass, using the pass start as the cutoff.
+
+The filesystem's hourly rescan, media retry rescans, and name-conflict lookup call
+`core.scans.run` directly. The conflict lookup runs outside any exclusive block.
+
+Filesystem create, update, delete, and final upload publication enter
+`core.observe(exclusive=True)` before their validation reads, so a scan cannot mint another
+ID for the new entry. Staging, transfer, upload probing, conflict scans, and partial-delete
+repair stay outside the block. Downloads need none.
+
+### Lifecycle
+
+Startup runs per backend as supervised background work, as `_flip_ready` does today. The HTTP
+listener is already up, so backend routes such as webhooks work during the scan, while ordinary
+API handlers answer 503 until every backend is ready.
+
+0. Media retries are registered while the backend is entered, before the startup scan, and stay
+   registered through serving. They are keyed by source key, not `NodeId`.
+1. `before_scan()` starts change sources. Published hints are held.
+2. The core runs `startup_scanner()` through the scan runner, including finish hooks.
+3. The hint consumer and `run()` start.
+4. The core waits until every accepted hint has been fully handled, as `queue.join()` does
+   today, and enrichment has drained. The backend is then ready. `later` work does not count.
+
+Synology hints wait in the core queue during the scan, so readiness includes them. The
+filesystem watcher keeps changes in its dirty set, and `run()` publishes after the scan, so
+they do not delay readiness, as today.
+
+Every started task is supervised. On shutdown, runtime tasks, workers, and retries are cancelled
+and awaited before sources close. Hint failure policy is per backend: stop the server (Synology)
+or log and continue (filesystem). It covers source and handler errors only.
+
+### Testing
+
+Framework rules are tested with an in-memory fake backend and a real temporary SQLite mirror,
+without HTTP. Ordering is forced with gates, never sleeps. The core accepts an injected clock or
+scheduler for `later`, settle windows, periodic scans, retry backoff, and prune cutoffs, and
+exposes completion barriers for hints and passes. Real inotify delivery, filesystem identity,
+NAS watermarks, and crash durability stay in backend integration tests.
+
 ## Reconciliation and ordering
 
 ### Observation ordering
