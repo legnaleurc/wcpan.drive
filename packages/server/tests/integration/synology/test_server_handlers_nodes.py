@@ -72,7 +72,7 @@ from wcpan.synology.types import (
     SynologyPermanentLink,
 )
 
-from ._lib import ROOT_ID, DecoyTestCase, IdentityIds
+from ...backend.synology._lib import ROOT_ID, DecoyTestCase, IdentityIds
 
 
 _EPOCH = 0

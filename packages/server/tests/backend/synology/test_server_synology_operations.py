@@ -5,10 +5,10 @@ from contextlib import asynccontextmanager
 
 from aiohttp import ClientResponse
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server._services.operations import OperationUnavailableError
-from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server.backend.synology._operations import SynologyNodeOperations
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
+from wcpan.drive.server.exceptions import OperationUnavailableError
+from wcpan.drive.server.types import ScanRunner
 from wcpan.synology.exceptions import SynologyNetworkError
 from wcpan.synology.types import (
     SynologyClient,

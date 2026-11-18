@@ -9,12 +9,10 @@ from unittest import IsolatedAsyncioTestCase
 
 from aiohttp import StreamReader
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server._services.media.probe.source import (
-    MediaSourceError,
-    read_exactly,
-)
-from wcpan.drive.server._types import NodeObservation
 from wcpan.drive.server.backend.synology._media import media_sources
+from wcpan.drive.server.exceptions import MediaSourceError
+from wcpan.drive.server.testing import read_exactly
+from wcpan.drive.server.types import NodeObservation
 from wcpan.synology.exceptions import (
     SynologyNetworkError,
     SynologyNotFoundError,

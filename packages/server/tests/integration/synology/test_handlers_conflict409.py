@@ -54,7 +54,7 @@ from wcpan.synology.types import (
     SynologyFileInfo,
 )
 
-from ._lib import ROOT_ID, DecoyTestCase, IdentityIds
+from ...backend.synology._lib import ROOT_ID, DecoyTestCase, IdentityIds
 
 
 _PARENT = SynologyFileId(file_id="parent-a")

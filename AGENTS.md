@@ -11,7 +11,9 @@ This repository is a uv workspace for `wcpan.drive` client and server packages.
 - Shared HTTP wire types and helpers live in `packages/protocol`.
 - Built-in server backends live in `packages/server`: code under
   `wcpan.drive.server.backend.*`, tests in `tests/backend/`, and README and
-  `SPEC.md` in `docs/backend/`. They use the core only through its public modules.
+  `SPEC.md` in `docs/backend/`. They and their tests use the core only through its
+  public modules and `wcpan.drive.server.testing`; tests that need core internals
+  belong in `tests/integration/`.
 - Member tests live in their `tests/test_*.py`; root `tests/` holds workspace-wide and cross-package tests. A member's tests import only that member and its declared dependencies.
 
 Treat each member's `README.md` as the source of truth for its

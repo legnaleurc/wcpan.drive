@@ -18,7 +18,7 @@ from wcpan.drive.server._types import NodeObservation
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 
-from ._lib import ROOT_ID, mount_id
+from ...backend.synology._lib import ROOT_ID, mount_id
 
 
 _MOUNT = mount_id("docs")

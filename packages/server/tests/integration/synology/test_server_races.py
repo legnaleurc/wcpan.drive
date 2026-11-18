@@ -59,7 +59,13 @@ from wcpan.synology.types import (
     SynologyPermanentLink,
 )
 
-from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, mount_id, mounts_of
+from ...backend.synology._lib import (
+    ROOT_ID,
+    DecoyTestCase,
+    IdentityIds,
+    mount_id,
+    mounts_of,
+)
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)

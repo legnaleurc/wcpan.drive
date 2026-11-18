@@ -68,7 +68,13 @@ from wcpan.synology.types import (
     SynologyPermanentLink,
 )
 
-from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts, make_request
+from ...backend.synology._lib import (
+    ROOT_ID,
+    DecoyTestCase,
+    IdentityIds,
+    make_mounts,
+    make_request,
+)
 
 
 _P1 = SynologyFileId(file_id="p1")

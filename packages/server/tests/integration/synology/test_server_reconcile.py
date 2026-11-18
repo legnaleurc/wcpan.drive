@@ -55,7 +55,13 @@ from wcpan.synology.types import (
     SynologyPath,
 )
 
-from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts, mount_id
+from ...backend.synology._lib import (
+    ROOT_ID,
+    DecoyTestCase,
+    IdentityIds,
+    make_mounts,
+    mount_id,
+)
 
 
 _TS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp())

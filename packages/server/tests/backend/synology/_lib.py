@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 from collections.abc import Mapping, Sequence
 from unittest import IsolatedAsyncioTestCase
 
@@ -9,35 +10,27 @@ from aiohttp.streams import StreamReader
 from aiohttp.test_utils import make_mocked_request
 from decoy import Decoy
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server._backend import Mount, Mounts
-from wcpan.drive.server._services.ids import UnknownNodeError, new_node_id
+from wcpan.drive.server.exceptions import UnknownNodeError
+from wcpan.drive.server.testing import ROOT_ID, make_mounts, mount_id
+from wcpan.drive.server.types import Mounts
 from wcpan.synology.types import SynologyPath
-
-
-ROOT_ID = NodeId("root")
-"""The fixed ID of the server root in ``make_mounts``."""
-
-
-def mount_id(name: str) -> NodeId:
-    """The fixed ID ``make_mounts`` gives the mount *name*."""
-    return NodeId(f"_{name}")
-
-
-def make_mounts(sources: Mapping[str, str]) -> Mounts:
-    """Mounts named by the keys of *sources*, with IDs from ``mount_id``,
-    under ``ROOT_ID``."""
-    return Mounts(
-        (
-            Mount(name=name, id=mount_id(name), source=source)
-            for name, source in sources.items()
-        ),
-        root_id=ROOT_ID,
-    )
 
 
 def mounts_of(paths: Mapping[str, SynologyPath]) -> Mounts:
     """Mounts with the given Synology paths as their sources."""
     return make_mounts({name: p.path for name, p in paths.items()})
+
+
+__all__ = (
+    "ROOT_ID",
+    "DecoyTestCase",
+    "IdentityIds",
+    "make_mounts",
+    "make_request",
+    "make_stream",
+    "mount_id",
+    "mounts_of",
+)
 
 
 class IdentityIds:
@@ -59,7 +52,7 @@ class IdentityIds:
         return str(node_id)
 
     def mint(self) -> NodeId:
-        return new_node_id()
+        return NodeId(uuid.uuid4().hex)
 
 
 class DecoyTestCase(IsolatedAsyncioTestCase):

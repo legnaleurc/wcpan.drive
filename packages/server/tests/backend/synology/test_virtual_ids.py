@@ -6,7 +6,6 @@ from unittest import TestCase
 
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server._backend import Mounts
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import (
     MountRegistry,
@@ -15,6 +14,7 @@ from wcpan.drive.server.backend.synology._mounts import (
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.drive.server.backend.synology._store import SynologyStore
 from wcpan.drive.server.exceptions import UnknownNodeError
+from wcpan.drive.server.types import Mounts
 from wcpan.synology.exceptions import (
     SynologyApiError,
     SynologyDirectoryNotFoundError,

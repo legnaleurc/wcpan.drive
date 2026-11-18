@@ -3,38 +3,23 @@
 import asyncio
 import os
 import tempfile
+from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack, asynccontextmanager, suppress
+from typing import Any
 from unittest.mock import patch
 
 import wcpan.drive.server.backend.synology._scan as startup_scan_mod
 from decoy import matchers
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
 from wcpan.drive.protocol.types import NodeRecord
-from wcpan.drive.server._lib.write_queue import (
-    WriteQueue,
-    create_write_queue,
-)
-from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probing import MediaProbing
-from wcpan.drive.server._services.mirror.store import (
-    MirrorStore,
-)
-from wcpan.drive.server._services.off_main import OffMainService
-from wcpan.drive.server._services.sync.enrichment import Enrichment
-from wcpan.drive.server._services.sync.metadata import (
-    metadata_worker,
-)
-from wcpan.drive.server._services.sync.scan import ScanRunner
-from wcpan.drive.server._services.sync.service import NodeSyncService
-from wcpan.drive.server._types import (
-    NodeObservation,
-)
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.drive.server.backend.synology._scan import StartupScanService
 from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.testing import BackendInstance, backend_harness
+from wcpan.drive.server.types import NodeObservation
 from wcpan.synology.exceptions import SynologyNotFoundError
 from wcpan.synology.types import (
     SynologyClient,
@@ -96,6 +81,36 @@ def _syno_item(
     }
 
 
+class _Fixture:
+    def __init__(self, mirror: Any, instance: BackendInstance) -> None:
+        self.mirror = mirror
+        self.core = instance.core
+        self._instance = instance
+
+    def service(self, drive_api: SynologyClient) -> StartupScanService:
+        store = SynologyStore(
+            mirror=self.mirror,
+            ns=self._instance.namespace,
+            write=self.core.enqueue_write,
+        )
+        return StartupScanService(
+            drive_api=drive_api,
+            mirror=self.mirror,
+            store=store,
+            syno_paths=SynologyPathService(
+                ids=IdentityIds(),
+                registry=MountRegistry(mounts=self._instance.mounts, root_ids={}),
+                store=store,
+            ),
+            enrichment=self.core.enrichment,
+            scans=self.core.scans,
+        )
+
+    async def settled(self) -> None:
+        await self.core.enrichment.drain()
+        await self.core.writes_landed()
+
+
 class TestDeferredScan(DecoyTestCase):
     async def _drive_api(self, count: int = 0) -> SynologyClient:
         """A drive API whose folder counts are *count* and whose nodes are gone."""
@@ -138,737 +153,338 @@ class TestDeferredScan(DecoyTestCase):
         if mute_tree_log_exception:
             stack.enter_context(patch.object(startup_scan_mod._L, "exception"))
 
-    async def _drain_writes(self, q: WriteQueue) -> None:
-        try:
-            while True:
-                job = await q.get()
-                try:
-                    await job()
-                finally:
-                    q.task_done()
-        except asyncio.CancelledError:
-            raise
+    @asynccontextmanager
+    async def _fixture(self, sources: dict[str, str]) -> AsyncGenerator["_Fixture"]:
+        async with backend_harness() as server:
+            instance = await server.add_instance("synology", SYNOLOGY_SCHEMA, sources)
+            yield _Fixture(server.mirror, instance)
 
     async def test_cross_mount_reparent_no_remove_change_for_file_id(self) -> None:
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                        _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
-                        _node("x1", "moved.txt", mount_id("a")),
-                    ]
-                )
+        async with self._fixture({"a": "/vol/a", "b": "/vol/b"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                    _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
+                    _node("x1", "moved.txt", mount_id("a")),
+                ]
+            )
 
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return []
-                    if path == "/vol/b":
-                        return [_syno_item("x1", "moved.txt", is_dir=False)]
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
                     return []
+                if path == "/vol/b":
+                    return [_syno_item("x1", "moved.txt", is_dir=False)]
+                return []
 
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
-                )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(stack, by_path=by_path)
-                        svc = StartupScanService(
-                            drive_api=self.decoy.mock(cls=SynologyClient),
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a", "b": "/vol/b"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        await svc._scan_all_mounts({"a": 50, "b": 50})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(stack, by_path=by_path)
+                svc = fixture.service(self.decoy.mock(cls=SynologyClient))
+                # when
+                await svc._scan_all_mounts({"a": 50, "b": 50})
+            await fixture.settled()
 
-                # then
-                row = await mirror.get_node_by_id("x1")
-                self.assertIsNotNone(row)
-                assert row is not None
-                self.assertEqual(row.parent_id, mount_id("b"))
+            # then
+            row = await mirror.get_node_by_id("x1")
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertEqual(row.parent_id, mount_id("b"))
 
-                changes, _, _ = await mirror.get_changes_since(0, max_size=500)
-                x1_removes = [c for c in changes if c[0] == "x1" and c[1] is True]
-                self.assertEqual(x1_removes, [])
-        finally:
-            os.unlink(db_path)
+            changes, _, _ = await mirror.get_changes_since(0, max_size=500)
+            x1_removes = [c for c in changes if c[0] == "x1" and c[1] is True]
+            self.assertEqual(x1_removes, [])
 
     async def test_max_id_prune_preserves_db_subtree(self) -> None:
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
+        async with self._fixture({"a": "/vol/a"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                    _node("dirF", "F", mount_id("a"), is_directory=True),
+                    _node("childC", "c.txt", "dirF"),
+                ]
+            )
+
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
+                    return [_syno_item("dirF", "F", is_dir=True, sync_id=10, max_id=10)]
+                return []
+
+            async def list_all(_net: object, folder_id: str) -> list:
+                raise AssertionError(f"unexpected list of {folder_id}")
+
+            # Unlisted nodes are confirmed missing before removal.
+            drive_api = await self._drive_api(count=1)
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack,
+                    by_path=by_path,
+                    list_all=list_all,
                 )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                        _node("dirF", "F", mount_id("a"), is_directory=True),
-                        _node("childC", "c.txt", "dirF"),
-                    ]
-                )
+                svc = fixture.service(drive_api)
+                # when
+                await svc._scan_all_mounts({"a": 100})
+            await fixture.settled()
 
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return [
-                            _syno_item("dirF", "F", is_dir=True, sync_id=10, max_id=10)
-                        ]
-                    return []
-
-                async def list_all(_net: object, folder_id: str) -> list:
-                    raise AssertionError(f"unexpected list of {folder_id}")
-
-                # Unlisted nodes are confirmed missing before removal.
-                drive_api = await self._drive_api(count=1)
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
-                )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack,
-                            by_path=by_path,
-                            list_all=list_all,
-                        )
-                        svc = StartupScanService(
-                            drive_api=drive_api,
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        await svc._scan_all_mounts({"a": 100})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
-
-                # then
-                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
-                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
-        finally:
-            os.unlink(db_path)
+            # then
+            self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+            self.assertIsNotNone(await mirror.get_node_by_id("childC"))
 
     async def test_initial_scan_enters_folder_with_zero_max_id(self) -> None:
         """Full initial scan (last_max_id=0) must enter folders whose max_id is 0."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
+        async with self._fixture({"a": "/vol/a"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                ]
+            )
+
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
+                    return [_syno_item("dirF", "F", is_dir=True, sync_id=0, max_id=0)]
+                return []
+
+            async def list_all(_net: object, folder_id: str) -> list:
+                if folder_id == "dirF":
+                    return [_syno_item("childC", "c.txt", sync_id=0)]
+                return []
+
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack, by_path=by_path, list_all=list_all
                 )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                    ]
-                )
+                svc = fixture.service(self.decoy.mock(cls=SynologyClient))
+                # when
+                await svc._scan_all_mounts({"a": 0})
+            await fixture.settled()
 
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return [
-                            _syno_item("dirF", "F", is_dir=True, sync_id=0, max_id=0)
-                        ]
-                    return []
-
-                async def list_all(_net: object, folder_id: str) -> list:
-                    if folder_id == "dirF":
-                        return [_syno_item("childC", "c.txt", sync_id=0)]
-                    return []
-
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
-                )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack, by_path=by_path, list_all=list_all
-                        )
-                        svc = StartupScanService(
-                            drive_api=self.decoy.mock(cls=SynologyClient),
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        await svc._scan_all_mounts({"a": 0})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
-
-                # then
-                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
-                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
-        finally:
-            os.unlink(db_path)
+            # then
+            self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+            self.assertIsNotNone(await mirror.get_node_by_id("childC"))
 
     async def test_new_folder_with_stale_max_id_is_force_scanned(self) -> None:
         """A folder absent from DB must be entered even when max_id <= last_max_id."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
+        async with self._fixture({"a": "/vol/a"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                ]
+            )
+
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
+                    return [_syno_item("dirF", "F", is_dir=True, sync_id=40, max_id=50)]
+                return []
+
+            async def list_all(_net: object, folder_id: str) -> list:
+                if folder_id == "dirF":
+                    return [_syno_item("childC", "c.txt", sync_id=50)]
+                return []
+
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack, by_path=by_path, list_all=list_all
                 )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                    ]
-                )
+                svc = fixture.service(self.decoy.mock(cls=SynologyClient))
+                # when
+                await svc._scan_all_mounts({"a": 100})
+            await fixture.settled()
 
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return [
-                            _syno_item("dirF", "F", is_dir=True, sync_id=40, max_id=50)
-                        ]
-                    return []
-
-                async def list_all(_net: object, folder_id: str) -> list:
-                    if folder_id == "dirF":
-                        return [_syno_item("childC", "c.txt", sync_id=50)]
-                    return []
-
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
-                )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack, by_path=by_path, list_all=list_all
-                        )
-                        svc = StartupScanService(
-                            drive_api=self.decoy.mock(cls=SynologyClient),
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        await svc._scan_all_mounts({"a": 100})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
-
-                # then
-                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
-                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
-        finally:
-            os.unlink(db_path)
+            # then
+            self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+            self.assertIsNotNone(await mirror.get_node_by_id("childC"))
 
     async def test_db_folder_with_no_children_is_force_scanned(self) -> None:
         """A folder already in DB but with no DB children must be entered even
         when max_id <= last_max_id (its contents were never successfully scanned)."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
+        async with self._fixture({"a": "/vol/a"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                    _node("dirF", "F", mount_id("a"), is_directory=True),
+                ]
+            )
+
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
+                    return [_syno_item("dirF", "F", is_dir=True, sync_id=40, max_id=50)]
+                return []
+
+            async def list_all(_net: object, folder_id: str) -> list:
+                if folder_id == "dirF":
+                    return [_syno_item("childC", "c.txt", sync_id=50)]
+                return []
+
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack, by_path=by_path, list_all=list_all
                 )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                        _node("dirF", "F", mount_id("a"), is_directory=True),
-                    ]
-                )
+                svc = fixture.service(self.decoy.mock(cls=SynologyClient))
+                # when
+                await svc._scan_all_mounts({"a": 100})
+            await fixture.settled()
 
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return [
-                            _syno_item("dirF", "F", is_dir=True, sync_id=40, max_id=50)
-                        ]
-                    return []
-
-                async def list_all(_net: object, folder_id: str) -> list:
-                    if folder_id == "dirF":
-                        return [_syno_item("childC", "c.txt", sync_id=50)]
-                    return []
-
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
-                )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack, by_path=by_path, list_all=list_all
-                        )
-                        svc = StartupScanService(
-                            drive_api=self.decoy.mock(cls=SynologyClient),
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        await svc._scan_all_mounts({"a": 100})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
-
-                # then
-                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
-                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
-        finally:
-            os.unlink(db_path)
+            # then
+            self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+            self.assertIsNotNone(await mirror.get_node_by_id("childC"))
 
     async def test_list_failure_preserves_db_subtree(self) -> None:
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                        _node("dirF", "F", mount_id("a"), is_directory=True),
-                        _node("childC", "c.txt", "dirF"),
+        async with self._fixture({"a": "/vol/a"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                    _node("dirF", "F", mount_id("a"), is_directory=True),
+                    _node("childC", "c.txt", "dirF"),
+                ]
+            )
+
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
+                    return [
+                        _syno_item("dirF", "F", is_dir=True, sync_id=200, max_id=200)
                     ]
+                return []
+
+            async def list_all(_net: object, folder_id: str) -> list:
+                if folder_id == "dirF":
+                    raise OSError("boom")
+                return []
+
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack,
+                    by_path=by_path,
+                    list_all=list_all,
+                    mute_tree_log_exception=True,
                 )
+                svc = fixture.service(self.decoy.mock(cls=SynologyClient))
+                # when
+                await svc._scan_all_mounts({"a": 50})
+            await fixture.settled()
 
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return [
-                            _syno_item(
-                                "dirF", "F", is_dir=True, sync_id=200, max_id=200
-                            )
-                        ]
-                    return []
-
-                async def list_all(_net: object, folder_id: str) -> list:
-                    if folder_id == "dirF":
-                        raise OSError("boom")
-                    return []
-
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
-                )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack,
-                            by_path=by_path,
-                            list_all=list_all,
-                            mute_tree_log_exception=True,
-                        )
-                        svc = StartupScanService(
-                            drive_api=self.decoy.mock(cls=SynologyClient),
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        await svc._scan_all_mounts({"a": 50})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
-
-                # then
-                self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
-                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
-        finally:
-            os.unlink(db_path)
+            # then
+            self.assertIsNotNone(await mirror.get_node_by_id("dirF"))
+            self.assertIsNotNone(await mirror.get_node_by_id("childC"))
 
     async def test_max_id_prune_detects_deletion_via_count_mismatch(self) -> None:
         """max_id unchanged but a child deleted: count check triggers a full scan."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                        _node(
-                            "perm:dirF",
-                            "F",
-                            mount_id("a"),
-                            is_directory=True,
+        async with self._fixture({"a": "/vol/a"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                    _node(
+                        "perm:dirF",
+                        "F",
+                        mount_id("a"),
+                        is_directory=True,
+                    ),
+                    _node("child1", "a.txt", "perm:dirF"),
+                    _node("child2", "b.txt", "perm:dirF"),
+                ]
+            )
+            await mirror.apply_observations(
+                [
+                    NodeObservation(
+                        record=_node(
+                            "perm:dirF", "F", mount_id("a"), is_directory=True
                         ),
-                        _node("child1", "a.txt", "perm:dirF"),
-                        _node("child2", "b.txt", "perm:dirF"),
-                    ]
-                )
-                await mirror.apply_observations(
-                    [
-                        NodeObservation(
-                            record=_node(
-                                "perm:dirF", "F", mount_id("a"), is_directory=True
-                            ),
-                            locator=SynologyLocator("dirF"),
-                            backend="synology",
-                        )
-                    ]
-                )
-
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return [
-                            {
-                                **_syno_item(
-                                    "dirF", "F", is_dir=True, sync_id=10, max_id=10
-                                ),
-                                "permanent_link": "perm:dirF",
-                            }
-                        ]
-                    return []
-
-                async def list_all(_net: object, folder_id: str) -> list:
-                    if folder_id == "perm:dirF":
-                        return [_syno_item("child1", "a.txt")]
-                    return []
-
-                # Unlisted nodes are confirmed missing before removal.
-                drive_api = await self._drive_api()
-                self.decoy.when(
-                    await drive_api.list_folder(
-                        SynologyPermanentLink("perm:dirF"), offset=0, limit=1
+                        locator=SynologyLocator("dirF"),
+                        backend="synology",
                     )
-                ).then_return(([], 1))
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
-                )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack,
-                            by_path=by_path,
-                            list_all=list_all,
-                        )
-                        svc = StartupScanService(
-                            drive_api=drive_api,
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        await svc._scan_all_mounts({"a": 100})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
+                ]
+            )
 
-                # then
-                self.assertIsNotNone(await mirror.get_node_by_id("child1"))
-                self.assertIsNone(await mirror.get_node_by_id("child2"))
-        finally:
-            os.unlink(db_path)
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
+                    return [
+                        {
+                            **_syno_item(
+                                "dirF", "F", is_dir=True, sync_id=10, max_id=10
+                            ),
+                            "permanent_link": "perm:dirF",
+                        }
+                    ]
+                return []
+
+            async def list_all(_net: object, folder_id: str) -> list:
+                if folder_id == "perm:dirF":
+                    return [_syno_item("child1", "a.txt")]
+                return []
+
+            # Unlisted nodes are confirmed missing before removal.
+            drive_api = await self._drive_api()
+            self.decoy.when(
+                await drive_api.list_folder(
+                    SynologyPermanentLink("perm:dirF"), offset=0, limit=1
+                )
+            ).then_return(([], 1))
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack,
+                    by_path=by_path,
+                    list_all=list_all,
+                )
+                svc = fixture.service(drive_api)
+                # when
+                await svc._scan_all_mounts({"a": 100})
+            await fixture.settled()
+
+            # then
+            self.assertIsNotNone(await mirror.get_node_by_id("child1"))
+            self.assertIsNone(await mirror.get_node_by_id("child2"))
 
     async def test_failed_mount_does_not_advance_its_max_id(self) -> None:
         """A mount whose top-level list fails returns its input last_max_id unchanged."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                        _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
-                    ]
-                )
+        async with self._fixture({"a": "/vol/a", "b": "/vol/b"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                    _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
+                ]
+            )
 
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        raise OSError("mount a unavailable")
-                    return [_syno_item("f1", "file.txt", sync_id=200)]
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
+                    raise OSError("mount a unavailable")
+                return [_syno_item("f1", "file.txt", sync_id=200)]
 
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack,
+                    by_path=by_path,
+                    mute_tree_log_exception=True,
                 )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack,
-                            by_path=by_path,
-                            mute_tree_log_exception=True,
-                        )
-                        svc = StartupScanService(
-                            drive_api=self.decoy.mock(cls=SynologyClient),
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a", "b": "/vol/b"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        result = await svc._scan_all_mounts({"a": 100, "b": 100})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
+                svc = fixture.service(self.decoy.mock(cls=SynologyClient))
+                # when
+                result = await svc._scan_all_mounts({"a": 100, "b": 100})
+            await fixture.settled()
 
-                # then
-                per_mount_highest, _ = result
-                self.assertEqual(per_mount_highest["a"], 100)
-                self.assertEqual(per_mount_highest["b"], 200)
-        finally:
-            os.unlink(db_path)
+            # then
+            per_mount_highest, _ = result
+            self.assertEqual(per_mount_highest["a"], 100)
+            self.assertEqual(per_mount_highest["b"], 200)
 
     async def test_failed_subfolder_does_not_advance_its_max_id(self) -> None:
         """A failed listing below a mount keeps that mount's checkpoint.
@@ -877,195 +493,93 @@ class TestDeferredScan(DecoyTestCase):
         or below the advanced checkpoint, and miss changes inside it.
         """
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                        _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
-                        _node("dirF", "F", mount_id("a"), is_directory=True),
-                        _node("childC", "c.txt", "dirF"),
+        async with self._fixture({"a": "/vol/a", "b": "/vol/b"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                    _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
+                    _node("dirF", "F", mount_id("a"), is_directory=True),
+                    _node("childC", "c.txt", "dirF"),
+                ]
+            )
+
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
+                    return [
+                        _syno_item("dirF", "F", is_dir=True, sync_id=200, max_id=200)
                     ]
+                return [_syno_item("f1", "file.txt", sync_id=200)]
+
+            async def list_all(_net: object, folder_id: str) -> list:
+                if folder_id == "dirF":
+                    raise OSError("boom")
+                return []
+
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack,
+                    by_path=by_path,
+                    list_all=list_all,
+                    mute_tree_log_exception=True,
                 )
-
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return [
-                            _syno_item(
-                                "dirF", "F", is_dir=True, sync_id=200, max_id=200
-                            )
-                        ]
-                    return [_syno_item("f1", "file.txt", sync_id=200)]
-
-                async def list_all(_net: object, folder_id: str) -> list:
-                    if folder_id == "dirF":
-                        raise OSError("boom")
-                    return []
-
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
+                svc = fixture.service(self.decoy.mock(cls=SynologyClient))
+                # when
+                per_mount_highest, pre_scan = await svc._scan_all_mounts(
+                    {"a": 100, "b": 100}
                 )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack,
-                            by_path=by_path,
-                            list_all=list_all,
-                            mute_tree_log_exception=True,
-                        )
-                        svc = StartupScanService(
-                            drive_api=self.decoy.mock(cls=SynologyClient),
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a", "b": "/vol/b"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        per_mount_highest, pre_scan = await svc._scan_all_mounts(
-                            {"a": 100, "b": 100}
-                        )
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
+            await fixture.settled()
 
-                # then
-                self.assertEqual(pre_scan["a"], 100)
-                self.assertEqual(per_mount_highest["a"], 100)
-                self.assertEqual(pre_scan["b"], 200)
-                self.assertIsNotNone(await mirror.get_node_by_id("childC"))
-        finally:
-            os.unlink(db_path)
+            # then
+            self.assertEqual(pre_scan["a"], 100)
+            self.assertEqual(per_mount_highest["a"], 100)
+            self.assertEqual(pre_scan["b"], 200)
+            self.assertIsNotNone(await mirror.get_node_by_id("childC"))
 
     async def test_per_mount_pruning_thresholds_are_independent(self) -> None:
         """Each mount uses its own last_max_id threshold for BFS pruning."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor(2) as pool:
-                off_main = OffMainService(pool=pool)
-                mirror = MirrorStore(
-                    db_path, off_main=off_main, schemas={"synology": SYNOLOGY_SCHEMA}
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
-                        _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
-                        _node("dirX_a", "X", mount_id("a"), is_directory=True),
-                        _node("child_a", "c.txt", "dirX_a"),
-                        _node("dirX_b", "X", mount_id("b"), is_directory=True),
-                        _node("child_b", "c.txt", "dirX_b"),
-                    ]
-                )
+        async with self._fixture({"a": "/vol/a", "b": "/vol/b"}) as fixture:
+            mirror = fixture.mirror
+            await mirror.bulk_upsert_nodes(
+                [
+                    _node(ROOT_ID, "", None, is_directory=True),
+                    _node(mount_id("a"), "a", ROOT_ID, is_directory=True),
+                    _node(mount_id("b"), "b", ROOT_ID, is_directory=True),
+                    _node("dirX_a", "X", mount_id("a"), is_directory=True),
+                    _node("child_a", "c.txt", "dirX_a"),
+                    _node("dirX_b", "X", mount_id("b"), is_directory=True),
+                    _node("child_b", "c.txt", "dirX_b"),
+                ]
+            )
 
-                entered: list[str] = []
+            entered: list[str] = []
 
-                async def by_path(_net: object, path: str) -> list:
-                    if path == "/vol/a":
-                        return [
-                            _syno_item(
-                                "dirX_a", "X", is_dir=True, sync_id=50, max_id=80
-                            )
-                        ]
+            async def by_path(_net: object, path: str) -> list:
+                if path == "/vol/a":
                     return [
-                        _syno_item("dirX_b", "X", is_dir=True, sync_id=50, max_id=80)
+                        _syno_item("dirX_a", "X", is_dir=True, sync_id=50, max_id=80)
                     ]
+                return [_syno_item("dirX_b", "X", is_dir=True, sync_id=50, max_id=80)]
 
-                async def list_all(_net: object, folder_id: str) -> list:
-                    entered.append(folder_id)
-                    return []
+            async def list_all(_net: object, folder_id: str) -> list:
+                entered.append(folder_id)
+                return []
 
-                # Unlisted nodes are confirmed missing before removal.
-                drive_api = await self._drive_api(count=1)
-                q = create_write_queue()
-                mq: asyncio.Queue = asyncio.Queue()
-                cs = NodeSyncService(
-                    mirror=mirror,
-                    write_queue=q,
-                    probing=MediaProbing(runner=ProbeRunner()),
-                    metadata_queue=mq,
-                ).for_backend("synology")
-                drain = asyncio.create_task(self._drain_writes(q))
-                meta_drain = asyncio.create_task(
-                    metadata_worker(mq, cs.process_metadata_item)
+            # Unlisted nodes are confirmed missing before removal.
+            drive_api = await self._drive_api(count=1)
+            with ExitStack() as stack:
+                self._push_incremental_scan_mocks(
+                    stack,
+                    by_path=by_path,
+                    list_all=list_all,
                 )
-                try:
-                    with ExitStack() as stack:
-                        self._push_incremental_scan_mocks(
-                            stack,
-                            by_path=by_path,
-                            list_all=list_all,
-                        )
-                        svc = StartupScanService(
-                            drive_api=drive_api,
-                            mirror=mirror,
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                            syno_paths=SynologyPathService(
-                                ids=IdentityIds(),
-                                registry=MountRegistry(
-                                    mounts=make_mounts({"a": "/vol/a", "b": "/vol/b"}),
-                                    root_ids={},
-                                ),
-                                store=SynologyStore(
-                                    mirror=mirror, ns=mirror.namespace("synology")
-                                ),
-                            ),
-                            enrichment=Enrichment(cs),
-                            scans=ScanRunner(mirror=mirror, node_sync=cs),
-                        )
-                        # when
-                        await svc._scan_all_mounts({"a": 100, "b": 50})
-                finally:
-                    await mq.join()
-                    await q.join()
-                    meta_drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await meta_drain
-                    drain.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await drain
+                svc = fixture.service(drive_api)
+                # when
+                await svc._scan_all_mounts({"a": 100, "b": 50})
+            await fixture.settled()
 
-                # then
-                self.assertNotIn("dirX_a", entered)
-                self.assertIn("dirX_b", entered)
-        finally:
-            os.unlink(db_path)
+            # then
+            self.assertNotIn("dirX_a", entered)
+            self.assertIn("dirX_b", entered)

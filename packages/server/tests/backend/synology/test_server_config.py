@@ -1,36 +1,14 @@
-from collections.abc import AsyncGenerator
-
-
 """Synology backend settings and instances."""
 
 import io
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from decoy import Decoy, matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server._backend import (
-    Access,
-    BackendContext,
-    BackendRoutes,
-    CoreServices,
-    Mounts,
-    enter_backend,
-    load_command_parser,
-)
-from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
-from wcpan.drive.server._services.media.probing import MediaProbing
-from wcpan.drive.server._services.mirror.model import (
-    MediaFailure,
-)
-from wcpan.drive.server._services.mirror.store import (
-    MirrorStore,
-)
-from wcpan.drive.server._services.off_main import OffMainService
-from wcpan.drive.server._services.sync.service import NodeSyncService
-from wcpan.drive.server._types import NodeObservation
 from wcpan.drive.server.backend.synology import create_backend
 from wcpan.drive.server.backend.synology._commands import parse_command
 from wcpan.drive.server.backend.synology._config import (
@@ -40,6 +18,19 @@ from wcpan.drive.server.backend.synology._config import (
 from wcpan.drive.server.backend.synology._mounts import (
     MountRegistry,
     create_mount_registry,
+)
+from wcpan.drive.server.testing import ProbeRunner, enter_backend, load_command_parser
+from wcpan.drive.server.types import (
+    Access,
+    BackendContext,
+    BackendRoutes,
+    CoreServices,
+    MediaFailure,
+    MediaProbing,
+    MirrorReader,
+    Mounts,
+    NodeObservation,
+    ProbeFailure,
 )
 from wcpan.synology.types import SynologyClient
 
@@ -118,13 +109,17 @@ class TestSettings(DecoyTestCase):
 def _context(
     *, offline: bool, decoy: Decoy, mounts: dict[str, str] | None = None
 ) -> BackendContext:
+    node_sync: Any = MagicMock()
+    node_sync.register_schema = AsyncMock(return_value=MagicMock())
+    node_sync.enrichment_scope = MagicMock(side_effect=lambda: _no_retries())
+    node_sync.retrying = MagicMock(side_effect=lambda _: _no_retries())
     return BackendContext(
         name="nas",
         mounts=make_mounts(mounts or {"p": "/volume1/p"}),
         core=CoreServices(
             media=MediaProbing(runner=ProbeRunner()),
-            mirror=decoy.mock(cls=MirrorStore),
-            node_sync=decoy.mock(cls=NodeSyncService),
+            mirror=decoy.mock(cls=MirrorReader),
+            node_sync=node_sync,
             ids=IdentityIds(),
         ),
         routes=BackendRoutes(name="nas"),
@@ -191,10 +186,7 @@ class TestFactory(DecoyTestCase):
             async with create_backend(context, **_settings()):
                 pass
         # then
-        self.decoy.verify(
-            await context.core.node_sync.register_schema(matchers.Anything()),
-            times=1,
-        )
+        cast(Any, context.core.node_sync).register_schema.assert_awaited_once()
 
     async def test_backfill_connects_and_reconciles_this_instance(self):
         # given
@@ -203,11 +195,6 @@ class TestFactory(DecoyTestCase):
         )
         for argv, dry_run in ((["/p", "--dry-run"], True), (["/p"], False)):
             context = _context(offline=True, decoy=self.decoy)
-            if not dry_run:
-                # Unstubbed, a dry run entering it would fail on ``None``.
-                self.decoy.when(
-                    context.core.node_sync.enrichment_scope()
-                ).then_enter_with(None)
             with (
                 self.subTest(dry_run=dry_run),
                 patch(
@@ -299,9 +286,6 @@ class TestFactory(DecoyTestCase):
             )
         ).then_return("hook-1")
         context = _context(offline=False, decoy=self.decoy)
-        self.decoy.when(
-            context.core.node_sync.retrying(matchers.Anything())
-        ).then_return(_no_retries())
         # when
         async with create_backend(context, **_settings()) as backend:
             # then

@@ -41,7 +41,13 @@ from wcpan.synology.types import (
     SynologyPermanentLink,
 )
 
-from ._lib import ROOT_ID, DecoyTestCase, IdentityIds, make_mounts, mount_id
+from ...backend.synology._lib import (
+    ROOT_ID,
+    DecoyTestCase,
+    IdentityIds,
+    make_mounts,
+    mount_id,
+)
 
 
 def _dir(node_id: str, name: str, parent_id: str | None) -> NodeRecord:

@@ -502,8 +502,10 @@ or log and continue (filesystem). It covers source and handler errors only.
 `wcpan.drive.server.testing` is the public way to test a backend: `backend_harness()` runs a
 core over a temporary database, and `add_instance` returns the `CoreServices` and
 `BackendContext` the server would give that instance, with fixed mount IDs and fake media
-probes. The filesystem backend's tests use only it and the public modules, which
-`tests/test_backend_boundary.py` enforces. Backend source must not import it.
+probes. Tests under `tests/backend/` use only it and the public modules, which
+`tests/test_backend_boundary.py` enforces. Backend source must not import it. Tests that
+deliberately reach core internals with a built-in backend, such as HTTP handlers, write races,
+and database maintenance, live in `tests/integration/`.
 
 Framework rules are tested with an in-memory fake backend and a real temporary SQLite mirror,
 without HTTP. Ordering is forced with gates, never sleeps. The core accepts an injected clock or

@@ -10,20 +10,6 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server._backend import Mounts
-from wcpan.drive.server._lib.write_queue import (
-    WriteQueue,
-    create_write_queue,
-)
-from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probing import MediaProbing
-from wcpan.drive.server._services.mirror.store import (
-    MirrorStore,
-)
-from wcpan.drive.server._services.off_main import OffMainService
-from wcpan.drive.server._services.sync.enrichment import Enrichment
-from wcpan.drive.server._services.sync.scan import ScanRunner
-from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.drive.server.backend.synology._scan import (
@@ -32,6 +18,7 @@ from wcpan.drive.server.backend.synology._scan import (
     _MountPass,
 )
 from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.testing import BackendInstance, backend_harness
 from wcpan.synology.types import (
     SynologyClient,
     SynologyPath,
@@ -41,168 +28,118 @@ from ._lib import DecoyTestCase, IdentityIds, mounts_of
 
 
 class TestScannerWriteBack(DecoyTestCase):
-    async def _drain_writes(self, q: WriteQueue) -> None:
-        try:
-            while True:
-                job = await q.get()
-                try:
-                    await job()
-                finally:
-                    q.task_done()
-        except asyncio.CancelledError:
-            raise
-
     async def _run_initial_sync(
         self,
-        mirror: MirrorStore,
+        instance: BackendInstance,
+        mirror: Any,
         mounts: dict[str, SynologyPath],
         scan_result: dict[str, int],
         pre_scan_result: dict[str, int] | None = None,
     ) -> None:
         if pre_scan_result is None:
             pre_scan_result = scan_result
-        q = create_write_queue()
-        with ThreadPoolExecutor(2) as pool:
-            off_main = OffMainService(pool=pool)
-            cs = NodeSyncService(
+        core = instance.core
+        store = SynologyStore(
+            mirror=mirror, ns=instance.namespace, write=core.enqueue_write
+        )
+        with patch.object(
+            StartupScanService,
+            "_scan_all_mounts",
+            new=AsyncMock(return_value=(scan_result, pre_scan_result)),
+        ):
+            svc = StartupScanService(
+                drive_api=MagicMock(),
                 mirror=mirror,
-                write_queue=q,
-                probing=MediaProbing(runner=ProbeRunner()),
-                metadata_queue=asyncio.Queue(),
-            ).for_backend("synology")
-            drain = asyncio.create_task(self._drain_writes(q))
-            try:
-                with patch.object(
-                    StartupScanService,
-                    "_scan_all_mounts",
-                    new=AsyncMock(return_value=(scan_result, pre_scan_result)),
-                ):
-                    svc = StartupScanService(
-                        drive_api=self.decoy.mock(cls=SynologyClient),
-                        mirror=mirror,
-                        store=SynologyStore(
-                            mirror=mirror,
-                            ns=mirror.namespace("synology"),
-                            write=cs.enqueue_sql,
-                        ),
-                        syno_paths=SynologyPathService(
-                            ids=IdentityIds(),
-                            registry=MountRegistry(
-                                mounts=mounts_of(mounts), root_ids={}
-                            ),
-                            store=SynologyStore(
-                                mirror=mirror, ns=mirror.namespace("synology")
-                            ),
-                        ),
-                        enrichment=Enrichment(cs),
-                        scans=ScanRunner(mirror=mirror, node_sync=cs),
-                    )
-                    await svc.run_initial_scan()
-            finally:
-                await q.join()
-                drain.cancel()
-                with suppress(asyncio.CancelledError):
-                    await drain
+                store=store,
+                syno_paths=SynologyPathService(
+                    ids=IdentityIds(),
+                    registry=MountRegistry(mounts=mounts_of(mounts), root_ids={}),
+                    store=store,
+                ),
+                enrichment=core.enrichment,
+                scans=core.scans,
+            )
+            await svc.run_initial_scan()
+        await core.writes_landed()
 
     async def test_first_run_writes_per_mount_state(self) -> None:
         """On first run (all zeros), scan results are persisted via set_mount_state."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
+        async with backend_harness() as server:
+            mirror = server.mirror
+            mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
+            instance = await server.add_instance(
+                "synology", SYNOLOGY_SCHEMA, {k: p.path for k, p in mounts.items()}
+            )
 
-                # when
-                await self._run_initial_sync(mirror, mounts, {"a": 500, "b": 300})
+            # when
+            await self._run_initial_sync(instance, mirror, mounts, {"a": 500, "b": 300})
 
-                # then
-                result = await SynologyStore(
-                    mirror=mirror, ns=mirror.namespace("synology")
-                ).get_mount_max_ids(mounts)
-                self.assertEqual(result, {"a": 500, "b": 300})
-        finally:
-            os.unlink(db_path)
+            # then
+            result = await SynologyStore(
+                mirror=mirror, ns=mirror.namespace("synology")
+            ).get_mount_max_ids(mounts)
+            self.assertEqual(result, {"a": 500, "b": 300})
 
     async def test_resume_advances_max_id(self) -> None:
         """On resume, scan results that advance the max_id are persisted."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
-                # Seed existing per-mount state
-                await SynologyStore(
-                    mirror=mirror,
-                    ns=mirror.namespace("synology"),
-                    write=mirror.write,
-                ).set_mount_state("a", "/vol/a", 100)
-                await SynologyStore(
-                    mirror=mirror,
-                    ns=mirror.namespace("synology"),
-                    write=mirror.write,
-                ).set_mount_state("b", "/vol/b", 80)
+        async with backend_harness() as server:
+            mirror = server.mirror
+            mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
+            instance = await server.add_instance(
+                "synology", SYNOLOGY_SCHEMA, {k: p.path for k, p in mounts.items()}
+            )
+            # Seed existing per-mount state
+            await SynologyStore(
+                mirror=mirror,
+                ns=mirror.namespace("synology"),
+                write=mirror.write,
+            ).set_mount_state("a", "/vol/a", 100)
+            await SynologyStore(
+                mirror=mirror,
+                ns=mirror.namespace("synology"),
+                write=mirror.write,
+            ).set_mount_state("b", "/vol/b", 80)
 
-                # when
-                await self._run_initial_sync(mirror, mounts, {"a": 200, "b": 150})
+            # when
+            await self._run_initial_sync(instance, mirror, mounts, {"a": 200, "b": 150})
 
-                # then
-                result = await SynologyStore(
-                    mirror=mirror, ns=mirror.namespace("synology")
-                ).get_mount_max_ids(mounts)
-                self.assertEqual(result, {"a": 200, "b": 150})
-        finally:
-            os.unlink(db_path)
+            # then
+            result = await SynologyStore(
+                mirror=mirror, ns=mirror.namespace("synology")
+            ).get_mount_max_ids(mounts)
+            self.assertEqual(result, {"a": 200, "b": 150})
 
     async def test_no_advance_skips_write(self) -> None:
         """When scan returns the same max_id, set_mount_state is not called."""
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
-                await SynologyStore(
-                    mirror=mirror,
-                    ns=mirror.namespace("synology"),
-                    write=mirror.write,
-                ).set_mount_state("a", "/vol/a", 100)
-                await SynologyStore(
-                    mirror=mirror,
-                    ns=mirror.namespace("synology"),
-                    write=mirror.write,
-                ).set_mount_state("b", "/vol/b", 80)
+        async with backend_harness() as server:
+            mirror = server.mirror
+            mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
+            instance = await server.add_instance(
+                "synology", SYNOLOGY_SCHEMA, {k: p.path for k, p in mounts.items()}
+            )
+            await SynologyStore(
+                mirror=mirror,
+                ns=mirror.namespace("synology"),
+                write=mirror.write,
+            ).set_mount_state("a", "/vol/a", 100)
+            await SynologyStore(
+                mirror=mirror,
+                ns=mirror.namespace("synology"),
+                write=mirror.write,
+            ).set_mount_state("b", "/vol/b", 80)
 
-                # when
-                # Scan returns identical values — no advance
-                await self._run_initial_sync(mirror, mounts, {"a": 100, "b": 80})
+            # when
+            # Scan returns identical values — no advance
+            await self._run_initial_sync(instance, mirror, mounts, {"a": 100, "b": 80})
 
-                # then
-                result = await SynologyStore(
-                    mirror=mirror, ns=mirror.namespace("synology")
-                ).get_mount_max_ids(mounts)
-                self.assertEqual(result, {"a": 100, "b": 80})
-        finally:
-            os.unlink(db_path)
+            # then
+            result = await SynologyStore(
+                mirror=mirror, ns=mirror.namespace("synology")
+            ).get_mount_max_ids(mounts)
+            self.assertEqual(result, {"a": 100, "b": 80})
 
     async def test_initial_sync_uses_pre_scan_checkpoint(self) -> None:
         """Initial sync saves the pre-scan checkpoint, not per_mount_highest.
@@ -212,37 +149,31 @@ class TestScannerWriteBack(DecoyTestCase):
         the checkpoint lets the first incremental scan cover that window.
         """
         # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                mounts = {"a": SynologyPath("/vol/a")}
+        async with backend_harness() as server:
+            mirror = server.mirror
+            mounts = {"a": SynologyPath("/vol/a")}
+            instance = await server.add_instance(
+                "synology", SYNOLOGY_SCHEMA, {k: p.path for k, p in mounts.items()}
+            )
 
-                # when
-                # per_mount_highest=500 (saw a late folder), pre_scan=300 (snapshot
-                # taken before BFS started); the DB must record 300 so that the
-                # incremental scan re-covers sync_ids 301-500 and catches any
-                # mid-BFS changes in already-visited folders.
-                await self._run_initial_sync(
-                    mirror,
-                    mounts,
-                    scan_result={"a": 500},
-                    pre_scan_result={"a": 300},
-                )
+            # when
+            # per_mount_highest=500 (saw a late folder), pre_scan=300 (snapshot
+            # taken before BFS started); the DB must record 300 so that the
+            # incremental scan re-covers sync_ids 301-500 and catches any
+            # mid-BFS changes in already-visited folders.
+            await self._run_initial_sync(
+                instance,
+                mirror,
+                mounts,
+                scan_result={"a": 500},
+                pre_scan_result={"a": 300},
+            )
 
-                # then
-                result = await SynologyStore(
-                    mirror=mirror, ns=mirror.namespace("synology")
-                ).get_mount_max_ids(mounts)
-                self.assertEqual(result, {"a": 300})
-        finally:
-            os.unlink(db_path)
+            # then
+            result = await SynologyStore(
+                mirror=mirror, ns=mirror.namespace("synology")
+            ).get_mount_max_ids(mounts)
+            self.assertEqual(result, {"a": 300})
 
 
 class TestMountPass(IsolatedAsyncioTestCase):
@@ -295,6 +226,30 @@ class TestMountPass(IsolatedAsyncioTestCase):
         # then
         self.assertEqual(self.scan.pre_scan_max_ids["a"], 150)
         self.assertEqual(self.scan.per_mount_highest["a"], 200)
+
+    async def test_only_nodes_changed_since_the_checkpoint_are_written(self) -> None:
+        # given: both are mirrored, and one changed after the checkpoint
+        changed = {"type": "file", "sync_id": 150}
+        unchanged = {"type": "file", "sync_id": 50}
+        changed_fact = MagicMock()
+        changed_fact.record.id = NodeId("changed")
+        unchanged_fact = MagicMock()
+        unchanged_fact.record.id = NodeId("unchanged")
+        self.mirror.get_children = AsyncMock(
+            return_value=[
+                MagicMock(id=NodeId("changed")),
+                MagicMock(id=NodeId("unchanged")),
+            ]
+        )
+        self.paths.list_children = AsyncMock(return_value=[changed, unchanged])
+        self.paths.convert = AsyncMock(
+            return_value=[(changed, changed_fact), (unchanged, unchanged_fact)]
+        )
+        # when
+        listing = await self.scan.list_folder(_Folder(NodeId("d"), "a"))
+        # then
+        self.assertEqual(listing.changed, [changed_fact])
+        self.assertEqual(listing.seen, [NodeId("changed"), NodeId("unchanged")])
 
     def test_mounts_are_scanned_one_at_a_time(self) -> None:
         # when, then

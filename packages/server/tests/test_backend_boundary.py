@@ -72,14 +72,14 @@ def _core_internals_used(path: Path) -> Iterator[tuple[int, str]]:
 
 
 class TestBackendBoundary(TestCase):
-    def test_migrated_backend_tests_use_only_the_public_core(self) -> None:
+    def test_backend_tests_use_only_the_public_core(self) -> None:
         # given
-        tests = Path(__file__).parent / "backend" / "filesystem"
+        tests = Path(__file__).parent / "backend"
 
         # when
         violations = [
-            f"{path.name}:{line}: {module}"
-            for path in sorted(tests.glob("*.py"))
+            f"{path.relative_to(tests)}:{line}: {module}"
+            for path in sorted(tests.rglob("*.py"))
             for line, module in _absolute_imports(path)
             if _within(module, _SERVER)
             and not _within(module, _BACKENDS)

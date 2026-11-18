@@ -41,7 +41,7 @@ from wcpan.synology.types import (
     SynologyPermanentLink,
 )
 
-from ._lib import ROOT_ID, DecoyTestCase, make_mounts, mount_id
+from ...backend.synology._lib import ROOT_ID, DecoyTestCase, make_mounts, mount_id
 
 
 _READ = ReadSeq(1)

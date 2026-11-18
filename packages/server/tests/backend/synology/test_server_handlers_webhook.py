@@ -8,13 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server._backend import BackendLifecycle, Mounts
-from wcpan.drive.server._services.mirror.store import (
-    MirrorStore,
-)
-from wcpan.drive.server._services.sync.scan import ScanRunner
-from wcpan.drive.server._services.sync.service import NodeSyncService
-from wcpan.drive.server._types import NodeObservation, ReadSeq
 from wcpan.drive.server.backend.synology._backend import SynologyBackend, _Serving
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
@@ -25,7 +18,17 @@ from wcpan.drive.server.backend.synology._webhook import (
     WebhookService,
     _SubtreeLister,
 )
-from wcpan.drive.server.types import ChangeHandler, CoreServices, HintStage
+from wcpan.drive.server.testing import BackendLifecycle
+from wcpan.drive.server.types import (
+    ChangeHandler,
+    Changes,
+    CoreServices,
+    HintStage,
+    MirrorReader,
+    Mounts,
+    NodeObservation,
+    ScanRunner,
+)
 from wcpan.synology.types import (
     SynologyClient,
     SynologyFileId,
@@ -40,7 +43,6 @@ logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
 
 
 _EPOCH = 0
-_READ = ReadSeq(1)
 
 _FAKE_SYNO_INFO: SynologyFileInfo = {
     "file_id": "f1",
@@ -88,11 +90,12 @@ class _WebhookTestCase(DecoyTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.drive_api = self.decoy.mock(cls=SynologyClient)
-        self.mirror = self.decoy.mock(cls=MirrorStore)
+        self.mirror = self.decoy.mock(cls=MirrorReader)
         self.store = self.decoy.mock(cls=SynologyStore)
-        self.node_sync = self.decoy.mock(cls=NodeSyncService)
+        self.scans = self.decoy.mock(cls=ScanRunner)
+        self.changes = self.decoy.mock(cls=Changes)
         self.hints = self.decoy.mock(cls=HintStage)
-        self.decoy.when(self.node_sync.observe()).then_enter_with(_READ)
+        self.decoy.when(self.scans.observe()).then_enter_with(self.changes)
 
     def _create_service(
         self,
@@ -107,7 +110,7 @@ class _WebhookTestCase(DecoyTestCase):
             drive_api=self.drive_api,
             mirror=self.mirror,
             store=self.store,
-            scans=ScanRunner(mirror=self.mirror, node_sync=self.node_sync),
+            scans=self.scans,
             syno_paths=SynologyPathService(
                 registry=registry, store=self.store, ids=IdentityIds()
             ),
@@ -149,7 +152,7 @@ class TestFetchAndEnrich(_WebhookTestCase):
         )
         # then
         self.decoy.verify(
-            await self.node_sync.upsert(matchers.Anything(), read=_READ, strict=False),
+            await self.changes.upserted(matchers.Anything()),
             times=1,
         )
 
@@ -188,7 +191,7 @@ class TestFetchAndEnrich(_WebhookTestCase):
             "file_moved",
         )
         # then
-        self.decoy.verify(await self.node_sync.delete(NodeId("f1"), read=_READ))
+        self.decoy.verify(await self.changes.removed(NodeId("f1")))
 
     async def test_file_moved_to_unknown_parent_no_op_when_node_absent(self):
         # given
@@ -203,7 +206,7 @@ class TestFetchAndEnrich(_WebhookTestCase):
         )
         # then
         self.decoy.verify(
-            await self.node_sync.delete(matchers.Anything(), read=matchers.Anything()),
+            await self.changes.removed(matchers.Anything()),
             times=0,
         )
 
@@ -230,9 +233,7 @@ class TestFetchAndEnrich(_WebhookTestCase):
         # then
         # parent_id should have been resolved to _docs
         observation = matchers.Captor()
-        self.decoy.verify(
-            await self.node_sync.upsert(observation, read=_READ, strict=False)
-        )
+        self.decoy.verify(await self.changes.upserted(observation))
         upserted: NodeObservation = observation.value
         self.assertEqual(upserted.record.parent_id, "_docs")
         self.assertEqual(upserted.locator, "f1")
@@ -251,7 +252,7 @@ class TestFetchAndEnrich(_WebhookTestCase):
         )
         # then
         self.decoy.verify(
-            await self.node_sync.upsert(matchers.Anything(), read=matchers.Anything()),
+            await self.changes.upserted(matchers.Anything()),
             times=0,
         )
 
@@ -474,7 +475,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             plan.parent_file_ref,
             plan.event_type,
         )
-        self.decoy.verify(await self.node_sync.barrier(), times=1)
+        self.decoy.verify(await self.changes.landed(), times=1)
         self._verify_not_scheduled()
 
     async def test_deletes_when_plan_requests_removal(self):
@@ -494,9 +495,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         await service._execute_webhook_plan(plan)
 
         # then
-        self.decoy.verify(
-            await self.node_sync.delete(NodeId("f1"), read=_READ), times=1
-        )
+        self.decoy.verify(await self.changes.removed(NodeId("f1")), times=1)
         self._verify_not_scheduled()
 
     async def test_schedules_delayed_upsert(self):
@@ -565,7 +564,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             plan.parent_file_ref,
             plan.event_type,
         )
-        self.decoy.verify(await self.node_sync.barrier(), times=1)
+        self.decoy.verify(await self.changes.landed(), times=1)
         mock_scan.assert_not_awaited()
 
     async def test_mirrored_directory_move_to_mount_root_skips_scanning(self):
@@ -597,7 +596,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
 
         # then
         mock_fetch.assert_awaited_once()
-        self.decoy.verify(await self.node_sync.barrier(), times=1)
+        self.decoy.verify(await self.changes.landed(), times=1)
         mock_scan.assert_not_awaited()
 
     async def _assert_scans(self, service: WebhookService) -> None:
@@ -813,15 +812,13 @@ class TestWebhookFailuresPropagate(_WebhookTestCase):
     async def test_moved_dir_scan_raises_when_listing_fails(self):
         # given
         service = self._create_service()
+        self.decoy.when(
+            await self.scans.walk(matchers.Anything(), NodeId("d1"))
+        ).then_raise(OSError("NAS unavailable"))
 
         # when / then
-        with patch.object(
-            SynologyPathService,
-            "list_children",
-            new=AsyncMock(side_effect=OSError("NAS unavailable")),
-        ):
-            with self.assertRaisesRegex(OSError, "NAS unavailable"):
-                await service._scan_moved_dir_subtree(NodeId("d1"))
+        with self.assertRaisesRegex(OSError, "NAS unavailable"):
+            await service._scan_moved_dir_subtree(NodeId("d1"))
 
 
 class TestSubtreeLister(IsolatedAsyncioTestCase):
