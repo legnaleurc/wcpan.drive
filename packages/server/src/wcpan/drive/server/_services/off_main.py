@@ -1,10 +1,30 @@
 import asyncio
+import os
+import threading
 from collections.abc import Callable
 from concurrent.futures import Executor
 from functools import partial
+from multiprocessing import parent_process
 
 
 _OFF_MAIN_TIMEOUT = 60.0  # seconds - crash if any DB op hangs this long
+
+
+def exit_with_server() -> None:
+    """Pool initializer: end this worker when the server process is gone.
+
+    Workers hold the pipes that would otherwise stop the forkserver and the
+    resource tracker, so without this a killed server leaves them all running.
+    A write in progress rolls back, as it does in any crash.
+    """
+    server = parent_process()
+    assert server is not None
+
+    def watch() -> None:
+        server.join()
+        os._exit(1)
+
+    threading.Thread(target=watch, daemon=True, name="exit-with-server").start()
 
 
 class OffMainService:

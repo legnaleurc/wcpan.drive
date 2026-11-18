@@ -3,53 +3,18 @@
 import asyncio
 import os
 import signal
-import sys
 import tempfile
-from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
-from wcpan.drive.server._config import CONFIG_VERSION
-
 from .._media import requires_mediainfo
-
-
-_PACKAGE = Path(__file__).parent.parent.parent
-_START = "from wcpan.drive.server._main import main; main()"
-_FACTORY = "tests.integration._failing_backend.create_backend"
+from ._server_process import start_server
 
 
 @requires_mediainfo
 class TestWriteFailureStopsTheServer(IsolatedAsyncioTestCase):
     async def serve_until_exit(self, phase: str) -> tuple[int, str]:
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / "server.yaml"
-            config.write_text(
-                f"version: {CONFIG_VERSION}\n"
-                "server:\n"
-                f"  database_url: {tmp}/mirror.sqlite\n"
-                "  host: 127.0.0.1\n"
-                "  port: 0\n"
-                "backends:\n"
-                "  failing:\n"
-                f"    type: {_FACTORY}\n"
-                f"    phase: {phase}\n"
-                "mounts:\n"
-                "  docs:\n"
-                "    backend: failing\n"
-                "    source: docs\n"
-            )
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-c",
-                _START,
-                "--config",
-                str(config),
-                "serve",
-                cwd=_PACKAGE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-            )
+            process = await start_server(tmp, phase=phase)
             try:
                 async with asyncio.timeout(30):
                     output, _ = await process.communicate()

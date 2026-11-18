@@ -75,7 +75,7 @@ from ._services.mirror.store import (
     create_mirror_store,
 )
 from ._services.mounts import Mounts, ensure_mount_nodes, load_mounts
-from ._services.off_main import OffMainService
+from ._services.off_main import OffMainService, exit_with_server
 from ._services.operations import (
     OperationInvalidError,
     OperationNotFoundError,
@@ -104,7 +104,9 @@ _L = getLogger(__name__)
 def _managed_pool() -> Generator[ProcessPoolExecutor, None, None]:
     # Python 3.13 still forks by default on Linux; forking this multi-threaded
     # process can deadlock a worker, and the pool then waits on it at exit.
-    pool = ProcessPoolExecutor(mp_context=get_context("forkserver"))
+    pool = ProcessPoolExecutor(
+        mp_context=get_context("forkserver"), initializer=exit_with_server
+    )
     try:
         yield pool
     finally:

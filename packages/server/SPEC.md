@@ -830,6 +830,8 @@ A backend is an async context manager factory named by its import path
   fails for a read-only command. Schemas are bound through
   `core.bind_schema`, which registers when writing and only checks when
   reading.
+- Database work runs in a process pool. Its workers exit when the server process is gone, even
+  after `SIGKILL`, which also ends the pool's helper processes. A write in progress rolls back.
 - The probe runner and its source service start before the backends and stop
   after them; the metadata
   workers start after the backends and stop before them, so no probe outlives
