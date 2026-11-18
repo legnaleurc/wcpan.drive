@@ -239,6 +239,14 @@ class ScanRunner:
                     session.preserve(folder_id)
                     return []
                 listing = await scanner.list_folder(folder)
+            except OSError as e:
+                # An expected condition that can repeat on every pass.
+                _L.warning(
+                    "Cannot list folder %s; keeping its mirror: %s", folder_id, e
+                )
+                session.preserve(folder_id)
+                progress.complete = False
+                return []
             except Exception:
                 _L.exception("Cannot list folder %s; keeping its mirror", folder_id)
                 session.preserve(folder_id)

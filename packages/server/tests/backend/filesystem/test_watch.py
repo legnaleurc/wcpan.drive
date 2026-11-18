@@ -161,7 +161,6 @@ class TestRuntime(_WatchTestCase):
             media=MediaProbing(runner=ProbeRunner()),
             mirror=self.mirror,
             node_sync=self.node_sync,
-            off_main=MagicMock(),
             ids=self.ids,
         )
         runtime = FilesystemRuntime(

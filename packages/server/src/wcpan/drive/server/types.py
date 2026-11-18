@@ -32,7 +32,6 @@ from ._services.mirror.store import (
 )
 from ._services.mounts import Mount as Mount
 from ._services.mounts import Mounts as Mounts
-from ._services.off_main import OffMainService as OffMainService
 from ._services.operations import Locate as Locate
 from ._services.operations import NodeOperations as NodeOperations
 from ._services.paths import VirtualPathService as VirtualPathService
@@ -85,7 +84,6 @@ __all__ = (
     "NodeIdMap",
     "NodeObservation",
     "NodeOperations",
-    "OffMainService",
     "OpenMediaSource",
     "ProbeFailure",
     "ReadCoreServices",

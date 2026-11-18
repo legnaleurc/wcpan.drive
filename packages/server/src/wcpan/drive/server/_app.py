@@ -258,7 +258,6 @@ async def entered_read_backend(
         core=ReadCoreServices(
             mirror=mirror,
             node_sync=ReadOrdering(),
-            off_main=core.off_main,
             ids=ProvisionalNodeIds(mirror=mirror, key=key),
             media=MediaProbing(runner=None),
             schemas=partial(mirror.check_backend_schema, name),
@@ -306,7 +305,6 @@ async def entered_backends(
             services = CoreServices(
                 mirror=core.mirror,
                 node_sync=core.node_sync.for_backend(name),
-                off_main=core.off_main,
                 ids=NodeIds(mirror=core.mirror, write_queue=core.write_queue, key=key),
                 media=core.media,
             )

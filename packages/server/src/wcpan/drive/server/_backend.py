@@ -43,7 +43,6 @@ from ._services.mirror.model import (
 from ._services.mirror.store import MirrorReader
 from ._services.mounts import Mount as Mount
 from ._services.mounts import Mounts
-from ._services.off_main import OffMainService
 from ._services.operations import Locate, NodeOperations
 from ._services.sync.enrichment import Enrichment
 from ._services.sync.hints import ChangeHandler, HintStage
@@ -78,7 +77,6 @@ class CoreServices:
 
     mirror: MirrorReader
     node_sync: NodeSyncService
-    off_main: OffMainService
     ids: NodeIdMap
     media: MediaProbing
     scans: ScanRunner = field(init=False, repr=False, compare=False)
@@ -148,7 +146,6 @@ class ReadCoreServices:
 
     mirror: MirrorReader
     node_sync: NodeOrdering
-    off_main: OffMainService
     ids: NodeIdMap
     media: MediaProbing
     schemas: Callable[[BackendSchema], Awaitable[BackendNamespace]]

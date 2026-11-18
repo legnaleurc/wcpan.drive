@@ -252,7 +252,6 @@ class _FlowTestCase(IsolatedAsyncioTestCase):
         self.core = CoreServices(
             mirror=self.mirror,
             node_sync=self.sync,
-            off_main=MagicMock(),
             ids=NodeIds(
                 mirror=self.mirror,
                 write_queue=self.write_queue,
@@ -487,6 +486,41 @@ class ScanPassTest(_FlowTestCase):
         await task
         # then
         self.assertEqual(seen, [False])
+
+
+class ScanLoggingTest(_FlowTestCase):
+    _LOGGER = "wcpan.drive.server._services.sync.scan"
+
+    async def test_source_error_is_one_warning_line(self) -> None:
+        # given
+        scanner = _Scanner(_Source())
+        scanner.failing.add(_A)
+        # when
+        with self.assertLogs(self._LOGGER, "WARNING") as logs:
+            await self.scan(scanner)
+        # then
+        (record,) = logs.records
+        self.assertEqual(record.levelname, "WARNING")
+        self.assertIsNone(record.exc_info)
+        self.assertIn("cannot list", record.getMessage())
+
+    async def test_unexpected_error_keeps_its_traceback(self) -> None:
+        # given
+        scanner = _Scanner(_Source())
+
+        async def list_folder(folder: NodeId) -> Listing[NodeId]:
+            raise ValueError("bug")
+
+        # when
+        with (
+            patch.object(scanner, "list_folder", list_folder),
+            self.assertLogs(self._LOGGER, "ERROR") as logs,
+        ):
+            await self.scan(scanner)
+        # then
+        (record,) = logs.records
+        self.assertIsNotNone(record.exc_info)
+        self.assertEqual(scanner.root_results, {_A: False})
 
 
 class ScanFailureTest(_FlowTestCase):

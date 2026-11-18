@@ -81,7 +81,6 @@ def _context(mounts: dict[str, str]) -> BackendContext:
             media=MediaProbing(runner=ProbeRunner()),
             mirror=MagicMock(),
             node_sync=node_sync,
-            off_main=MagicMock(),
             ids=MagicMock(),
         ),
         routes=BackendRoutes(name="disk"),

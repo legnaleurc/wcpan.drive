@@ -138,7 +138,6 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         self.core = CoreServices(
             mirror=self.mirror,
             node_sync=self.node_sync,
-            off_main=MagicMock(),
             ids=MagicMock(),
             media=self.media,
         )

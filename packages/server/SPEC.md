@@ -808,7 +808,7 @@ A backend is an async context manager factory named by its import path
   `packages/plugin/SPEC.md`). A bad setting fails startup instead of reaching the
   source.
 - `BackendContext` carries the instance name, the mounts it serves, the core
-  services (mirror, node sync view, executor, ID map, media probing), a route
+  services (mirror reads, ID map, media probing, and the framework services), a route
   registry, and the command's `access` (`None` while serving; `offline` is
   true otherwise). The core services are `CoreServices`, or
   `ReadCoreServices` for a read-only command: the same field names typed as

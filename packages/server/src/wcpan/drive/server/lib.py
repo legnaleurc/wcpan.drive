@@ -7,7 +7,6 @@ Backends import the server only through ``types``, ``exceptions``, and
 from ._backend import backend_commands as backend_commands
 from ._backend import writing as writing
 from ._lib.bfs import parallel_bfs as parallel_bfs
-from ._lib.debounce import TaskIdDebouncer as TaskIdDebouncer
 from ._lib.executor import allocate as allocate
 from ._lib.executor import run_to_completion as run_to_completion
 from ._lib.names import normalize_name as normalize_name
@@ -29,7 +28,6 @@ __all__ = (
     "LocalFileSource",
     "SpooledFiles",
     "SpoolingUploader",
-    "TaskIdDebouncer",
     "UPLOAD_SESSION_TTL",
     "allocate",
     "backend_commands",

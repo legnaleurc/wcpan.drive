@@ -96,7 +96,6 @@ def _read_core(schemas) -> ReadCoreServices:
     return ReadCoreServices(
         mirror=mirror,
         node_sync=ordering,
-        off_main=MagicMock(),
         ids=MagicMock(),
         media=MediaProbing(runner=None),
         schemas=schemas,
@@ -132,7 +131,6 @@ class TestCoreAccess(IsolatedAsyncioTestCase):
         core = CoreServices(
             mirror=MagicMock(),
             node_sync=MagicMock(),
-            off_main=MagicMock(),
             ids=MagicMock(),
             media=MediaProbing(runner=None),
         )

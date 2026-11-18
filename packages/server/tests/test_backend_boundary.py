@@ -16,7 +16,7 @@ _SERVER = "wcpan.drive.server"
 _BACKENDS = f"{_SERVER}.backend"
 _PUBLIC = tuple(f"{_SERVER}.{name}" for name in ("types", "lib", "exceptions"))
 _ROOT = Path(wcpan.drive.server.lib.__file__).parent
-_CORE_INTERNALS = frozenset({"node_sync", "off_main"})
+_CORE_INTERNALS = frozenset({"node_sync"})
 
 
 def _imports(source: str, path: Path) -> Iterator[tuple[int, str]]:

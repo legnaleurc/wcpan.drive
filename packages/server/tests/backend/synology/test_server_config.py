@@ -125,7 +125,6 @@ def _context(
             media=MediaProbing(runner=ProbeRunner()),
             mirror=decoy.mock(cls=MirrorStore),
             node_sync=decoy.mock(cls=NodeSyncService),
-            off_main=decoy.mock(cls=OffMainService),
             ids=IdentityIds(),
         ),
         routes=BackendRoutes(name="nas"),

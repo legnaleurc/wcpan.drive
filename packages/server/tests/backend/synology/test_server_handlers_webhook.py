@@ -878,7 +878,6 @@ class TestWebhookLifecycle(IsolatedAsyncioTestCase):
         self.core = CoreServices(
             mirror=MagicMock(),
             node_sync=node_sync,
-            off_main=MagicMock(),
             ids=IdentityIds(),
             media=MagicMock(),
         )
