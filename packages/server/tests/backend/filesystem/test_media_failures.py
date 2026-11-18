@@ -2,7 +2,6 @@
 
 import asyncio
 import sqlite3
-import time
 from collections.abc import AsyncIterator
 
 from wcpan.drive.protocol.types import MediaInfo
@@ -70,25 +69,20 @@ class TestMediaFailures(ScanTestCase):
         path = self.write("bad.jpg", b"bad jpeg")
         await self.scan()
         path.unlink()
-        started = time.time_ns() // 1_000_000
 
-        # when: what a full scan does
+        # when
         await self.scan()
-        removed = await self.node_sync.prune_media_failures(before=started)
 
         # then
-        self.assertEqual(removed, 1)
         self.assertEqual(await self.failures(), [])
 
     async def test_rescan_keeps_records_it_renewed(self) -> None:
         # given
         path = self.write("bad.jpg", b"bad jpeg")
         await self.scan()
-        started = time.time_ns() // 1_000_000
 
         # when
         await self.scan()
-        await self.node_sync.prune_media_failures(before=started)
 
         # then
         self.assertEqual(await self.failures(), [str(path)])
@@ -133,11 +127,9 @@ class TestMediaFailures(ScanTestCase):
             await self.scan()
             self.assertEqual(self.node_sync._retries.pending("fs"), {str(path)})
             path.unlink()
-            started = time.time_ns() // 1_000_000
 
-            # when: what a full scan does
+            # when
             await self.scan()
-            await self.node_sync.prune_media_failures(before=started)
 
             # then
             self.assertEqual(await self.failures(), [])

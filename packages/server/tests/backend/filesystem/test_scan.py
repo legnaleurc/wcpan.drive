@@ -1,5 +1,6 @@
 """Filesystem discovery: identity across rescans, removals, and source checks."""
 
+import asyncio
 import hashlib
 import os
 import shutil
@@ -7,7 +8,7 @@ from pathlib import Path
 from unittest import skipIf
 from unittest.mock import patch
 
-from wcpan.drive.protocol.types import NodeRecord
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server._services.mounts import ensure_mount_nodes
 from wcpan.drive.server._services.operations import (
     OperationNotSupportedError,
@@ -207,6 +208,7 @@ class TestIdentity(ScanTestCase):
             mirror=self.mirror,
             store=self.store,
             node_sync=self.node_sync,
+            scans=self.scans,
             ids=self.ids,
             paths=self.paths,
             blocking=Blocking(executor=self.io_pool),
@@ -219,6 +221,50 @@ class TestIdentity(ScanTestCase):
         # then
         self.assertEqual(await self.node_id("a/f.txt"), before)
         self.assertEqual(await self.cursor(), cursor)
+
+
+class TestPassExclusion(ScanTestCase):
+    async def test_write_holds_off_a_pass_until_it_is_recorded(self) -> None:
+        # given
+        log: list[str] = []
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        folder_path = self.scanner._folder_path
+
+        async def logged_path(folder_id: NodeId) -> str | None:
+            log.append("pass")
+            return await folder_path(folder_id)
+
+        async def write() -> None:
+            async with self.scanner.exclusive():
+                entered.set()
+                await release.wait()
+
+        with patch.object(self.scanner, "_folder_path", logged_path):
+            writing = asyncio.create_task(write())
+            await entered.wait()
+            scanning = asyncio.create_task(self.scan())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            # when
+            log.append("released")
+            release.set()
+            await asyncio.gather(writing, scanning)
+        # then
+        self.assertEqual(log, ["released", "pass"])
+
+
+class TestScopedPass(ScanTestCase):
+    async def test_unlisted_subfolder_needs_no_removal_checks(self) -> None:
+        # given
+        self.write("a/f.txt", b"x")
+        await self.scan()
+        # when
+        with patch.object(self.scanner, "locate", wraps=self.scanner.locate) as locate:
+            await self.scanner.scan_folders([DOCS])
+        # then
+        locate.assert_not_called()
+        self.assertIsNotNone(await self.node("a/f.txt"))
 
 
 class TestCoverage(ScanTestCase):

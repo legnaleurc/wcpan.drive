@@ -49,7 +49,7 @@ ignored and the new one is recorded on the next scan.
 
 There is no durable event cursor, so every start is a full traversal.
 
-- Each pass is a `ReconcileSession`. A full pass lists every folder; a scoped
+- Each pass runs through the core's scan runner as one `ReconcileSession`. A full pass lists every folder; a scoped
   pass lists the folders reported as changed, plus new folders the mirror has not
   seen. Passes run one at a time, so two listings of one new entry cannot mint
   two IDs.

@@ -199,7 +199,8 @@ not modeled as a Synology scan with renamed fields.
 This section is the target design for the backend API. Implemented so far:
 `CoreServices.observe` with `Changes`, and `CoreServices.scans` with `Scanner`, `ScanPlan`,
 and `Listing`. Not yet built: read-only scans, the hint stage, the core-owned lifecycle, the
-narrowed `core.enrichment` surface, and `core.reconcile`. The built-in backends still use
+narrowed `core.enrichment` surface, and `core.reconcile`. The filesystem backend's scans run
+through `core.scans`. Its writes and event loop, and all of the Synology backend, still use
 `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
 
 ### Goal

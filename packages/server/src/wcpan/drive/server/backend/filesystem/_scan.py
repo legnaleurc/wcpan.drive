@@ -13,7 +13,6 @@ names it (a rename or move). Hard links share an identity, so a new link to an
 object that is still in place gets its own node.
 """
 
-import asyncio
 import os
 import stat
 import time
@@ -26,14 +25,16 @@ from logging import getLogger
 from wcpan.drive.protocol.lib import guess_mime_type
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.exceptions import LocateUndecidedError
-from wcpan.drive.server.lib import parallel_bfs, reconcile_session
 from wcpan.drive.server.types import (
+    Listing,
     MirrorStore,
     Mounts,
     NodeIdMap,
     NodeObservation,
     NodeSyncService,
-    ReconcileSession,
+    Scanner,
+    ScanPlan,
+    ScanRunner,
 )
 
 from ._blocking import Blocking
@@ -126,6 +127,7 @@ class FilesystemScanner:
         mirror: MirrorStore,
         store: FilesystemStore,
         node_sync: NodeSyncService,
+        scans: ScanRunner,
         ids: NodeIdMap,
         paths: NodePaths,
         blocking: Blocking,
@@ -138,11 +140,11 @@ class FilesystemScanner:
         self._mirror = mirror
         self._store = store
         self._node_sync = node_sync
+        self._scans = scans
         self._ids = ids
         self._paths = paths
         self._blocking = blocking
         self._watcher = watcher
-        self._pass_lock = asyncio.Lock()
         self._sweep_staging_after = sweep_staging_after
         self._live_staging = set[str]()
 
@@ -162,9 +164,13 @@ class FilesystemScanner:
         self._live_staging.discard(name)
 
     async def scan(self) -> None:
-        """One full pass over every mount."""
-        mounts = {m.id for m in self._paths.mounts.values()}
-        await self._pass(mounts, scoped=None)
+        """One full pass over every mount.
+
+        Once its enrichment finishes, failure records it did not renew are
+        dropped: each full pass probes every unpublished file again, so such a
+        record names a file that was fixed, renamed, or removed.
+        """
+        await self._scans.run(_FolderPass(self, None))
 
     async def scan_folders(self, folder_ids: Iterable[NodeId]) -> None:
         """Re-read *folder_ids* only; their unchanged subfolders keep their mirror.
@@ -172,10 +178,7 @@ class FilesystemScanner:
         A folder that is gone or now names another object is replaced by its
         parent, whose listing decides whether it was removed, moved, or replaced.
         """
-        async with self._pass_lock:
-            scope = await self._present_folders(folder_ids)
-        if scope:
-            await self._pass(scope, scoped=scope)
+        await self._scans.run(_FolderPass(self, folder_ids))
 
     async def rescan_parent(self, path: str) -> None:
         """Re-read the folder holding *path*, probing its unpublished files again.
@@ -233,30 +236,6 @@ class FilesystemScanner:
             and entry.identity == state.identity
         )
 
-    async def _pass(self, scope: set[NodeId], *, scoped: set[NodeId] | None) -> None:
-        async with self._pass_lock:
-            async with reconcile_session(
-                scope,
-                mirror=self._mirror,
-                node_sync=self._node_sync,
-                locate=self.locate,
-            ) as session:
-                roots: list[_Folder] = []
-                for folder_id in sorted(scope):
-                    path = await self._folder_path(folder_id)
-                    if path is None:
-                        session.preserve(folder_id)
-                    else:
-                        roots.append((folder_id, path))
-                claimed = set[NodeId]()
-                await parallel_bfs(
-                    roots,
-                    partial(
-                        self._visit, session=session, claimed=claimed, scoped=scoped
-                    ),
-                )
-                await session.commit_removals()
-
     async def _sweep_staging(self, paths: list[str]) -> None:
         """Delete staging files left by uploads that were never finished or aborted.
 
@@ -285,7 +264,7 @@ class FilesystemScanner:
 
         Otherwise a pass could list the new entry first and give it another ID.
         """
-        async with self._pass_lock:
+        async with self._scans.observe(exclusive=True):
             yield
 
     async def current(self, node_id: NodeId) -> tuple[Entry, Previous] | None:
@@ -399,64 +378,6 @@ class FilesystemScanner:
             return False
         return True
 
-    async def _visit(
-        self,
-        folder: _Folder,
-        *,
-        session: ReconcileSession,
-        claimed: set[NodeId],
-        scoped: set[NodeId] | None,
-    ) -> list[_Folder]:
-        """List one folder; return the subfolders this pass should list too.
-
-        In a scoped pass, only new subfolders are listed; others in the scope are
-        listed on their own, and the rest keep their mirrored contents.
-        """
-        folder_id, folder_path = folder
-        if self._watcher is not None:
-            # Watch before listing, so no change after the listing goes unseen.
-            self._watcher.watch(folder_id, folder_path)
-        sweep = scoped is None and self._sweep_staging_after is not None
-        staging: list[str] = []
-        async with self._node_sync.observe() as read:
-            try:
-                entries = await self._blocking(
-                    list_directory, folder_path, staging=staging if sweep else None
-                )
-            except OSError as e:
-                _L.warning("Cannot list %s; keeping its mirror: %s", folder_path, e)
-                session.preserve(folder_id)
-                return []
-            if staging:
-                await self._sweep_staging(staging)
-
-            existing = await self._mirror.get_children(folder_id)
-            states = await self._store.get_entries([r.id for r in existing])
-            by_name = {r.name: r for r in existing}
-
-            directories: list[NodeObservation] = []
-            files: list[NodeObservation] = []
-            children: list[_Folder] = []
-            for entry in entries:
-                node_id, previous = await self._match(entry, by_name, states, claimed)
-                session.saw([node_id])
-                if entry.is_directory:
-                    if scoped is None or previous is None:
-                        children.append((node_id, entry.path))
-                    elif node_id not in scoped:
-                        session.preserve(node_id)
-                observation = await self._observe(entry, node_id, folder_id, previous)
-                if observation is None:
-                    continue
-                if entry.is_directory:
-                    directories.append(observation)
-                else:
-                    files.append(observation)
-
-            await self._node_sync.upsert_batch(directories, read=read)
-            await self._node_sync.upsert_file_batch(files, read=read)
-        return children
-
     async def _match(
         self,
         entry: Entry,
@@ -534,3 +455,103 @@ class FilesystemScanner:
         return NodeObservation(
             record=record, locator=state.to_locator(), source_key=entry.path
         )
+
+    async def plan_pass(self, requested: Iterable[NodeId] | None) -> ScanPlan[_Folder]:
+        """What a pass covers: every mount, or the *requested* folders still present."""
+        if requested is None:
+            scope = {m.id for m in self._paths.mounts.values()}
+        else:
+            scope = await self._present_folders(requested)
+        roots: list[_Folder] = []
+        preserved: list[NodeId] = []
+        for folder_id in sorted(scope):
+            path = await self._folder_path(folder_id)
+            if path is None:
+                preserved.append(folder_id)
+            else:
+                roots.append((folder_id, path))
+        return ScanPlan(scope=scope, roots=roots, preserved=preserved)
+
+    async def list_folder(
+        self,
+        folder: _Folder,
+        *,
+        claimed: set[NodeId],
+        scoped: set[NodeId] | None,
+    ) -> Listing[_Folder]:
+        """List one folder, and the subfolders this pass should list too.
+
+        In a scoped pass, only new subfolders are listed; others in the scope are
+        listed on their own, and the rest keep their mirrored contents.
+        """
+        folder_id, folder_path = folder
+        if self._watcher is not None:
+            # Watch before listing, so no change after the listing goes unseen.
+            self._watcher.watch(folder_id, folder_path)
+        sweep = scoped is None and self._sweep_staging_after is not None
+        staging: list[str] = []
+        entries = await self._blocking(
+            list_directory, folder_path, staging=staging if sweep else None
+        )
+        if staging:
+            await self._sweep_staging(staging)
+
+        existing = await self._mirror.get_children(folder_id)
+        states = await self._store.get_entries([r.id for r in existing])
+        by_name = {r.name: r for r in existing}
+
+        seen: list[NodeId] = []
+        changed: list[NodeObservation] = []
+        subfolders: list[_Folder] = []
+        keep: list[NodeId] = []
+        for entry in entries:
+            node_id, previous = await self._match(entry, by_name, states, claimed)
+            seen.append(node_id)
+            if entry.is_directory:
+                if scoped is None or previous is None:
+                    subfolders.append((node_id, entry.path))
+                elif node_id not in scoped:
+                    keep.append(node_id)
+            observation = await self._observe(entry, node_id, folder_id, previous)
+            if observation is not None:
+                changed.append(observation)
+        return Listing(seen=seen, changed=changed, subfolders=subfolders, keep=keep)
+
+    async def prune_failures(self, *, before: int) -> None:
+        """Drop failure records last marked before *before* (ms)."""
+        await self._node_sync.prune_media_failures(before=before)
+
+
+class _FolderPass(Scanner[_Folder]):
+    """State of one pass: every mount, or *requested* folders and new subfolders."""
+
+    def __init__(
+        self, scanner: FilesystemScanner, requested: Iterable[NodeId] | None
+    ) -> None:
+        self._scanner = scanner
+        self._requested = requested
+        self._scoped: set[NodeId] | None = None
+        self._claimed = set[NodeId]()
+        self._started = 0
+
+    async def prepare(self) -> ScanPlan[_Folder]:
+        self._started = time.time_ns() // 1_000_000
+        plan = await self._scanner.plan_pass(self._requested)
+        if self._requested is not None:
+            self._scoped = plan.scope
+        return plan
+
+    def folder_id(self, folder: _Folder) -> NodeId:
+        return folder[0]
+
+    async def list_folder(self, folder: _Folder) -> Listing[_Folder]:
+        return await self._scanner.list_folder(
+            folder, claimed=self._claimed, scoped=self._scoped
+        )
+
+    async def locate(self, node_id: NodeId) -> NodeObservation | None:
+        return await self._scanner.locate(node_id)
+
+    async def pass_finished(self, complete: bool) -> None:
+        if self._requested is None:
+            await self._scanner.prune_failures(before=self._started)

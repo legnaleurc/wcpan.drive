@@ -34,6 +34,7 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.filesystem._blocking import Blocking
 from wcpan.drive.server.backend.filesystem._media import media_sources
@@ -133,6 +134,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         )
         # The backend's own view, as the server hands it over.
         self.node_sync = self.core_sync.for_backend("fs")
+        self.scans = ScanRunner(mirror=self.mirror, node_sync=self.node_sync)
         self.ids = NodeIds(
             mirror=self.mirror,
             write_queue=self.write_queue,
@@ -158,6 +160,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             mirror=self.mirror,
             store=self.store,
             node_sync=self.node_sync,
+            scans=self.scans,
             ids=self.ids,
             paths=self.paths,
             blocking=blocking,

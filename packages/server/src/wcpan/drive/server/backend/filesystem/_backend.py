@@ -1,7 +1,6 @@
 """The local filesystem as a ``Backend`` of the generic server."""
 
 import asyncio
-import time
 from collections.abc import AsyncGenerator, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -73,7 +72,7 @@ class FilesystemRuntime:
         # Events during the startup scan are kept and handled once it finishes.
         if self._watcher is not None:
             self._watcher.start()
-        await self._full_scan()
+        await self._scanner.scan()
         self._scanned.set()
         _L.info("Startup scan applied")
 
@@ -88,7 +87,7 @@ class FilesystemRuntime:
         """Full rescans catch anything the watcher missed."""
         while True:
             await asyncio.sleep(self._rescan_interval)
-            await self._apply(self._full_scan(), "Rescan")
+            await self._apply(self._scanner.scan(), "Rescan")
 
     async def _follow_changes(self, watcher: DirectoryWatcher) -> None:
         while True:
@@ -98,20 +97,9 @@ class FilesystemRuntime:
             dirty, overflow = watcher.take()
             if overflow:
                 _L.warning("Change events were lost; rescanning everything")
-                await self._apply(self._full_scan(), "Rescan")
+                await self._apply(self._scanner.scan(), "Rescan")
             else:
                 await self._apply(self._scanner.scan_folders(dirty), "Update")
-
-    async def _full_scan(self) -> None:
-        """Scan every mount, then drop failure records the scan did not renew.
-
-        Each pass probes every unpublished file again, so a record it did not
-        renew names a file that was fixed, renamed, or removed.
-        """
-        started = time.time_ns() // 1_000_000
-        await self._scanner.scan()
-        await self._core.node_sync.wait_enrichment_drained()
-        await self._core.node_sync.prune_media_failures(before=started)
 
     async def _apply(self, work: Coroutine[None, None, None], what: str) -> None:
         try:
@@ -228,6 +216,7 @@ class FilesystemBackend:
                 mirror=core.mirror,
                 store=store,
                 node_sync=core.node_sync,
+                scans=core.scans,
                 ids=core.ids,
                 paths=paths,
                 blocking=blocking,
