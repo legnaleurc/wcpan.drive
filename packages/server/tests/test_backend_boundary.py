@@ -15,6 +15,7 @@ import wcpan.drive.server.lib
 _SERVER = "wcpan.drive.server"
 _BACKENDS = f"{_SERVER}.backend"
 _PUBLIC = tuple(f"{_SERVER}.{name}" for name in ("types", "lib", "exceptions"))
+_PUBLIC_FOR_TESTS = (*_PUBLIC, f"{_SERVER}.testing")
 _ROOT = Path(wcpan.drive.server.lib.__file__).parent
 _CORE_INTERNALS = frozenset({"node_sync"})
 
@@ -53,6 +54,16 @@ def _crosses_boundary(module: str, backend: str) -> bool:
     return not any(_within(module, public) for public in _PUBLIC)
 
 
+def _absolute_imports(path: Path) -> Iterator[tuple[int, str]]:
+    for node in ast.walk(ast.parse(path.read_text(), str(path))):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield node.lineno, alias.name
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            for alias in node.names:
+                yield node.lineno, f"{node.module}.{alias.name}"
+
+
 def _core_internals_used(path: Path) -> Iterator[tuple[int, str]]:
     """Uses of what ``CoreServices`` keeps for the core itself."""
     for node in ast.walk(ast.parse(path.read_text(), str(path))):
@@ -61,6 +72,23 @@ def _core_internals_used(path: Path) -> Iterator[tuple[int, str]]:
 
 
 class TestBackendBoundary(TestCase):
+    def test_migrated_backend_tests_use_only_the_public_core(self) -> None:
+        # given
+        tests = Path(__file__).parent / "backend" / "filesystem"
+
+        # when
+        violations = [
+            f"{path.name}:{line}: {module}"
+            for path in sorted(tests.glob("*.py"))
+            for line, module in _absolute_imports(path)
+            if _within(module, _SERVER)
+            and not _within(module, _BACKENDS)
+            and not any(_within(module, public) for public in _PUBLIC_FOR_TESTS)
+        ]
+
+        # then
+        self.assertEqual(violations, [])
+
     def test_backends_use_core_services_only_through_narrow_apis(self) -> None:
         # given
         backends = _ROOT / "backend"

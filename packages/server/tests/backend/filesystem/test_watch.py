@@ -9,12 +9,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server._backend import BackendLifecycle, CoreServices
-from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probing import MediaProbing
 from wcpan.drive.server.backend.filesystem import _scan as scan_module
 from wcpan.drive.server.backend.filesystem._backend import FilesystemRuntime
 from wcpan.drive.server.backend.filesystem._inotify import IN_Q_OVERFLOW, Event
+from wcpan.drive.server.testing import BackendLifecycle, ProbeRunner
+from wcpan.drive.server.types import CoreServices, MediaProbing
 
 from ._harness import ScanTestCase
 
@@ -36,7 +35,7 @@ class _WatchTestCase(ScanTestCase):
         dirty, overflow = self.watcher.take()
         self.assertFalse(overflow)
         await self.scanner.scan_folders(dirty)
-        await self.node_sync.wait_enrichment_drained()
+        await self.core.enrichment.drain()
 
 
 class TestFollowChanges(_WatchTestCase):
@@ -157,22 +156,16 @@ class TestFollowChanges(_WatchTestCase):
 
 class TestRuntime(_WatchTestCase):
     def runtime(self) -> BackendLifecycle:
-        core = CoreServices(
-            media=MediaProbing(runner=ProbeRunner()),
-            mirror=self.mirror,
-            node_sync=self.node_sync,
-            ids=self.ids,
-        )
         runtime = FilesystemRuntime(
             operations=self.operations,
             uploader=self.uploader,
             scanner=self.scanner,
             watcher=self.watcher,
             rescan_interval=3600,
-            core=core,
+            core=self.core,
             settle_delay=0.05,
         )
-        return BackendLifecycle(runtime, core)
+        return BackendLifecycle(runtime, self.core)
 
     async def until(self, relative: str) -> None:
         async with asyncio.timeout(5):

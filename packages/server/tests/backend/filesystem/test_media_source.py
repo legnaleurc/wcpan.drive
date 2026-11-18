@@ -9,19 +9,17 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase, skipUnless
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probe.source import (
-    MediaProbeError,
-    MediaSourceError,
-    ProbeFailure,
-    ProbeUnavailableError,
-    read_exactly,
-)
-from wcpan.drive.server._types import NodeObservation
 from wcpan.drive.server.backend.filesystem._blocking import Blocking
 from wcpan.drive.server.backend.filesystem._media import media_sources
 from wcpan.drive.server.backend.filesystem._reading import stat_entry
 from wcpan.drive.server.backend.filesystem._scan import FilesystemScanner
+from wcpan.drive.server.exceptions import (
+    MediaProbeError,
+    MediaSourceError,
+    ProbeUnavailableError,
+)
+from wcpan.drive.server.testing import ProbeRunner, read_exactly
+from wcpan.drive.server.types import NodeObservation, ProbeFailure
 
 
 class TestFileMediaSource(IsolatedAsyncioTestCase):

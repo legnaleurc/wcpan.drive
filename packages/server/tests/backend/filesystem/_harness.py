@@ -1,42 +1,14 @@
 """Shared fixture: a real mirror database over a temporary mount directory."""
 
-import asyncio
 import logging
 import shutil
 import tempfile
-from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
-from typing import cast
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server._backend import CoreServices
-from wcpan.drive.server._lib.write_queue import (
-    create_write_queue,
-    write_worker,
-)
-from wcpan.drive.server._services.ids import NodeIds
-from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probe.source import (
-    MediaProbeError,
-    MediaSource,
-    ProbeFailure,
-    read_exactly,
-)
-from wcpan.drive.server._services.media.probing import MediaProbing
-from wcpan.drive.server._services.mirror.store import (
-    MirrorStore,
-)
-from wcpan.drive.server._services.mounts import Mount, Mounts, ensure_mount_nodes
-from wcpan.drive.server._services.off_main import OffMainService
-from wcpan.drive.server._services.sync.metadata import (
-    create_metadata_queue,
-    metadata_worker,
-)
-from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.filesystem._blocking import Blocking
 from wcpan.drive.server.backend.filesystem._media import media_sources
 from wcpan.drive.server.backend.filesystem._operations import (
@@ -50,117 +22,43 @@ from wcpan.drive.server.backend.filesystem._store import (
     FilesystemStore,
 )
 from wcpan.drive.server.backend.filesystem._watch import DirectoryWatcher
+from wcpan.drive.server.testing import ROOT_ID, backend_harness, mount_id
 
 
-ROOT_ID = NodeId("root")
-"""The fixed ID of the server root in ``make_mounts``."""
-
-
-def mount_id(name: str) -> NodeId:
-    """The fixed ID ``make_mounts`` gives the mount *name*."""
-    return NodeId(f"_{name}")
-
-
-def make_mounts(sources: Mapping[str, str]) -> Mounts:
-    """Mounts named by the keys of *sources*, with IDs from ``mount_id``,
-    under ``ROOT_ID``."""
-    return Mounts(
-        (
-            Mount(name=name, id=mount_id(name), source=source)
-            for name, source in sources.items()
-        ),
-        root_id=ROOT_ID,
-    )
-
+__all__ = ("DOCS", "ROOT_ID", "ScanTestCase")
 
 DOCS = mount_id("docs")
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
 
 
-class FakeProbes:
-    """Stands in for probe workers: reads the whole file through its source.
-
-    Content starting with ``invalid_prefix`` is invalid media; anything else
-    is 4x3.
-    """
-
-    def __init__(self) -> None:
-        self.invalid_prefix: bytes | None = b"bad"
-        # Probes that fail as transient before any other outcome.
-        self.transient = 0
-        self.probed: list[bytes] = []
-
-    async def probe(self, source: MediaSource, *, is_image: bool) -> tuple[int, int]:
-        data = await read_exactly(source, 0, source.size) if source.size else b""
-        self.probed.append(data)
-        if self.transient:
-            self.transient -= 1
-            raise MediaProbeError(ProbeFailure.TRANSIENT, "connection reset")
-        if not await source.unchanged():
-            raise MediaProbeError(ProbeFailure.TRANSIENT, "the file changed")
-        if self.invalid_prefix is not None and data.startswith(self.invalid_prefix):
-            raise MediaProbeError(ProbeFailure.INVALID, "unreadable")
-        return 4, 3
-
-
 class ScanTestCase(IsolatedAsyncioTestCase):
     watch = False
     read_only = False
     sweep_staging_after: float | None = None
+    first_retry_delay = 3600.0
 
     async def asyncSetUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="wcpan_fs_"))
         self.source = self.tmp / "docs"
         self.source.mkdir()
-        self.db_path = str(self.tmp / "mirror.sqlite")
-        self.pool = ThreadPoolExecutor(2)
         self.io_pool = ThreadPoolExecutor(2)
-        self.mirror = MirrorStore(
-            self.db_path,
-            off_main=OffMainService(pool=self.pool),
-            schemas={"fs": FILESYSTEM_SCHEMA},
+        self.server = await self.enterAsyncContext(
+            backend_harness(first_retry_delay=self.first_retry_delay)
         )
-        await self.mirror.ensure_schema()
-        self.write_queue = create_write_queue()
-        self.metadata_queue = create_metadata_queue()
-        self.probes = FakeProbes()
-        self.media = MediaProbing(runner=cast(ProbeRunner, self.probes))
-        # The core's service, which alone writes the root and mount nodes.
-        self.core_sync = NodeSyncService(
-            mirror=self.mirror,
-            write_queue=self.write_queue,
-            probing=self.media,
-            metadata_queue=self.metadata_queue,
+        self.mirror = self.server.mirror
+        self.probes = self.server.probes
+        instance = await self.server.add_instance(
+            "fs", FILESYSTEM_SCHEMA, {"docs": str(self.source)}
         )
-        # The backend's own view, as the server hands it over.
-        self.node_sync = self.core_sync.for_backend("fs")
-        self.core = CoreServices(
-            mirror=self.mirror,
-            node_sync=self.node_sync,
-            ids=MagicMock(),
-            media=self.media,
-        )
+        self.core = instance.core
         self.scans = self.core.scans
-        self.ids = NodeIds(
-            mirror=self.mirror,
-            write_queue=self.write_queue,
-            key=self.mirror.namespace("fs").key,
-        )
-        self.tasks = [
-            asyncio.create_task(write_worker(self.write_queue)),
-            asyncio.create_task(
-                metadata_worker(
-                    self.metadata_queue, self.node_sync.process_metadata_item
-                )
-            ),
-        ]
+        self.mounts = instance.mounts
+        self.ids = self.core.ids
+        self.media = self.core.media
         self.store = FilesystemStore(
-            mirror=self.mirror,
-            ns=self.mirror.namespace("fs"),
-            write=self.core.enqueue_write,
+            mirror=self.mirror, ns=instance.namespace, write=self.core.enqueue_write
         )
-        self.mounts = make_mounts({"docs": str(self.source)})
         self.paths = NodePaths(mirror=self.mirror, mounts=self.mounts)
         blocking = Blocking(executor=self.io_pool)
         self.enterContext(self.media.register("fs", media_sources(blocking)))
@@ -195,18 +93,10 @@ class ScanTestCase(IsolatedAsyncioTestCase):
             media=self.media,
             read_only=self.read_only,
         )
-        await ensure_mount_nodes(
-            self.mounts, mirror=self.mirror, node_sync=self.core_sync
-        )
 
     async def asyncTearDown(self) -> None:
         if self.watcher is not None:
             self.watcher.close()
-        for task in self.tasks:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        self.pool.shutdown(wait=False, cancel_futures=True)
         self.io_pool.shutdown(wait=False, cancel_futures=True)
         for path in self.tmp.rglob("*"):
             with suppress(OSError):
@@ -215,7 +105,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
 
     async def scan(self) -> None:
         await self.scanner.scan()
-        await self.node_sync.wait_enrichment_drained()
+        await self.core.enrichment.drain()
 
     def write(self, relative: str, data: bytes) -> Path:
         path = self.source / relative

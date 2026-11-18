@@ -13,21 +13,19 @@ from typing import Any
 from unittest.mock import patch
 
 from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
-from wcpan.drive.server._services.operations import (
+from wcpan.drive.server.backend.filesystem._operations import FilesystemFile
+from wcpan.drive.server.backend.filesystem._reading import STAGING_PREFIX
+from wcpan.drive.server.exceptions import (
     OperationConflictError,
     OperationInvalidError,
     OperationNotFoundError,
     OperationNotSupportedError,
     OperationStorageFullError,
     OperationUnavailableError,
-)
-from wcpan.drive.server._services.upload.service import (
     UploadConflictError,
     UploadParentGoneError,
     UploadTransientError,
 )
-from wcpan.drive.server.backend.filesystem._operations import FilesystemFile
-from wcpan.drive.server.backend.filesystem._reading import STAGING_PREFIX
 
 from ._harness import DOCS, ROOT_ID, ScanTestCase
 
@@ -733,7 +731,7 @@ class TestWritesWithWatcher(_WriteTestCase):
         await asyncio.sleep(0.05)
         dirty, _ = self.watcher.take()
         await self.scanner.scan_folders(dirty)
-        await self.node_sync.wait_enrichment_drained()
+        await self.core.enrichment.drain()
 
         # then
         root_names = [c.name for c in await self.mirror.get_children(DOCS)]
@@ -746,15 +744,7 @@ class TestWriteOrdering(_WriteTestCase):
     async def test_pass_waits_until_a_new_entry_is_recorded(self) -> None:
         # given: the write that records the new folder cannot land yet
         log: list[str] = []
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def held_write() -> None:
-            entered.set()
-            await release.wait()
-
-        await self.node_sync.enqueue(held_write)
-        await entered.wait()
+        gate = await self.server.hold_writes()
         folder_path = self.scanner._folder_path
 
         async def logged_path(folder_id: NodeId) -> str | None:
@@ -772,7 +762,7 @@ class TestWriteOrdering(_WriteTestCase):
                 await asyncio.sleep(0)
             # when
             log.append("released")
-            release.set()
+            gate.release()
             created, _ = await asyncio.gather(creating, scanning)
         # then
         self.assertEqual(log[0], "released")

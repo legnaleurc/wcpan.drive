@@ -5,12 +5,8 @@ import sqlite3
 from collections.abc import AsyncIterator
 
 from wcpan.drive.protocol.types import MediaInfo
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
-from wcpan.drive.server._services.media.retries import MediaRetries
-from wcpan.drive.server._services.upload.service import (
-    UploadInvalidMediaError,
-    UploadTransientError,
-)
+from wcpan.drive.server.exceptions import UploadInvalidMediaError, UploadTransientError
+from wcpan.drive.server.types import ProbeFailure
 
 from ._harness import DOCS, ScanTestCase
 
@@ -27,7 +23,7 @@ class TestMediaFailures(ScanTestCase):
         return [f.source_key for f in await self.mirror.get_media_failures("fs")]
 
     def mapped_ids(self) -> int:
-        con = sqlite3.connect(self.db_path)
+        con = sqlite3.connect(self.server.database_path)
         try:
             return con.execute("SELECT COUNT(*) FROM node_ids").fetchone()[0]
         finally:
@@ -96,36 +92,13 @@ class TestMediaFailures(ScanTestCase):
         (failure,) = await self.mirror.get_media_failures("fs")
         self.assertEqual(failure.kind, ProbeFailure.INVALID)
 
-    async def test_transient_failure_is_retried_by_reading_its_folder(self) -> None:
-        # given: the first probe fails transiently
-        self.node_sync._retries = MediaRetries(first_delay=0.01)
-        self.probes.transient = 1
-        path = self.write("sub/pic.jpg", b"jpeg")
-        async with self.node_sync.retrying_with(self.scanner.rescan_parent):
-            # when
-            await self.scan()
-            (failure,) = await self.mirror.get_media_failures("fs")
-            self.assertEqual(
-                (failure.source_key, failure.kind),
-                (str(path), ProbeFailure.TRANSIENT),
-            )
-            async with asyncio.timeout(5):
-                while await self.node("sub/pic.jpg") is None:
-                    await asyncio.sleep(0.01)
-
-        # then
-        published = await self.node("sub/pic.jpg")
-        assert published is not None
-        self.assertEqual((published.width, published.height), (4, 3))
-        self.assertEqual(await self.failures(), [])
-
     async def test_pruning_forgets_the_retry_of_a_removed_file(self) -> None:
         # given: a transient failure with a retry pending, then the file goes
-        async with self.node_sync.retrying_with(self.scanner.rescan_parent):
+        async with self.core.enrichment.retrying_with(self.scanner.rescan_parent):
             self.probes.transient = 1
             path = self.write("pic.jpg", b"jpeg")
             await self.scan()
-            self.assertEqual(self.node_sync._retries.pending("fs"), {str(path)})
+            self.assertEqual(self.server.pending_retries("fs"), {str(path)})
             path.unlink()
 
             # when
@@ -133,7 +106,7 @@ class TestMediaFailures(ScanTestCase):
 
             # then
             self.assertEqual(await self.failures(), [])
-            self.assertEqual(self.node_sync._retries.pending("fs"), set())
+            self.assertEqual(self.server.pending_retries("fs"), set())
 
     async def test_unreadable_upload_is_rejected_unpublished(self) -> None:
         # when / then
@@ -145,7 +118,7 @@ class TestMediaFailures(ScanTestCase):
                 mime_type=None,
                 media_info=None,
             )
-        await self.node_sync.wait_enrichment_drained()
+        await self.core.enrichment.drain()
         self.assertFalse((self.source / "bad.jpg").exists())
         self.assertIsNone(await self.node("bad.jpg"))
         self.assertEqual(await self.failures(), [])
@@ -191,3 +164,32 @@ class TestMediaFailures(ScanTestCase):
         # then
         self.assertEqual((record.width, record.height), (4, 3))
         self.assertTrue((self.source / "bad.jpg").exists())
+
+
+class TestMediaRetry(ScanTestCase):
+    first_retry_delay = 0.01
+
+    async def failures(self) -> list[str]:
+        return [f.source_key for f in await self.mirror.get_media_failures("fs")]
+
+    async def test_transient_failure_is_retried_by_reading_its_folder(self) -> None:
+        # given: the first probe fails transiently
+        self.probes.transient = 1
+        path = self.write("sub/pic.jpg", b"jpeg")
+        async with self.core.enrichment.retrying_with(self.scanner.rescan_parent):
+            # when
+            await self.scan()
+            (failure,) = await self.mirror.get_media_failures("fs")
+            self.assertEqual(
+                (failure.source_key, failure.kind),
+                (str(path), ProbeFailure.TRANSIENT),
+            )
+            async with asyncio.timeout(5):
+                while await self.node("sub/pic.jpg") is None:
+                    await asyncio.sleep(0.01)
+
+        # then
+        published = await self.node("sub/pic.jpg")
+        assert published is not None
+        self.assertEqual((published.width, published.height), (4, 3))
+        self.assertEqual(await self.failures(), [])

@@ -9,13 +9,12 @@ from unittest import skipIf
 from unittest.mock import patch
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server._services.mounts import ensure_mount_nodes
-from wcpan.drive.server._services.operations import (
+from wcpan.drive.server.backend.filesystem._blocking import Blocking
+from wcpan.drive.server.backend.filesystem._scan import FilesystemScanner
+from wcpan.drive.server.exceptions import (
     OperationNotSupportedError,
     OperationUnavailableError,
 )
-from wcpan.drive.server.backend.filesystem._blocking import Blocking
-from wcpan.drive.server.backend.filesystem._scan import FilesystemScanner
 
 from ._harness import DOCS, ScanTestCase
 
@@ -212,9 +211,6 @@ class TestIdentity(ScanTestCase):
             ids=self.ids,
             paths=self.paths,
             blocking=Blocking(executor=self.io_pool),
-        )
-        await ensure_mount_nodes(
-            self.mounts, mirror=self.mirror, node_sync=self.core_sync
         )
         await self.scan()
 

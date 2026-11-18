@@ -1,10 +1,6 @@
 """Two filesystem instances over one host directory keep their nodes apart."""
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server._services.ids import NodeIds
-from wcpan.drive.server._services.mounts import ensure_mount_nodes
-from wcpan.drive.server._services.sync.enrichment import Enrichment
-from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server.backend.filesystem._blocking import Blocking
 from wcpan.drive.server.backend.filesystem._paths import NodePaths
 from wcpan.drive.server.backend.filesystem._scan import FilesystemScanner
@@ -13,35 +9,36 @@ from wcpan.drive.server.backend.filesystem._store import (
     FilesystemStore,
 )
 
-from ._harness import ScanTestCase, make_mounts
+from ._harness import ScanTestCase
 
 
 class TestTwoInstances(ScanTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         # A second instance serving the same directory under another mount.
-        ns = await self.mirror.register_schema("fs2", FILESYSTEM_SCHEMA)
-        self.mounts2 = make_mounts({"copy": str(self.source)})
-        self.node_sync2 = self.core_sync.for_backend("fs2")
+        second = await self.server.add_instance(
+            "fs2", FILESYSTEM_SCHEMA, {"copy": str(self.source)}
+        )
+        self.core2 = second.core
+        self.mounts2 = second.mounts
         self.scanner2 = FilesystemScanner(
             mirror=self.mirror,
             store=FilesystemStore(
-                mirror=self.mirror, ns=ns, write=self.node_sync2.enqueue_sql
+                mirror=self.mirror,
+                ns=second.namespace,
+                write=second.core.enqueue_write,
             ),
-            enrichment=Enrichment(self.node_sync2),
-            scans=ScanRunner(mirror=self.mirror, node_sync=self.node_sync2),
-            ids=NodeIds(mirror=self.mirror, write_queue=self.write_queue, key=ns.key),
+            enrichment=second.core.enrichment,
+            scans=second.core.scans,
+            ids=second.core.ids,
             paths=NodePaths(mirror=self.mirror, mounts=self.mounts2),
             blocking=Blocking(executor=self.io_pool),
-        )
-        await ensure_mount_nodes(
-            self.mounts2, mirror=self.mirror, node_sync=self.core_sync
         )
 
     async def scan_both(self) -> None:
         await self.scan()
         await self.scanner2.scan()
-        await self.node_sync2.wait_enrichment_drained()
+        await self.core2.enrichment.drain()
 
     async def copy(self, relative: str) -> NodeRecord | None:
         parent = self.mounts2["copy"].id

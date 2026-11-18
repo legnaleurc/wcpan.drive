@@ -8,27 +8,26 @@ from typing import cast
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from wcpan.drive.server._backend import (
-    Access,
-    BackendContext,
-    BackendRoutes,
-    CoreServices,
-    Mounts,
-    enter_backend,
-    load_command_parser,
-)
-from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
-from wcpan.drive.server._services.media.probing import MediaProbing
-from wcpan.drive.server._services.mirror.model import (
-    MediaFailure,
-)
 from wcpan.drive.server.backend.filesystem import create_backend
 from wcpan.drive.server.backend.filesystem._commands import parse_command
 from wcpan.drive.server.backend.filesystem._config import FilesystemConfig, check_mounts
 from wcpan.drive.server.backend.filesystem._handles import filesystem_id
-
-from ._harness import make_mounts
+from wcpan.drive.server.testing import (
+    ProbeRunner,
+    enter_backend,
+    load_command_parser,
+    make_mounts,
+)
+from wcpan.drive.server.types import (
+    Access,
+    BackendContext,
+    BackendRoutes,
+    CoreServices,
+    MediaFailure,
+    MediaProbing,
+    Mounts,
+    ProbeFailure,
+)
 
 
 class TestFilesystemSettings(TestCase):
