@@ -45,7 +45,7 @@ from ._paths import SynologyPathService
 from ._scan import StartupScanService
 from ._store import SYNOLOGY_SCHEMA, SynologyStore, SynologyStoreReader
 from ._upload import SynologyUploader
-from ._webhook import WebhookService, create_webhook_queue
+from ._webhook import WebhookService
 
 
 _L = getLogger(__name__)
@@ -128,7 +128,6 @@ class SynologyBackend:
         self._context = context
         self._config = config
         self._ns = ns
-        self._webhook_queue = create_webhook_queue()
         self._scan_done = asyncio.Event()
         self._serving: _Serving | None = None
 
@@ -160,12 +159,13 @@ class SynologyBackend:
     async def run_until_ready(self) -> None:
         """Startup scan, then the webhooks that arrived meanwhile."""
         await self._require_serving().startup_scan.run_until_ready(self._scan_done)
-        await self._webhook_queue.join()
+        await writing(self._context.core).hints.join()
 
     async def run(self) -> None:
         webhook_service = self._require_serving().webhook_service
-        async with asyncio.TaskGroup() as group:
-            await webhook_service.run(self._webhook_queue, group, self._scan_done)
+        # Webhooks wait, so the startup scan sees a stable mirror.
+        await self._scan_done.wait()
+        await writing(self._context.core).hints.run(webhook_service)
 
     async def run_command(self, command: BackendCommand) -> None:
         args = command.args
@@ -263,7 +263,7 @@ class SynologyBackend:
         async with AsyncExitStack() as stack:
             c = await stack.enter_async_context(self.connect())
             path = self._context.routes.add(
-                "POST", "webhook", webhook_handler(self._webhook_queue)
+                "POST", "webhook", webhook_handler(core.hints)
             )
             await stack.enter_async_context(
                 _managed_webhook(
@@ -307,6 +307,7 @@ class SynologyBackend:
                     node_sync=core.node_sync,
                     syno_paths=c.syno_paths,
                     mount_registry=c.registry,
+                    hints=core.hints,
                 ),
             )
             try:

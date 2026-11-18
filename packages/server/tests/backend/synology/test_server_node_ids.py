@@ -9,7 +9,6 @@ from dataclasses import replace
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server._backend import Mounts
-from wcpan.drive.server._lib.debounce import TaskIdDebouncer
 from wcpan.drive.server._lib.write_queue import (
     WriteQueue,
     create_write_queue,
@@ -33,6 +32,7 @@ from wcpan.drive.server.backend.synology._operations import SynologyNodeOperatio
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.drive.server.backend.synology._webhook import WebhookService
+from wcpan.drive.server.types import HintStage
 from wcpan.synology.types import (
     SynologyClient,
     SynologyFileId,
@@ -224,8 +224,8 @@ class TestTwoInstances(DecoyTestCase):
             node_sync=node_sync,
             syno_paths=self.nas1.paths,
             mount_registry=MountRegistry(mounts=Mounts(root_id=ROOT_ID), root_ids={}),
+            hints=HintStage(),
         )
-        pending = self.decoy.mock(cls=TaskIdDebouncer)
 
         def removal(link: str):
             return service._classify_webhook_item(  # pyright: ignore[reportPrivateUsage]
@@ -241,7 +241,7 @@ class TestTwoInstances(DecoyTestCase):
         # when
         for link in ("link", "never-seen"):
             await service._execute_webhook_plan(  # pyright: ignore[reportPrivateUsage]
-                removal(link), pending=pending
+                removal(link)
             )
 
         # then

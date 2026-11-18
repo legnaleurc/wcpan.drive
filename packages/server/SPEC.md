@@ -203,7 +203,8 @@ backend starts the consumer itself with `hints.run(handler)` and waits with `hin
 Not yet built: read-only scans, the core-owned lifecycle, the
 narrowed `core.enrichment` surface, and `core.reconcile`. The filesystem backend's scans run
 through `core.scans`, its writes through `core.observe`, and its change events through
-`core.hints`. Its startup and media retries and all of the Synology backend still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
+`core.hints`. Synology webhooks also run on `core.hints`. The filesystem's startup and media
+retries, and Synology's scans, writes, and webhook facts, still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
 
 ### Goal
 

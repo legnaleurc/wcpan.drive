@@ -2,22 +2,28 @@
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest import IsolatedAsyncioTestCase
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server._backend import Mounts
-from wcpan.drive.server._lib.debounce import TaskIdDebouncer
 from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import NodeObservation, ReadSeq
+from wcpan.drive.server.backend.synology._backend import SynologyBackend, _Serving
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.drive.server.backend.synology._store import SynologyStore
-from wcpan.drive.server.backend.synology._webhook import WebhookService
+from wcpan.drive.server.backend.synology._webhook import (
+    PENDING_FILE_DELAY,
+    WebhookService,
+)
+from wcpan.drive.server.types import ChangeHandler, CoreServices, HintStage
 from wcpan.synology.types import (
     SynologyClient,
     SynologyFileId,
@@ -83,11 +89,14 @@ class _WebhookTestCase(DecoyTestCase):
         self.mirror = self.decoy.mock(cls=MirrorStore)
         self.store = self.decoy.mock(cls=SynologyStore)
         self.node_sync = self.decoy.mock(cls=NodeSyncService)
-        self.pending = self.decoy.mock(cls=TaskIdDebouncer)
+        self.hints = self.decoy.mock(cls=HintStage)
         self.decoy.when(self.node_sync.observe()).then_enter_with(_READ)
 
     def _create_service(
-        self, mount_registry: MountRegistry | None = None
+        self,
+        mount_registry: MountRegistry | None = None,
+        *,
+        hints: HintStage | None = None,
     ) -> WebhookService:
         registry = mount_registry or MountRegistry(
             mounts=Mounts(root_id=ROOT_ID), root_ids={}
@@ -101,6 +110,7 @@ class _WebhookTestCase(DecoyTestCase):
                 registry=registry, store=self.store, ids=IdentityIds()
             ),
             mount_registry=registry,
+            hints=hints or self.hints,
         )
 
     async def _stub_source(self, node: NodeRecord) -> None:
@@ -425,7 +435,10 @@ def _moved_dir(parent_id: str = "p1"):
 class TestExecuteWebhookPlan(_WebhookTestCase):
     def _verify_not_scheduled(self) -> None:
         self.decoy.verify(
-            self.pending.schedule(matchers.Anything(), matchers.Anything()), times=0
+            self.hints.later(
+                matchers.Anything(), matchers.Anything(), matchers.Anything()
+            ),
+            times=0,
         )
 
     async def test_fetches_then_waits_for_created_dir(self):
@@ -447,7 +460,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             "_fetch_and_enrich",
             new_callable=AsyncMock,
         ) as mock_fetch:
-            await service._execute_webhook_plan(plan, pending=self.pending)
+            await service._execute_webhook_plan(plan)
 
         # then
         mock_fetch.assert_awaited_once_with(
@@ -473,7 +486,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
         )
 
         # when
-        await service._execute_webhook_plan(plan, pending=self.pending)
+        await service._execute_webhook_plan(plan)
 
         # then
         self.decoy.verify(
@@ -500,11 +513,13 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
             "_fetch_and_enrich",
             new_callable=AsyncMock,
         ) as mock_fetch:
-            await service._execute_webhook_plan(plan, pending=self.pending)
+            await service._execute_webhook_plan(plan)
 
             # then
             factory = matchers.Captor()
-            self.decoy.verify(self.pending.schedule("f1", factory), times=1)
+            self.decoy.verify(
+                self.hints.later("f1", PENDING_FILE_DELAY, factory), times=1
+            )
 
             # when
             await factory.value()
@@ -536,7 +551,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
                 new_callable=AsyncMock,
             ) as mock_scan,
         ):
-            await service._execute_webhook_plan(plan, pending=self.pending)
+            await service._execute_webhook_plan(plan)
 
         # then
         mock_fetch.assert_awaited_once_with(
@@ -573,7 +588,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
                 new_callable=AsyncMock,
             ) as mock_scan,
         ):
-            await service._execute_webhook_plan(plan, pending=self.pending)
+            await service._execute_webhook_plan(plan)
 
         # then
         mock_fetch.assert_awaited_once()
@@ -597,7 +612,7 @@ class TestExecuteWebhookPlan(_WebhookTestCase):
                 new_callable=AsyncMock,
             ) as mock_scan,
         ):
-            await service._execute_webhook_plan(plan, pending=self.pending)
+            await service._execute_webhook_plan(plan)
 
         mock_scan.assert_awaited_once_with(NodeId("f1"))
 
@@ -696,27 +711,22 @@ class TestWebhookServiceMovedDir(_WebhookTestCase):
     async def test_skips_subtree_scan_when_root_unresolved(self):
         # given
         await self._stub_parent(_make_node("p1"))
-        service = self._create_service()
-        queue = asyncio.Queue()
-        await queue.put(_moved_dir())
-        scan_done_event = asyncio.Event()
-        scan_done_event.set()
+        hints = HintStage()
+        service = self._create_service(hints=hints)
+        hints.publish(_moved_dir())
 
         with patch.object(
             service,
             "_scan_moved_dir_subtree",
             new_callable=AsyncMock,
         ) as mock_scan:
-
-            async def _run_once():
-                async with asyncio.TaskGroup() as group:
-                    group.create_task(service.run(queue, group, scan_done_event))
-                    await queue.join()
-                    raise asyncio.CancelledError()
-
             # when
-            with self.assertRaises(asyncio.CancelledError):
-                await _run_once()
+            consumer = asyncio.create_task(hints.run(service))
+            try:
+                async with asyncio.timeout(5):
+                    await hints.join()
+            finally:
+                consumer.cancel()
 
         # then
         mock_scan.assert_not_awaited()
@@ -732,9 +742,9 @@ class TestWebhookFailuresPropagate(_WebhookTestCase):
 
     async def test_run_stops_when_an_event_fails(self):
         # given
-        service = self._create_service()
-        queue: asyncio.Queue = asyncio.Queue()
-        await queue.put(
+        hints = HintStage()
+        service = self._create_service(hints=hints)
+        hints.publish(
             {
                 "event_type": "file_renamed",
                 "file_id": "f1",
@@ -743,8 +753,6 @@ class TestWebhookFailuresPropagate(_WebhookTestCase):
                 "parent_id": "p1",
             }
         )
-        scan_done = asyncio.Event()
-        scan_done.set()
 
         # when
         with patch.object(
@@ -752,13 +760,50 @@ class TestWebhookFailuresPropagate(_WebhookTestCase):
             "_fetch_and_enrich",
             new=AsyncMock(side_effect=OSError("NAS unavailable")),
         ):
-            with self.assertRaises(ExceptionGroup) as raised:
-                async with asyncio.TaskGroup() as group:
-                    await service.run(queue, group, scan_done)
+            with self.assertRaisesRegex(OSError, "NAS unavailable"):
+                async with asyncio.timeout(5):
+                    await hints.run(service)
 
-        # then
-        self.assertTrue(raised.exception.subgroup(OSError))
-        self.assertEqual(queue.qsize(), 0)
+        # then: the event is not left unfinished
+        async with asyncio.timeout(5):
+            await hints.join()
+
+    async def test_delayed_update_failure_stops_the_consumer(self):
+        # given
+        clock: list[asyncio.Future[None]] = []
+
+        async def sleep(_: float) -> None:
+            future = asyncio.get_running_loop().create_future()
+            clock.append(future)
+            await future
+
+        hints = HintStage(sleep=sleep)
+        service = self._create_service(hints=hints)
+        hints.publish(
+            {
+                "event_type": "file_modified",
+                "file_id": "f1",
+                "permanent_link": "f1",
+                "file_type": "file",
+                "parent_id": "p1",
+            }
+        )
+        with patch.object(
+            service,
+            "_fetch_and_enrich",
+            new=AsyncMock(side_effect=OSError("NAS unavailable")),
+        ):
+            consumer = asyncio.create_task(hints.run(service))
+            async with asyncio.timeout(5):
+                await hints.join()
+                while not clock:
+                    await asyncio.sleep(0)
+            # when
+            clock[0].set_result(None)
+            # then
+            with self.assertRaisesRegex(OSError, "NAS unavailable"):
+                async with asyncio.timeout(5):
+                    await consumer
 
     async def test_moved_dir_scan_raises_when_listing_fails(self):
         # given
@@ -773,3 +818,82 @@ class TestWebhookFailuresPropagate(_WebhookTestCase):
             with self.assertRaises(ExceptionGroup) as raised:
                 await service._scan_moved_dir_subtree(NodeId("d1"))
         self.assertTrue(raised.exception.subgroup(OSError))
+
+
+# ---------------------------------------------------------------------------
+# Backend lifecycle
+# ---------------------------------------------------------------------------
+
+
+class _Scan:
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+
+    async def run_until_ready(self, done: asyncio.Event) -> None:
+        await self.release.wait()
+        done.set()
+
+
+class _Handler(ChangeHandler[str]):
+    def __init__(self) -> None:
+        self.started: list[str] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handle(self, event: str) -> None:
+        self.started.append(event)
+        self.entered.set()
+        await self.release.wait()
+
+
+class TestWebhookLifecycle(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        context: Any = MagicMock()
+        context.core = CoreServices(
+            mirror=MagicMock(),
+            node_sync=MagicMock(),
+            off_main=MagicMock(),
+            ids=IdentityIds(),
+            media=MagicMock(),
+        )
+        self.hints = context.core.hints
+        self.scan = _Scan()
+        self.handler = _Handler()
+        self.backend = SynologyBackend(
+            context=context, config=MagicMock(), ns=MagicMock()
+        )
+        serving: Any = _Serving(
+            operations=MagicMock(),
+            uploader=MagicMock(),
+            files=MagicMock(),
+            startup_scan=self.scan,  # pyright: ignore[reportArgumentType]
+            webhook_service=self.handler,  # pyright: ignore[reportArgumentType]
+        )
+        self.backend._serving = serving
+
+    async def settle(self) -> None:
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+    async def test_webhooks_wait_for_the_scan_and_ready_waits_for_them(self):
+        # given: a webhook arrives during the startup scan
+        running = asyncio.create_task(self.backend.run())
+        ready = asyncio.create_task(self.backend.run_until_ready())
+        self.addCleanup(running.cancel)
+        self.addCleanup(ready.cancel)
+        self.hints.publish("event")
+        await self.settle()
+        handled_during_scan = list(self.handler.started)
+        # when: the scan ends
+        self.scan.release.set()
+        async with asyncio.timeout(5):
+            await self.handler.entered.wait()
+        await self.settle()
+        ready_while_handling = ready.done()
+        self.handler.release.set()
+        async with asyncio.timeout(5):
+            await ready
+        # then
+        self.assertEqual(handled_during_scan, [])
+        self.assertFalse(ready_while_handling)
+        self.assertEqual(self.handler.started, ["event"])

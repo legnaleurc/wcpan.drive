@@ -1,12 +1,13 @@
-"""Webhook event processing service with debounced file upsert handling."""
+"""Webhook event handling, with debounced file upserts."""
 
-import asyncio
 from dataclasses import dataclass
 from logging import getLogger
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib import TaskIdDebouncer, parallel_bfs
+from wcpan.drive.server.lib import parallel_bfs
 from wcpan.drive.server.types import (
+    ChangeHandler,
+    HintStage,
     MirrorStore,
     NodeObservation,
     NodeSyncService,
@@ -28,14 +29,7 @@ from ._store import SynologyStore
 
 _L = getLogger(__name__)
 
-type WebhookQueue = asyncio.Queue[SynologyWebhookEvent]
-
-
-def create_webhook_queue() -> WebhookQueue:
-    return asyncio.Queue()
-
-
-_PENDING_FILE_DELAY = 10.0
+PENDING_FILE_DELAY = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +47,13 @@ class _WebhookActionPlan:
     schedule_delayed_upsert: bool = False
 
 
-class WebhookService:
-    """Processes Synology webhook events as a background consumer."""
+class WebhookService(ChangeHandler[SynologyWebhookEvent]):
+    """Applies Synology webhook events, one at a time.
+
+    A failure means the NAS or its API is unstable. It stops the server, whose
+    next initial scan repairs the mirror; skipping the event would leave the
+    mirror stale until then.
+    """
 
     def __init__(
         self,
@@ -65,6 +64,7 @@ class WebhookService:
         node_sync: NodeSyncService,
         syno_paths: SynologyPathService,
         mount_registry: MountRegistry,
+        hints: HintStage,
     ) -> None:
         self._drive_api = drive_api
         self._mirror = mirror
@@ -72,6 +72,11 @@ class WebhookService:
         self._node_sync = node_sync
         self._syno_paths = syno_paths
         self._mount_registry = mount_registry
+        self._hints = hints
+
+    async def handle(self, event: SynologyWebhookEvent) -> None:
+        _L.debug("webhook %r", event)
+        await self._execute_webhook_plan(self._classify_webhook_item(event))
 
     async def _fetch_and_enrich(
         self,
@@ -235,8 +240,6 @@ class WebhookService:
     async def _execute_webhook_plan(
         self,
         plan: _WebhookActionPlan,
-        *,
-        pending: TaskIdDebouncer,
     ) -> None:
         skip_moved_dir_subtree_scan = await self._can_skip_moved_dir_subtree_scan(plan)
         if plan.fetch_immediately:
@@ -268,8 +271,9 @@ class WebhookService:
                 async with self._node_sync.observe() as read:
                     await self._node_sync.delete(node_id, read=read)
         if plan.schedule_delayed_upsert:
-            pending.schedule(
+            self._hints.later(
                 plan.schedule_key,
+                PENDING_FILE_DELAY,
                 lambda: self._fetch_and_enrich(
                     plan.file_ref,
                     plan.permanent_link_ref,
@@ -369,23 +373,3 @@ class WebhookService:
         if node_id is None:
             return None
         return await self._mirror.get_node_by_id(node_id)
-
-    async def run(
-        self,
-        queue: WebhookQueue,
-        group: asyncio.TaskGroup,
-        scan_done_event: asyncio.Event,
-    ) -> None:
-        pending = TaskIdDebouncer(group, _PENDING_FILE_DELAY)
-        await scan_done_event.wait()
-        # A failure here means the NAS or its API is unstable. It propagates and
-        # stops the server, whose next initial scan repairs the mirror; skipping
-        # the event would leave the mirror stale until then.
-        while True:
-            item = await queue.get()
-            _L.debug("webhook %r", item)
-            try:
-                plan = self._classify_webhook_item(item)
-                await self._execute_webhook_plan(plan, pending=pending)
-            finally:
-                queue.task_done()
