@@ -198,9 +198,8 @@ not modeled as a Synology scan with renamed fields.
 
 This section is the target design for the backend API. Implemented so far:
 `CoreServices.observe` with `Changes`, `CoreServices.scans` with `Scanner`, `ScanPlan`, and
-`Listing`, and `CoreServices.hints` with `ChangeHandler`. Until the core owns the lifecycle, a
-backend starts the consumer itself with `hints.run(handler)` and waits with `hints.join()`.
-Not yet built: read-only scans, the core-owned lifecycle, the
+`Listing`, `CoreServices.hints` with `ChangeHandler`, and the core-owned lifecycle
+(`BackendRuntime`, `BackendLifecycle`). Not yet built: read-only scans, the
 narrowed `core.enrichment` surface, and `core.reconcile`. The filesystem backend's scans run
 through `core.scans`, its writes through `core.observe`, and its change events through
 `core.hints`. Synology's startup scan runs through `core.scans` and its webhooks through
@@ -309,10 +308,9 @@ class ChangeHandler[E](ABC):
     @abstractmethod
     async def handle(self, event: E) -> None: ...
 
-class BackendRuntime(ABC):
-    def startup_scanner(self) -> Scanner: ...
+class BackendRuntime(Protocol):
+    async def startup_scan(self) -> None: ...  # start change sources, then scan
     def change_handler(self) -> ChangeHandler | None: ...
-    async def before_scan(self) -> None: ...   # start change sources
     async def run(self) -> None: ...           # started after the startup scan
 ```
 
@@ -480,8 +478,9 @@ API handlers answer 503 until every backend is ready.
 
 0. Media retries are registered while the backend is entered, before the startup scan, and stay
    registered through serving. They are keyed by source key, not `NodeId`.
-1. `before_scan()` starts change sources. Published hints are held.
-2. The core runs `startup_scanner()` through the scan runner, including finish hooks.
+1. Published hints are held from the start.
+2. The core awaits `startup_scan()`, which starts change sources and scans, normally through
+   `core.scans.run`, and does anything that must follow the pass.
 3. The hint consumer and `run()` start.
 4. The core waits until every accepted hint has been fully handled, as `queue.join()` does
    today, and enrichment has drained. The backend is then ready. `later` work does not count.

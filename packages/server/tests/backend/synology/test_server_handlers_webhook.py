@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from decoy import matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server._backend import Mounts
+from wcpan.drive.server._backend import BackendLifecycle, Mounts
 from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
@@ -854,9 +854,8 @@ class _Scan:
     def __init__(self) -> None:
         self.release = asyncio.Event()
 
-    async def run_until_ready(self, done: asyncio.Event) -> None:
+    async def run_until_ready(self) -> None:
         await self.release.wait()
-        done.set()
 
 
 class _Handler(ChangeHandler[str]):
@@ -874,14 +873,17 @@ class _Handler(ChangeHandler[str]):
 class TestWebhookLifecycle(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         context: Any = MagicMock()
-        context.core = CoreServices(
+        node_sync: Any = MagicMock()
+        node_sync.wait_enrichment_drained = AsyncMock()
+        self.core = CoreServices(
             mirror=MagicMock(),
-            node_sync=MagicMock(),
+            node_sync=node_sync,
             off_main=MagicMock(),
             ids=IdentityIds(),
             media=MagicMock(),
         )
-        self.hints = context.core.hints
+        context.core = self.core
+        self.hints = self.core.hints
         self.scan = _Scan()
         self.handler = _Handler()
         self.backend = SynologyBackend(
@@ -902,8 +904,9 @@ class TestWebhookLifecycle(IsolatedAsyncioTestCase):
 
     async def test_webhooks_wait_for_the_scan_and_ready_waits_for_them(self):
         # given: a webhook arrives during the startup scan
-        running = asyncio.create_task(self.backend.run())
-        ready = asyncio.create_task(self.backend.run_until_ready())
+        lifecycle = BackendLifecycle(self.backend, self.core)
+        running = asyncio.create_task(lifecycle.run())
+        ready = asyncio.create_task(lifecycle.until_ready())
         self.addCleanup(running.cancel)
         self.addCleanup(ready.cancel)
         self.hints.publish("event")

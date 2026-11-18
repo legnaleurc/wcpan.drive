@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server._backend import CoreServices
+from wcpan.drive.server._backend import BackendLifecycle, CoreServices
 from wcpan.drive.server._services.media.probe.runner import ProbeRunner
 from wcpan.drive.server._services.media.probing import MediaProbing
 from wcpan.drive.server.backend.filesystem import _scan as scan_module
@@ -156,22 +156,24 @@ class TestFollowChanges(_WatchTestCase):
 
 
 class TestRuntime(_WatchTestCase):
-    def runtime(self) -> FilesystemRuntime:
-        return FilesystemRuntime(
+    def runtime(self) -> BackendLifecycle:
+        core = CoreServices(
+            media=MediaProbing(runner=ProbeRunner()),
+            mirror=self.mirror,
+            node_sync=self.node_sync,
+            off_main=MagicMock(),
+            ids=self.ids,
+        )
+        runtime = FilesystemRuntime(
             operations=self.operations,
             uploader=self.uploader,
             scanner=self.scanner,
             watcher=self.watcher,
             rescan_interval=3600,
-            core=CoreServices(
-                media=MediaProbing(runner=ProbeRunner()),
-                mirror=self.mirror,
-                node_sync=self.node_sync,
-                off_main=MagicMock(),
-                ids=self.ids,
-            ),
+            core=core,
             settle_delay=0.05,
         )
+        return BackendLifecycle(runtime, core)
 
     async def until(self, relative: str) -> None:
         async with asyncio.timeout(5):
@@ -181,7 +183,7 @@ class TestRuntime(_WatchTestCase):
     async def test_changes_after_ready_are_applied(self) -> None:
         # given
         runtime = self.runtime()
-        await runtime.run_until_ready()
+        await runtime.until_ready()
         task = asyncio.create_task(runtime.run())
         try:
             # when
@@ -207,7 +209,7 @@ class TestRuntime(_WatchTestCase):
         # when
         runtime = self.runtime()
         with patch.object(scan_module, "list_directory", list_then_change):
-            await runtime.run_until_ready()
+            await runtime.until_ready()
         # then
         self.assertIsNone(await self.node("racy.txt"))
         # when
@@ -221,7 +223,7 @@ class TestRuntime(_WatchTestCase):
     async def test_failed_update_does_not_stop_following(self) -> None:
         # given
         runtime = self.runtime()
-        await runtime.run_until_ready()
+        await runtime.until_ready()
         real = self.scanner.scan_folders
         failures = [OSError("cannot read")]
 
@@ -248,7 +250,7 @@ class TestRuntime(_WatchTestCase):
     async def test_changes_during_a_pass_merge_into_one(self) -> None:
         # given: a pass is running
         runtime = self.runtime()
-        await runtime.run_until_ready()
+        await runtime.until_ready()
         real = self.scanner.scan_folders
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -284,7 +286,7 @@ class TestRuntime(_WatchTestCase):
         # given
         assert self.watcher is not None
         runtime = self.runtime()
-        await runtime.run_until_ready()
+        await runtime.until_ready()
         full_scan = AsyncMock()
         with (
             patch.object(self.scanner, "scan", full_scan),

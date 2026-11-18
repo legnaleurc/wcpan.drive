@@ -1,6 +1,5 @@
 """Synology Drive as a backend of the generic server."""
 
-import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -128,7 +127,6 @@ class SynologyBackend:
         self._context = context
         self._config = config
         self._ns = ns
-        self._scan_done = asyncio.Event()
         self._serving: _Serving | None = None
 
     @property
@@ -156,16 +154,14 @@ class SynologyBackend:
         # The Drive API takes a file in one request, so resumable uploads spool.
         return self._require_serving().files
 
-    async def run_until_ready(self) -> None:
-        """Startup scan, then the webhooks that arrived meanwhile."""
-        await self._require_serving().startup_scan.run_until_ready(self._scan_done)
-        await writing(self._context.core).hints.join()
+    async def startup_scan(self) -> None:
+        await self._require_serving().startup_scan.run_until_ready()
+
+    def change_handler(self) -> WebhookService:
+        return self._require_serving().webhook_service
 
     async def run(self) -> None:
-        webhook_service = self._require_serving().webhook_service
-        # Webhooks wait, so the startup scan sees a stable mirror.
-        await self._scan_done.wait()
-        await writing(self._context.core).hints.run(webhook_service)
+        """Nothing beyond handling webhooks, which the core runs."""
 
     async def run_command(self, command: BackendCommand) -> None:
         args = command.args

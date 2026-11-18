@@ -60,10 +60,8 @@ class TestCreateApp(IsolatedAsyncioTestCase):
                 os.unlink(self.db_path + suffix)
 
     async def test_backend_is_started_and_serves_after_discovery(self) -> None:
-        # when
-        async with asyncio.timeout(5):
-            await self.backend.running.wait()
         # then
+        self.assertFalse(self.backend.running.is_set())
         mounts = self.backend.context.mounts
         self.assertEqual({n: m.source for n, m in mounts.items()}, {"docs": "/docs"})
         self.assertFalse(self.backend.context.offline)
@@ -74,6 +72,8 @@ class TestCreateApp(IsolatedAsyncioTestCase):
 
         # given
         await self.ready()
+        async with asyncio.timeout(5):
+            await self.backend.running.wait()
 
         # when / then
         resp = await self.client.post("/api/v1/backends/fake/hook")

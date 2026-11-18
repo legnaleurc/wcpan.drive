@@ -84,7 +84,6 @@ class FilesystemRuntime:
         self._rescan_interval = rescan_interval
         self._settle_delay = settle_delay
         self._core = core
-        self._scanned = asyncio.Event()
 
     @property
     def operations(self) -> FilesystemOperations:
@@ -94,21 +93,20 @@ class FilesystemRuntime:
     def uploader(self) -> FilesystemUploader:
         return self._uploader
 
-    async def run_until_ready(self) -> None:
-        # Events during the startup scan are kept and handled once it finishes.
+    async def startup_scan(self) -> None:
+        # Events during the scan stay in the watcher until ``run`` publishes them.
         if self._watcher is not None:
             self._watcher.start()
         await self._scanner.scan()
-        self._scanned.set()
         _L.info("Startup scan applied")
 
+    def change_handler(self) -> ChangeHandler[FolderChanges] | None:
+        return None if self._watcher is None else _FollowChanges(self._scanner)
+
     async def run(self) -> None:
-        await self._scanned.wait()
         async with asyncio.TaskGroup() as group:
             group.create_task(self._rescan_periodically())
             if self._watcher is not None:
-                hints = self._core.hints
-                group.create_task(hints.run(_FollowChanges(self._scanner)))
                 group.create_task(self._publish_changes(self._watcher))
 
     async def _rescan_periodically(self) -> None:
@@ -202,8 +200,11 @@ class FilesystemBackend:
     def files(self) -> FilesystemUploader:
         return self._require_runtime().uploader
 
-    async def run_until_ready(self) -> None:
-        await self._require_runtime().run_until_ready()
+    async def startup_scan(self) -> None:
+        await self._require_runtime().startup_scan()
+
+    def change_handler(self) -> ChangeHandler[FolderChanges] | None:
+        return self._require_runtime().change_handler()
 
     async def run(self) -> None:
         await self._require_runtime().run()

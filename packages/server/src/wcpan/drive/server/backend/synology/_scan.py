@@ -1,6 +1,5 @@
 """First-run / resume mirror scan: incremental sync_id BFS, then server-ready signal."""
 
-import asyncio
 from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
@@ -249,9 +248,8 @@ class StartupScanService:
                 )
         _L.info("Scan complete; pre-scan checkpoints: %s", pre_scan_max_ids)
 
-    async def run_until_ready(self, ready_event: asyncio.Event) -> None:
-        """Run startup scan then signal ready."""
+    async def run_until_ready(self) -> None:
+        """Run the startup scan, and wait for everything it queued."""
         await self.run_initial_scan()
         await self._node_sync.wait_enrichment_drained()
-        ready_event.set()
         _L.info("Startup scan applied")

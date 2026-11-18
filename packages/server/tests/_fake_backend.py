@@ -64,8 +64,11 @@ class FakeBackend:
         self.running = asyncio.Event()
         self.commands: list[list[str]] = []
 
-    async def run_until_ready(self) -> None:
+    async def startup_scan(self) -> None:
         await self.discovered.wait()
+
+    def change_handler(self) -> None:
+        return None
 
     async def run(self) -> None:
         self.running.set()

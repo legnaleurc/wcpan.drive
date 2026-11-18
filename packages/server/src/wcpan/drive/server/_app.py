@@ -25,6 +25,7 @@ from ._backend import (
     Access,
     Backend,
     BackendContext,
+    BackendLifecycle,
     BackendRoutes,
     CoreServices,
     ReadCoreServices,
@@ -283,8 +284,11 @@ async def entered_backends(
     offline: bool,
     names: Iterable[str] | None = None,
     routes: Mapping[str, BackendRoutes] | None = None,
+    lifecycles: dict[str, BackendLifecycle] | None = None,
 ) -> AsyncGenerator[dict[str, Backend], None]:
     """Enter the factories of *names* (default: every configured instance).
+
+    *lifecycles* receives what starts each entered instance, when serving.
 
     Serving, then starts the metadata workers, which stop before the backends
     close, so no probe outlives the connection it reads through. Offline, a
@@ -299,18 +303,17 @@ async def entered_backends(
             key = await run_queued(
                 core.write_queue, partial(core.mirror.register_instance, name)
             )
+            services = CoreServices(
+                mirror=core.mirror,
+                node_sync=core.node_sync.for_backend(name),
+                off_main=core.off_main,
+                ids=NodeIds(mirror=core.mirror, write_queue=core.write_queue, key=key),
+                media=core.media,
+            )
             context = BackendContext(
                 name=name,
                 mounts=core.mounts.subset(config.mounts_of(name)),
-                core=CoreServices(
-                    mirror=core.mirror,
-                    node_sync=core.node_sync.for_backend(name),
-                    off_main=core.off_main,
-                    ids=NodeIds(
-                        mirror=core.mirror, write_queue=core.write_queue, key=key
-                    ),
-                    media=core.media,
-                ),
+                core=services,
                 routes=routes[name] if routes is not None else BackendRoutes(name=name),
                 access=Access.WRITE if offline else None,
             )
@@ -322,6 +325,8 @@ async def entered_backends(
             except ValueError as e:
                 raise ValueError(f"backends.{name}: {e}") from e
             backends[name] = backend
+            if lifecycles is not None:
+                lifecycles[name] = BackendLifecycle(backend, services)
         if offline:
             yield backends
             return
@@ -366,8 +371,11 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             )
             if released:
                 _L.info("Removed %d subtree(s) left under reassigned mounts", released)
+            lifecycles: dict[str, BackendLifecycle] = {}
             backends = await stack.enter_async_context(
-                entered_backends(config, core, offline=False, routes=routes)
+                entered_backends(
+                    config, core, offline=False, routes=routes, lifecycles=lifecycles
+                )
             )
             router = BackendRouter(
                 mirror=core.mirror,
@@ -388,8 +396,8 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
 
             async def _flip_ready() -> None:
                 async with asyncio.TaskGroup() as group:
-                    for backend in backends.values():
-                        group.create_task(backend.run_until_ready())
+                    for lifecycle in lifecycles.values():
+                        group.create_task(lifecycle.until_ready())
                 ready.set()
                 _L.info("Server ready")
 
@@ -398,8 +406,8 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             await stack.enter_async_context(
                 _background(group, upload_service.cleanup_expired_sessions())
             )
-            for backend in backends.values():
-                await stack.enter_async_context(_background(group, backend.run()))
+            for lifecycle in lifecycles.values():
+                await stack.enter_async_context(_background(group, lifecycle.run()))
 
             yield
 

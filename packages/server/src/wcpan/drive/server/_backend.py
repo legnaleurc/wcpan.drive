@@ -20,6 +20,7 @@ work, and calls ``run_command``, which connects only if the command needs it.
 """
 
 import argparse
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -45,7 +46,7 @@ from ._services.mounts import Mount as Mount
 from ._services.mounts import Mounts
 from ._services.off_main import OffMainService
 from ._services.operations import NodeOperations
-from ._services.sync.hints import HintStage
+from ._services.sync.hints import ChangeHandler, HintStage
 from ._services.sync.ordering import NodeOrdering
 from ._services.sync.scan import Changes, ScanRunner
 from ._services.sync.service import NodeSyncService
@@ -233,10 +234,62 @@ def _no_commands(name: str, argv: Sequence[str]) -> BackendCommand:
     parser.error("no command given")
 
 
-class Backend(Protocol):
+class BackendRuntime(Protocol):
+    """The parts of a serving backend that the core starts, in this order."""
+
+    async def startup_scan(self) -> None:
+        """Start change sources, then bring the mirror up to date.
+
+        Changes arriving meanwhile wait: published hints stay queued, and
+        anything else stays with its source until ``run`` starts.
+        """
+        ...
+
+    def change_handler(self) -> ChangeHandler[Any] | None:
+        """What handles this backend's published hints, if it publishes any."""
+        ...
+
+    async def run(self) -> None:
+        """Ongoing background work, started after the startup scan.
+
+        Runs until cancelled, or returns at once if there is none.
+        """
+        ...
+
+
+class BackendLifecycle:
+    """Runs one backend through startup and serving.
+
+    Hints wait for the startup scan, so it sees a stable mirror. The backend is
+    ready once the hints accepted so far are handled and enrichment has drained;
+    delayed hint work does not count.
+    """
+
+    def __init__(self, runtime: BackendRuntime, core: CoreServices) -> None:
+        self._runtime = runtime
+        self._core = core
+        self._scanned = asyncio.Event()
+
+    async def until_ready(self) -> None:
+        await self._runtime.startup_scan()
+        self._scanned.set()
+        if self._runtime.change_handler() is not None:
+            await self._core.hints.join()
+        await self._core.node_sync.wait_enrichment_drained()
+
+    async def run(self) -> None:
+        await self._scanned.wait()
+        async with asyncio.TaskGroup() as group:
+            handler = self._runtime.change_handler()
+            if handler is not None:
+                group.create_task(self._core.hints.run(handler))
+            group.create_task(self._runtime.run())
+
+
+class Backend(BackendRuntime, Protocol):
     """One entered backend instance.
 
-    ``operations``, ``uploader``, ``files``, ``run_until_ready``, and ``run``
+    ``operations``, ``uploader``, ``files``, and the ``BackendRuntime`` methods
     are used only when serving; ``run_command`` only offline.
     """
 
@@ -253,14 +306,6 @@ class Backend(Protocol):
         A backend that takes a file only whole can use ``SpooledFiles`` from
         ``wcpan.drive.server.lib``.
         """
-        ...
-
-    async def run_until_ready(self) -> None:
-        """Initial discovery; return once its mounts are current enough to serve."""
-        ...
-
-    async def run(self) -> None:
-        """Ongoing background work such as notifications; runs until cancelled."""
         ...
 
     async def run_command(self, command: BackendCommand) -> None:
