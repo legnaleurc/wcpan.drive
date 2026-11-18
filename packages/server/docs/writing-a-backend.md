@@ -408,6 +408,7 @@ async with core.observe() as changes:
   number decides which of two racing observations wins.
 - Change the source first, then the mirror. No transaction is open during source
   calls. If the process stops between them, the next scan repairs the mirror.
+- A failed mirror write stops the whole server. Do not try to recover from it.
 - `upserted` probes media in the caller. `strict=True` raises on a failed probe.
 - `await changes.landed()` waits for writes queued so far. Use it when your next
   read depends on them. The server already waits before answering an API call.
@@ -427,7 +428,10 @@ core.hints.publish(event)    # from a webhook route or watcher; never blocks
 ```
 
 - Do not read anything before publishing. `handle` runs one event at a time, after
-  the startup scan and after every earlier event, so its reads see the right state.
+  the startup scan and after every earlier event has returned.
+- An earlier event's writes may still be queued when the next event starts. If a later
+  event depends on them, such as a child that needs its new parent, call
+  `await changes.landed()` before `handle` returns.
 - `core.hints.later(key, delay, work)` debounces. A newer call with the same key
   replaces a pending timer but never cancels running work.
 - A failed event stops the server unless `continue_after_failure = True`. Keep the
@@ -486,5 +490,6 @@ async with backend_harness() as server:
 ```
 
 `until_ready` waits for handled hints, so run `lifecycle.run()` as a task when your
-backend publishes any. `server.probes` fakes media probing, and `server.hold_writes()`
+backend publishes any. A failed write stops a real server, so in the harness it
+interrupts the block and is raised on exit. `server.probes` fakes media probing, and `server.hold_writes()`
 lets a test force an ordering without sleeping.

@@ -49,7 +49,8 @@ a transaction: each `MirrorStore.write` call is one transaction.
   slow job would delay every client's writes.
 - Anything that waits on the queue (`run_queued`, `NodeIdMap.public`) deadlocks
   when called from inside a job.
-- A failed write stops the worker, and with it the server. A write failure is
+- A failed write stops the worker, and with it the whole server, which exits with an error
+  (`tests/integration/test_write_failure.py`). Nothing else recovers from it. A write failure is
   treated as an unstable system; the next start recovers from the database.
 - Reads use read-only snapshots and do not go through the queue.
 - Offline commands (`drop`, `rebuild`, `gc`, `squash`) run while the server is
@@ -354,8 +355,9 @@ async with core.observe(exclusive=True) as changes:    # read number taken here
   writers. API visibility stays with the router's barrier after each mutation.
 - `exclusive=True` holds the pass lock and runs that barrier on exit, including when the
   block raises, before releasing the lock. A scan must not be started inside the block.
-- A barrier fails promptly if the write worker stops. If the block already raised, its
-  exception propagates with the barrier failure as context, and the lock is released.
+- If the block raises, its exception propagates once the barrier has passed. Cancellation skips
+  the barrier and releases the lock. It happens only when the server is stopping or crashing, so
+  no later pass runs in that process; the next start's scan repairs the mirror.
 - The block is an ordering scope, not one transaction. Each write is its own transaction.
 - Source first, then mirror. No transaction is open during a source call. A crash between
   them is repaired by the next scan, and clients resolve lost responses by sync and hash
@@ -380,7 +382,9 @@ workers in `core.enrichment.scope()`.
 `publish` does no reads and accepts a raw backend event. One consumer per backend calls
 `handle(event)` for one event at a time. Everything in `handle` runs in source-code order,
 so read-before-write and read-after-write are ordinary sequencing. Facts come from
-`core.observe`. A value read before the block must not become an observation.
+`core.observe`. A value read before the block must not become an observation. An earlier
+event's writes may still be queued, so a handler whose writes a later event depends on calls
+`changes.landed()` before returning.
 
 `later(key, delay, fn)` runs `fn` as its own supervised task after the delay. A newer call
 with the same key cancels only a pending timer, never running work. `fn` takes its own read
@@ -451,7 +455,7 @@ an API operation. For each pass the core:
 empty. If `prepare` raises, the pass reconciles nothing. A failed finish hook fails the pass.
 A failed pass raises to its caller. Before releasing the lock, a failed pass drains work it
 already submitted, so the next pass cannot mint a second ID for a file still being enriched.
-The drain fails promptly if a worker has stopped. Only holds the pass still owns are released
+A stopped write worker brings the whole server down, which cancels that wait. Only holds the pass still owns are released
 by it; holds handed to a queue stay with their jobs. Cancellation at shutdown does not drain.
 
 `walk(lister, root)` lists a subtree without the pass lock, reconcile session, removals, or

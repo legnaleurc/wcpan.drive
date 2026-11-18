@@ -198,10 +198,24 @@ class BackendHarness:
 async def backend_harness(
     *, first_retry_delay: float = FIRST_DELAY
 ) -> AsyncGenerator[BackendHarness]:
-    """A core over a new temporary database; everything stops on exit."""
+    """A core over a new temporary database; everything stops on exit.
+
+    A failed write or enrichment worker stops the server, so here it interrupts
+    the block when the block is waiting, and is raised on exit.
+    """
     directory = Path(tempfile.mkdtemp(prefix="wcpan_drive_test_"))
     pool = ThreadPoolExecutor(2)
     tasks: list[asyncio.Task[None]] = []
+    owner = asyncio.current_task()
+    interrupted = False
+
+    def interrupt_on_failure(task: asyncio.Task[None]) -> None:
+        nonlocal interrupted
+        failed = not task.cancelled() and task.exception() is not None
+        if failed and owner is not None and not owner.done() and not interrupted:
+            interrupted = True
+            owner.cancel()
+
     try:
         database_path = directory / "mirror.sqlite"
         mirror = MirrorStore(str(database_path), off_main=OffMainService(pool=pool))
@@ -230,6 +244,8 @@ async def backend_harness(
         def partial_ids(key: int) -> NodeIds:
             return NodeIds(mirror=mirror, write_queue=write_queue, key=key)
 
+        for task in tasks:
+            task.add_done_callback(interrupt_on_failure)
         yield BackendHarness(
             mirror=mirror,
             database_path=database_path,
@@ -240,10 +256,25 @@ async def backend_harness(
             make_ids=partial_ids,
         )
     finally:
+        failure = next(
+            (
+                error
+                for task in tasks
+                if task.done()
+                and not task.cancelled()
+                and (error := task.exception()) is not None
+            ),
+            None,
+        )
         for task in tasks:
+            task.remove_done_callback(interrupt_on_failure)
             task.cancel()
         for task in tasks:
             with suppress(asyncio.CancelledError, Exception):
                 await task
         pool.shutdown(wait=False, cancel_futures=True)
         shutil.rmtree(directory, ignore_errors=True)
+        if interrupted and owner is not None and not owner.done():
+            owner.uncancel()
+        if failure is not None:
+            raise failure

@@ -1,6 +1,8 @@
 """The public harness backends use in their tests."""
 
 import asyncio
+import logging
+import sqlite3
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
@@ -9,6 +11,9 @@ from wcpan.drive.server.testing import ROOT_ID, backend_harness, mount_id
 from wcpan.drive.server.types import NodeObservation
 
 from ._fake_backend import FakeSchema
+
+
+logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
 
 
 def _file(name: str, parent: str) -> NodeRecord:
@@ -89,3 +94,66 @@ class BackendHarnessTest(IsolatedAsyncioTestCase):
             self.assertTrue(path.exists())
         # then
         self.assertFalse(path.exists())
+
+
+def _invalid_sql(con: sqlite3.Connection) -> None:
+    con.execute("NOT SQL")
+
+
+class WorkerFailureTest(IsolatedAsyncioTestCase):
+    async def test_failed_write_interrupts_a_waiting_block(self) -> None:
+        # given
+        async def run() -> None:
+            async with backend_harness() as server:
+                instance = await server.add_instance("a", FakeSchema(), {})
+                await instance.core.enqueue_write(_invalid_sql)
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(run())
+        self.addCleanup(task.cancel)
+        # when
+        done, _ = await asyncio.wait({task}, timeout=5)
+        # then
+        self.assertEqual(done, {task})
+        with self.assertRaisesRegex(sqlite3.OperationalError, "NOT"):
+            await task
+
+    async def test_failed_write_is_raised_over_the_error_it_caused(self) -> None:
+        # when, then
+        with self.assertRaisesRegex(sqlite3.OperationalError, "NOT"):
+            async with backend_harness() as server:
+                instance = await server.add_instance("a", FakeSchema(), {})
+                await instance.core.enqueue_write(_invalid_sql)
+                await instance.core.writes_landed()
+
+    async def test_failure_is_raised_when_exit_runs_in_another_task(self) -> None:
+        # given: entered and left in different tasks, as test fixtures do
+        harness = backend_harness()
+
+        async def enter() -> None:
+            server = await harness.__aenter__()
+            instance = await server.add_instance("a", FakeSchema(), {})
+            await instance.core.enqueue_write(_invalid_sql)
+
+        await asyncio.create_task(enter())
+        await asyncio.sleep(0.1)
+        # when, then
+        with self.assertRaisesRegex(sqlite3.OperationalError, "NOT"):
+            await asyncio.create_task(harness.__aexit__(None, None, None))
+
+    async def test_outer_cancellation_is_not_swallowed(self) -> None:
+        # given
+        entered = asyncio.Event()
+
+        async def run() -> None:
+            async with backend_harness():
+                entered.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(run())
+        await entered.wait()
+        # when
+        task.cancel()
+        # then
+        with self.assertRaises(asyncio.CancelledError):
+            await task
