@@ -197,11 +197,13 @@ not modeled as a Synology scan with renamed fields.
 ## Backend framework
 
 This section is the target design for the backend API. Implemented so far:
-`CoreServices.observe` with `Changes`, and `CoreServices.scans` with `Scanner`, `ScanPlan`,
-and `Listing`. Not yet built: read-only scans, the hint stage, the core-owned lifecycle, the
+`CoreServices.observe` with `Changes`, `CoreServices.scans` with `Scanner`, `ScanPlan`, and
+`Listing`, and `CoreServices.hints` with `ChangeHandler`. Until the core owns the lifecycle, a
+backend starts the consumer itself with `hints.run(handler)` and waits with `hints.join()`.
+Not yet built: read-only scans, the core-owned lifecycle, the
 narrowed `core.enrichment` surface, and `core.reconcile`. The filesystem backend's scans run
-through `core.scans` and its writes through `core.observe`. Its event loop and all of the
-Synology backend still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
+through `core.scans`, its writes through `core.observe`, and its change events through
+`core.hints`. Its startup and media retries and all of the Synology backend still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
 
 ### Goal
 
@@ -300,6 +302,8 @@ class Listing[F]:
     keep: list[NodeId]                 # deliberately not visited; subtree preserved
 
 class ChangeHandler[E](ABC):
+    continue_after_failure = False     # True: log a failure and take the next event
+
     @abstractmethod
     async def handle(self, event: E) -> None: ...
 
@@ -410,6 +414,7 @@ async def run(self):
         await asyncio.sleep(settle_delay)
         dirty, overflow = watcher.take()
         core.hints.publish(FolderChanges(dirty, overflow))
+        await core.hints.join()        # changes during this pass merge into the next
 
 async def handle(self, event):
     await core.scans.run(self._scanner(None if event.overflow else event.dirty))

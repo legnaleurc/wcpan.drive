@@ -39,6 +39,8 @@ from ._services.off_main import OffMainService as OffMainService
 from ._services.operations import Locate as Locate
 from ._services.operations import NodeOperations as NodeOperations
 from ._services.paths import VirtualPathService as VirtualPathService
+from ._services.sync.hints import ChangeHandler as ChangeHandler
+from ._services.sync.hints import HintStage as HintStage
 from ._services.sync.ordering import NodeOrdering as NodeOrdering
 from ._services.sync.reconcile import ReconcileSession as ReconcileSession
 from ._services.sync.scan import Changes as Changes
@@ -67,10 +69,12 @@ __all__ = (
     "BackendNamespace",
     "BackendRoutes",
     "BackendSchema",
+    "ChangeHandler",
     "Changes",
     "CommandParser",
     "CoreServices",
     "FileOpener",
+    "HintStage",
     "Listing",
     "Locate",
     "MediaFailure",

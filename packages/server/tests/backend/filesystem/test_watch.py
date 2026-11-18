@@ -4,9 +4,11 @@ import asyncio
 import hashlib
 import os
 import shutil
+from collections.abc import Iterable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server._backend import CoreServices
 from wcpan.drive.server._services.media.probe.runner import ProbeRunner
 from wcpan.drive.server._services.media.probing import MediaProbing
@@ -215,6 +217,68 @@ class TestRuntime(_WatchTestCase):
             await self.until("racy.txt")
         finally:
             task.cancel()
+
+    async def test_failed_update_does_not_stop_following(self) -> None:
+        # given
+        runtime = self.runtime()
+        await runtime.run_until_ready()
+        real = self.scanner.scan_folders
+        failures = [OSError("cannot read")]
+
+        async def flaky(folder_ids: Iterable[NodeId]) -> None:
+            if failures:
+                raise failures.pop()
+            await real(folder_ids)
+
+        with patch.object(self.scanner, "scan_folders", flaky):
+            task = asyncio.create_task(runtime.run())
+            try:
+                self.write("first.txt", b"x")
+                async with asyncio.timeout(5):
+                    while failures:
+                        await asyncio.sleep(0.02)
+                # when
+                self.write("second.txt", b"x")
+                # then
+                await self.until("second.txt")
+                self.assertFalse(task.done())
+            finally:
+                task.cancel()
+
+    async def test_changes_during_a_pass_merge_into_one(self) -> None:
+        # given: a pass is running
+        runtime = self.runtime()
+        await runtime.run_until_ready()
+        real = self.scanner.scan_folders
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def held(folder_ids: Iterable[NodeId]) -> None:
+            nonlocal calls
+            calls += 1
+            entered.set()
+            await release.wait()
+            await real(folder_ids)
+
+        with patch.object(self.scanner, "scan_folders", held):
+            task = asyncio.create_task(runtime.run())
+            try:
+                self.write("first.txt", b"x")
+                async with asyncio.timeout(5):
+                    await entered.wait()
+                # when: changes arrive over several settle windows
+                self.write("second.txt", b"x")
+                await asyncio.sleep(0.12)
+                self.write("third.txt", b"x")
+                await asyncio.sleep(0.12)
+                release.set()
+                # then
+                await self.until("third.txt")
+                await asyncio.sleep(0.12)
+                self.assertEqual(calls, 2)
+            finally:
+                task.cancel()
 
     async def test_lost_events_trigger_full_rescan(self) -> None:
         # given

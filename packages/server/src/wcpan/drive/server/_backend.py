@@ -45,6 +45,7 @@ from ._services.mounts import Mount as Mount
 from ._services.mounts import Mounts
 from ._services.off_main import OffMainService
 from ._services.operations import NodeOperations
+from ._services.sync.hints import HintStage
 from ._services.sync.ordering import NodeOrdering
 from ._services.sync.scan import Changes, ScanRunner
 from ._services.sync.service import NodeSyncService
@@ -68,7 +69,8 @@ class CoreServices:
     the instance's native IDs to the public node IDs it uses with the core.
     ``media`` probes the instance's files through the source it registers while
     connected, and probes upload spools. ``scans`` runs the instance's scan
-    passes, and ``observe`` is the scope for writing what a source read found.
+    passes, ``observe`` is the scope for writing what a source read found, and
+    ``hints`` queues the instance's raw change events.
     """
 
     mirror: MirrorStore
@@ -77,10 +79,12 @@ class CoreServices:
     ids: NodeIdMap
     media: MediaProbing
     scans: ScanRunner = field(init=False, repr=False, compare=False)
+    hints: HintStage = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         scans = ScanRunner(mirror=self.mirror, node_sync=self.node_sync)
         object.__setattr__(self, "scans", scans)
+        object.__setattr__(self, "hints", HintStage())
 
     def observe(
         self, *, exclusive: bool = False

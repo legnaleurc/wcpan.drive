@@ -1,16 +1,19 @@
 """The local filesystem as a ``Backend`` of the generic server."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from logging import getLogger
 from typing import Annotated
 
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.lib import UPLOAD_SESSION_TTL, backend_commands, writing
 from wcpan.drive.server.types import (
     BackendCommand,
     BackendContext,
+    ChangeHandler,
     CoreServices,
     Mounts,
 )
@@ -37,6 +40,29 @@ _SETTLE_DELAY = 1.0
 # a session left idle that long, and another server sharing the folder may
 # still be using one written up to a TTL ago.
 STAGING_SWEEP_AFTER = 2 * UPLOAD_SESSION_TTL
+
+
+@dataclass(frozen=True, slots=True)
+class FolderChanges:
+    """What the watcher collected over one settle window."""
+
+    dirty: set[NodeId]
+    overflow: bool
+
+
+class _FollowChanges(ChangeHandler[FolderChanges]):
+    # A failed pass is repaired by later changes or the next rescan.
+    continue_after_failure = True
+
+    def __init__(self, scanner: FilesystemScanner) -> None:
+        self._scanner = scanner
+
+    async def handle(self, event: FolderChanges) -> None:
+        if event.overflow:
+            _L.warning("Change events were lost; rescanning everything")
+            await self._scanner.scan()
+        else:
+            await self._scanner.scan_folders(event.dirty)
 
 
 class FilesystemRuntime:
@@ -81,32 +107,28 @@ class FilesystemRuntime:
         async with asyncio.TaskGroup() as group:
             group.create_task(self._rescan_periodically())
             if self._watcher is not None:
-                group.create_task(self._follow_changes(self._watcher))
+                hints = self._core.hints
+                group.create_task(hints.run(_FollowChanges(self._scanner)))
+                group.create_task(self._publish_changes(self._watcher))
 
     async def _rescan_periodically(self) -> None:
         """Full rescans catch anything the watcher missed."""
         while True:
             await asyncio.sleep(self._rescan_interval)
-            await self._apply(self._scanner.scan(), "Rescan")
+            try:
+                await self._scanner.scan()
+            except Exception:
+                _L.exception("Rescan failed; later changes or rescans will retry")
 
-    async def _follow_changes(self, watcher: DirectoryWatcher) -> None:
+    async def _publish_changes(self, watcher: DirectoryWatcher) -> None:
+        """Publish one batch at a time, so changes during a pass merge into one."""
         while True:
             await watcher.wait()
             # Let a burst of changes settle into one pass.
             await asyncio.sleep(self._settle_delay)
             dirty, overflow = watcher.take()
-            if overflow:
-                _L.warning("Change events were lost; rescanning everything")
-                await self._apply(self._scanner.scan(), "Rescan")
-            else:
-                await self._apply(self._scanner.scan_folders(dirty), "Update")
-
-    async def _apply(self, work: Coroutine[None, None, None], what: str) -> None:
-        try:
-            await work
-            await self._core.node_sync.wait_enrichment_drained()
-        except Exception:
-            _L.exception("%s failed; later changes or rescans will retry", what)
+            self._core.hints.publish(FolderChanges(dirty, overflow))
+            await self._core.hints.join()
 
 
 @backend_commands(parse_command)
