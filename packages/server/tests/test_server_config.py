@@ -16,10 +16,10 @@ def _config(**overrides):
         "server": {"database_url": "/tmp/mirror.db"},
         "backends": {
             "nas": {
-                "type": "wcpan.drive.server.synology.create_backend",
+                "type": "wcpan.drive.server.backend.synology.create_backend",
                 "url": "https://nas",
             },
-            "disk": {"type": "wcpan.drive.server.filesystem.create_backend"},
+            "disk": {"type": "wcpan.drive.server.backend.filesystem.create_backend"},
         },
         "mounts": {
             "photos": {"backend": "nas", "source": "/volume1/photos"},
@@ -38,7 +38,8 @@ class TestLayout(unittest.TestCase):
         self.assertEqual(config.database_url, "/tmp/mirror.db")
         self.assertEqual((config.host, config.port), ("127.0.0.1", 8080))
         self.assertEqual(
-            config.backends["nas"].type, "wcpan.drive.server.synology.create_backend"
+            config.backends["nas"].type,
+            "wcpan.drive.server.backend.synology.create_backend",
         )
         self.assertEqual(config.backends["nas"].settings, {"url": "https://nas"})
         self.assertEqual(

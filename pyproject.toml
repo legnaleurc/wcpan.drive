@@ -13,8 +13,6 @@ wcpan-drive-client-feed = { workspace = true }
 wcpan-drive-plugin = { workspace = true }
 wcpan-drive-protocol = { workspace = true }
 wcpan-drive-server = { workspace = true }
-wcpan-drive-server-filesystem = { workspace = true }
-wcpan-drive-server-synology = { workspace = true }
 
 [dependency-groups]
 dev = [

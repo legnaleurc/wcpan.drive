@@ -9,6 +9,9 @@ This repository is a uv workspace for `wcpan.drive` client and server packages.
 - Members live under `packages/*`, each with its own `pyproject.toml` and `src/`.
 - Client code uses `wcpan.drive.client.*`; server code uses `wcpan.drive.server.*`.
 - Shared HTTP wire types and helpers live in `packages/protocol`.
+- Built-in server backends live in `packages/server`: code under
+  `wcpan.drive.server.backend.*`, tests in `tests/backend/`, and README and
+  `SPEC.md` in `docs/backend/`. They use the core only through its public modules.
 - Member tests live in their `tests/test_*.py`; root `tests/` holds workspace-wide and cross-package tests. A member's tests import only that member and its declared dependencies.
 
 Treat each member's `README.md` as the source of truth for its
@@ -69,7 +72,7 @@ cd packages/<member> && uv run --all-packages python -m unittest tests.test_<mod
 - Commit messages follow Conventional Commits
   (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build:`, `chore:`).
   Scope a commit to the member it changes, named by its directory under
-  `packages/` (`fix(server-synology):`); omit the scope when a commit spans
+  `packages/` (`fix(client-feed):`); omit the scope when a commit spans
   several members or only touches workspace files. Mark breaking changes
   with `!` (`feat(client)!:`).
 - Keep commit messages free of agent-specific content: no co-author

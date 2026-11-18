@@ -14,8 +14,6 @@ members = [
     "wcpan-drive-plugin",
     "wcpan-drive-protocol",
     "wcpan-drive-server",
-    "wcpan-drive-server-filesystem",
-    "wcpan-drive-server-synology",
     "wcpan-drive-sqlite",
 ]
 
@@ -903,6 +901,7 @@ dependencies = [
     { name = "wcpan-drive-protocol" },
     { name = "wcpan-drive-sqlite" },
     { name = "wcpan-logging" },
+    { name = "wcpan-synology" },
 ]
 
 [package.metadata]
@@ -914,41 +913,6 @@ requires-dist = [
     { name = "wcpan-drive-protocol", editable = "packages/protocol" },
     { name = "wcpan-drive-sqlite", editable = "packages/sqlite" },
     { name = "wcpan-logging", specifier = ">=2.1.0,<3.0.0" },
-]
-
-[[package]]
-name = "wcpan-drive-server-filesystem"
-version = "0.1.0"
-source = { editable = "packages/server-filesystem" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "wcpan-drive-protocol" },
-    { name = "wcpan-drive-server" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.13.0,<4.0.0" },
-    { name = "wcpan-drive-protocol", editable = "packages/protocol" },
-    { name = "wcpan-drive-server", editable = "packages/server" },
-]
-
-[[package]]
-name = "wcpan-drive-server-synology"
-version = "0.1.0"
-source = { editable = "packages/server-synology" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "wcpan-drive-protocol" },
-    { name = "wcpan-drive-server" },
-    { name = "wcpan-synology" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.13.0,<4.0.0" },
-    { name = "wcpan-drive-protocol", editable = "packages/protocol" },
-    { name = "wcpan-drive-server", editable = "packages/server" },
     { name = "wcpan-synology", specifier = ">=0.8.0,<0.9.0" },
 ]
 

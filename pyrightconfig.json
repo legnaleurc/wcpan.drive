@@ -9,9 +9,7 @@
     "packages/client-feed/src",
     "packages/plugin/src",
     "packages/protocol/src",
-    "packages/server/src",
-    "packages/server-filesystem/src",
-    "packages/server-synology/src"
+    "packages/server/src"
   ],
   "pythonVersion": "3.13",
   "typeCheckingMode": "strict",
@@ -25,9 +23,7 @@
     "packages/client-feed/src",
     "packages/plugin/src",
     "packages/protocol/src",
-    "packages/server/src",
-    "packages/server-filesystem/src",
-    "packages/server-synology/src"
+    "packages/server/src"
   ],
   "venvPath": ".",
   "venv": ".venv"

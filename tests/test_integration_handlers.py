@@ -52,10 +52,10 @@ from wcpan.drive.server._services.upload.spool import (
     create_spool_area,
 )
 from wcpan.drive.server._types import NodeObservation
-from wcpan.drive.server.synology._convert import SynologyLocator
-from wcpan.drive.server.synology._mounts import MountRegistry
-from wcpan.drive.server.synology._paths import SynologyPathService
-from wcpan.drive.server.synology._upload import SynologyUploader
+from wcpan.drive.server.backend.synology._convert import SynologyLocator
+from wcpan.drive.server.backend.synology._mounts import MountRegistry
+from wcpan.drive.server.backend.synology._paths import SynologyPathService
+from wcpan.drive.server.backend.synology._upload import SynologyUploader
 
 
 # Test-local slots for the Synology fakes; the backend no longer uses app keys.

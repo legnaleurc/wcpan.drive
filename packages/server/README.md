@@ -4,14 +4,16 @@ Mirrored HTTP file server for wcpan.drive.
 
 The server keeps a SQLite mirror of one or more storage backends and serves it
 over HTTP. It holds the mirror, change feed, HTTP API, and reconciliation, and
-defines the contract a storage backend implements. It does not depend on any
-backend: backends are separate packages, loaded by the factory path (`type`)
-in the config. One server can serve mounts from several backend instances.
+defines the contract a storage backend implements. Backends are loaded by the
+factory path (`type`) in the config, so the core does not depend on any of them.
+One server can serve mounts from several backend instances.
 
-Available backends:
+Included backends:
 
-- [`wcpan-drive-server-synology`](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/server-synology/README.md): Synology Drive
-- [`wcpan-drive-server-filesystem`](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/server-filesystem/README.md): local directories
+- [Synology Drive](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/server/docs/backend/synology/README.md)
+- [Local directories](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/server/docs/backend/filesystem/README.md)
+
+A third-party backend is a separate package, loaded the same way.
 
 Clients connect with
 [`wcpan-drive-client-feed`](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/client-feed/README.md).
@@ -20,12 +22,11 @@ The HTTP contract is in the
 
 ## Installation
 
-Install the server with the backends your config uses, or run it with `uvx`:
+Install the server, which includes its backends, or run it with `uvx`:
 
 ```bash
-pip install wcpan-drive-server wcpan-drive-server-synology
-uvx --with=wcpan-drive-server-synology --with=wcpan-drive-server-filesystem \
-    wcpan.drive.server --config server.yaml serve
+pip install wcpan-drive-server
+uvx wcpan.drive.server --config server.yaml serve
 ```
 
 The database must be on a local filesystem that supports SQLite WAL.
@@ -110,13 +111,13 @@ server:
   # log_path: "/var/log/wcpan-drive-server.log"
 backends:
   nas:
-    type: wcpan.drive.server.synology.create_backend
+    type: wcpan.drive.server.backend.synology.create_backend
     url: "https://nas.example.com:5001"
     username: "your-drive-user"
     password: "your-password"
     webhook_callback_url: "https://my-server.example.com"
   disk:
-    type: wcpan.drive.server.filesystem.create_backend
+    type: wcpan.drive.server.backend.filesystem.create_backend
 mounts:
   photos:
     backend: nas
@@ -127,7 +128,8 @@ mounts:
 ```
 
 - `backends` names backend instances. `type` is the import path of the
-  backend's factory (`module.function`); its package must be installed. The
+  backend's factory (`module.function`); a third-party backend's package must
+  be installed. The
   other keys are that backend's settings, documented in its README.
 - `mounts` are single-component names (`photos` appears as `/photos`), each
   served by one backend instance from its `source`.

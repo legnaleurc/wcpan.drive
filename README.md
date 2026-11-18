@@ -31,9 +31,9 @@ Each package's README documents its usage and configuration.
 | [`wcpan-drive-client-google`](packages/client-google/README.md) | `wcpan.drive.client.google` | Google Drive provider |
 | [`wcpan-drive-client-crypt`](packages/client-crypt/README.md) | `wcpan.drive.client.crypt` | Encryption middleware |
 | [`wcpan-drive-client-media`](packages/client-media/README.md) | `wcpan.drive.client.media` | Local MIME type and media probing |
-| **Server backends** | | |
-| [`wcpan-drive-server-synology`](packages/server-synology/README.md) | `wcpan.drive.server.synology` | Synology Drive backend |
-| [`wcpan-drive-server-filesystem`](packages/server-filesystem/README.md) | `wcpan.drive.server.filesystem` | Local directory backend |
+| **Server backends (in `wcpan-drive-server`)** | | |
+| [Synology Drive](packages/server/docs/backend/synology/README.md) | `wcpan.drive.server.backend.synology` | Synology Drive backend |
+| [Local directories](packages/server/docs/backend/filesystem/README.md) | `wcpan.drive.server.backend.filesystem` | Local directory backend |
 | **Shared** | | |
 | [`wcpan-drive-protocol`](packages/protocol/README.md) | `wcpan.drive.protocol` | HTTP wire types |
 | [`wcpan-drive-sqlite`](packages/sqlite/README.md) | `wcpan.drive.sqlite` | SQLite connection and transaction helpers |
@@ -48,8 +48,8 @@ Client and server installs are disjoint: only `protocol`, `sqlite`, and
   start from the [client README](packages/client/README.md).
 - **Use a drive from the command line:** install `wcpan-drive-client-cli` with
   a provider; see the [CLI README](packages/client-cli/README.md).
-- **Run a server:** install `wcpan-drive-server` with the backends your config
-  uses; see the [server README](packages/server/README.md). Clients connect
+- **Run a server:** install `wcpan-drive-server`, which includes its backends;
+  see the [server README](packages/server/README.md). Clients connect
   to it with [`wcpan-drive-client-feed`](packages/client-feed/README.md).
 
 ## Documentation
@@ -57,6 +57,7 @@ Client and server installs are disjoint: only `protocol`, `sqlite`, and
 - [`docs/architecture.md`](docs/architecture.md): how the members fit together
   and who owns what.
 - Each member's `SPEC.md`: its design invariants and the reasons for them.
+  Built-in server backends keep theirs in `packages/server/docs/backend/`.
 
 ## Development
 

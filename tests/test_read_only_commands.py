@@ -33,13 +33,13 @@ from wcpan.drive.server._config import parse_config
 from wcpan.drive.server._main import main
 from wcpan.drive.server._services.media.probe.source import ProbeFailure
 from wcpan.drive.server._services.mounts import Mounts, ensure_mount_nodes
-from wcpan.drive.server.filesystem import create_backend as create_filesystem
-from wcpan.drive.server.synology import create_backend as create_synology
-from wcpan.drive.server.synology._mounts import MountRegistry
+from wcpan.drive.server.backend.filesystem import create_backend as create_filesystem
+from wcpan.drive.server.backend.synology import create_backend as create_synology
+from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.synology.types import SynologyFileId
 
 
-_SYNOLOGY = "wcpan.drive.server.synology._backend"
+_SYNOLOGY = "wcpan.drive.server.backend.synology._backend"
 
 # Every read-only command, with the arguments to run it and what it prints:
 # each goes through its real conversion, so new IDs are needed but not saved.
@@ -63,11 +63,11 @@ def _raw_config(root: Path) -> dict[str, Any]:
         "server": {"database_url": str(root / "db" / "mirror.db")},
         "backends": {
             "disk": {
-                "type": "wcpan.drive.server.filesystem.create_backend",
+                "type": "wcpan.drive.server.backend.filesystem.create_backend",
                 "watch": False,
             },
             "nas": {
-                "type": "wcpan.drive.server.synology.create_backend",
+                "type": "wcpan.drive.server.backend.synology.create_backend",
                 "url": "https://nas.example",
                 "username": "user",
                 "password": "secret",

@@ -43,7 +43,7 @@ def _config(root: Path) -> ServerConfig:
             "server": {"database_url": str(root / "mirror.sqlite")},
             "backends": {
                 "disk": {
-                    "type": "wcpan.drive.server.filesystem.create_backend",
+                    "type": "wcpan.drive.server.backend.filesystem.create_backend",
                     "watch": False,
                 },
             },

@@ -9,7 +9,7 @@ The config names backend instances and the mounts they serve::
       database_url: "/data/mirror.db"
     backends:
       nas:
-        type: wcpan.drive.server.synology.create_backend
+        type: wcpan.drive.server.backend.synology.create_backend
         ...
     mounts:
       photos:

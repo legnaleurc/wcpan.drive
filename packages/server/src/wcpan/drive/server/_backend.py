@@ -1,7 +1,7 @@
 """The contract between the generic server and storage backends.
 
 A backend is an async context manager factory, named in the config by its import
-path (``type: wcpan.drive.server.synology.create_backend``) like the client's
+path (``type: wcpan.drive.server.backend.synology.create_backend``) like the client's
 service factories. Its keyword-only parameters are its settings, as for client
 plugins (see ``wcpan.drive.plugin``); packages register factories under the
 ``wcpan.drive.server.backend`` entry point group for ``init``. The core checks

@@ -13,8 +13,8 @@ provide a useful entry point, rather than maintaining implementation inventories
 
 ```text
 Synology Drive / local directories
-    -> server backend (server-synology, server-filesystem)
-    -> generic server (server): mirror, change feed, HTTP API
+    -> server backend (server: backend.synology, backend.filesystem)
+    -> server core (server): mirror, change feed, HTTP API
     -> HTTP contract (protocol)
     -> feed provider (client-feed)
     -> client framework (client): Drive, cache, sync
@@ -41,21 +41,21 @@ to each backend.
 | `client-config` | `client`, `plugin` | YAML drive configuration |
 | `client-media` | `client` | Local MIME type and media probing (needs native `libmagic`, `libmediainfo`) |
 | `client-cli` | `client`, `client-config`, `client-media`, `plugin` | The CLI command; no library API |
-| `server` | `sqlite`, `protocol`, `plugin` | Mirror, change log, HTTP API, reconciliation, backend contract, the server command |
-| `server-synology` | `server`, `protocol`, external `wcpan-synology` | Synology Drive backend |
-| `server-filesystem` | `server`, `protocol` | Local directory backend |
+| `server` | `sqlite`, `protocol`, `plugin`, external `wcpan-synology` | Mirror, change log, HTTP API, reconciliation, backend contract, the server command, the Synology and local directory backends |
 
 Rules:
 
-- The server never imports a backend, `wcpan.synology`, or client packages.
+- The server core never imports a backend, `wcpan.synology`, or client packages.
   Backends are loaded by their factory path from the config.
 - Client and server installs stay disjoint: a client application installs no
   server package, and a server installs no client package. Only `protocol`,
   `sqlite`, and `plugin` are shared.
-- Backends import the server only through its public modules: `types`
+- Backends import the core only through its public modules: `types`
   (the backend contract and the core services a backend receives),
   `exceptions`, and `lib`. Changing a name exported there changes the backend
-  contract; everything else in the server is private.
+  contract; everything else in the core is private. Built-in backends live under
+  `wcpan.drive.server.backend` and follow the same rule as a third-party backend,
+  which can live under that namespace or in any other module.
 - `client` and `server` are namespace roots with explicit public modules; there
   is no separate core distribution. Extract one only if dependency or release
   needs justify it.
@@ -63,7 +63,7 @@ Rules:
 
 ## Ownership
 
-Generic server (`packages/server/SPEC.md`):
+Server core (`packages/server/SPEC.md`):
 
 - Node model, the virtual root and mounts, and public node IDs.
 - The SQLite mirror, change log, tombstones, cursor validity, and `gc`.
@@ -76,7 +76,7 @@ Generic server (`packages/server/SPEC.md`):
 - Media probing (the system MediaInfo executable reading backend sources over
   a loopback HTTP service) and publication rules.
 
-Backend (`packages/server-*/SPEC.md`):
+Backend (`packages/server/docs/backend/*/SPEC.md`):
 
 - Identity rules and locator meaning, including reverse lookup from native
   events.

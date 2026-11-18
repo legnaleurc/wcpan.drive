@@ -1,9 +1,9 @@
 """``wcpan.drive.server`` command.
 
-The config names the backend factories to load; their packages only need to be
-installed, for example::
+The config names the backend factories to load. The built-in backends ship with
+the server; another backend's package only needs to be installed, for example::
 
-    uvx --with=wcpan-drive-server-synology wcpan.drive.server --config server.yaml serve
+    uvx --with=acme-drive-backend wcpan.drive.server --config server.yaml serve
 
 Backend maintenance commands are addressed to one instance and parsed by it::
 

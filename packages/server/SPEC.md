@@ -152,12 +152,14 @@ instances are refused.
 A backend serves its mounts through the server's public backend contracts.
 Handlers never build native references or catch native exceptions.
 
-The server never imports a backend, a backend's source library
-(`wcpan.synology`), or a client package. It reaches a backend only through the
-factory the config names (see Configuration and backend factories), so a
-backend can be added without changing the server. Ruff's banned-api rule in
-`pyproject.toml` enforces this in `make lint`; a new backend package gets an
-entry there.
+The core never imports a backend, a backend's source library
+(`wcpan.synology`), or a client package, even though the built-in backends ship
+in the same distribution under `wcpan.drive.server.backend`. It reaches a backend
+only through the factory the config names (see Configuration and backend
+factories), so a backend can be added without changing the core. Backends import
+the core only through `types`, `lib`, and `exceptions`, like a third-party backend
+inside or outside that namespace. `tests/test_backend_boundary.py` enforces both
+directions; Ruff's banned-api rule in `pyproject.toml` bans client packages.
 
 - `NodeOperations` creates a folder under a parent ID, and renames/moves,
   deletes, or downloads a mirrored `NodeRecord`. Create and update return the
@@ -559,9 +561,9 @@ A backend is an async context manager factory named by its import path
 - The aiohttp router is frozen before factories run, so the core owns one route,
   `/api/v1/backends/<name>/<path>`, and dispatches to handlers the instance
   registered.
-- Backend packages ship no scripts. They register factories under the
+- Backends ship no scripts. Their factories are registered under the
   `wcpan.drive.server.backend` entry point group, which `init` uses to generate a
-  starting config.
+  starting config. A third-party package registers its own the same way.
 
 ## Backend instances
 
