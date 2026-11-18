@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import shutil
+import sqlite3
 import tempfile
 from collections.abc import Awaitable, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -789,3 +790,73 @@ class ExclusiveObserveTest(_FlowTestCase):
                     raise ValueError("boom")
         # then
         self.assertIsInstance(caught.exception.__cause__, WriterStoppedError)
+
+
+def _record_state(con: sqlite3.Connection, value: str) -> None:
+    con.execute("CREATE TABLE IF NOT EXISTS state (value TEXT)")
+    con.execute("INSERT INTO state VALUES (?)", (value,))
+
+
+class BackendStateTest(_FlowTestCase):
+    def state(self) -> list[str]:
+        con = sqlite3.connect(self.tmp / "mirror.sqlite")
+        try:
+            return [row[0] for row in con.execute("SELECT value FROM state")]
+        finally:
+            con.close()
+
+    async def test_state_write_lands_after_earlier_writes(self) -> None:
+        # given: a node write is queued behind a blocked job
+        gate = await self.block_writes()
+        async with self.core.observe() as changes:
+            await changes.upserted(_obs(_node("f", _A)))
+        seen: list[bool] = []
+        has = self.mirror.get_node_by_id
+
+        async def checked() -> None:
+            seen.append(await has(_id("f")) is not None)
+
+        # when
+        await self.core.enqueue_write(_record_state, "checkpoint")
+        await self.sync.enqueue(checked)
+        gate.release.set()
+        async with asyncio.timeout(5):
+            await self.core.writes_landed()
+        # then
+        self.assertEqual(self.state(), ["checkpoint"])
+        self.assertEqual(seen, [True])
+
+    async def test_writes_landed_waits_for_a_queued_state_write(self) -> None:
+        # given
+        gate = await self.block_writes()
+        await self.core.enqueue_write(_record_state, "checkpoint")
+        waiting = asyncio.create_task(self.core.writes_landed())
+        await self.settle()
+        # when
+        finished_early = waiting.done()
+        gate.release.set()
+        async with asyncio.timeout(5):
+            await waiting
+        # then
+        self.assertFalse(finished_early)
+        self.assertEqual(self.state(), ["checkpoint"])
+
+
+class EnrichmentTest(_FlowTestCase):
+    async def test_drain_waits_for_queued_enrichment(self) -> None:
+        # given
+        gate = _Gate()
+        self.enricher.gates[_id("f")] = gate
+        async with self.sync.observe() as read:
+            await self.sync.upsert_file_batch([_obs(_node("f", _A))], read=read)
+        await gate.entered.wait()
+        draining = asyncio.create_task(self.core.enrichment.drain())
+        await self.settle()
+        # when
+        finished_early = draining.done()
+        gate.release.set()
+        async with asyncio.timeout(5):
+            await draining
+        # then
+        self.assertFalse(finished_early)
+        self.assertTrue(await self.has("f"))

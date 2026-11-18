@@ -1,15 +1,14 @@
 """First-run / resume mirror scan: incremental sync_id BFS, then server-ready signal."""
 
 from dataclasses import dataclass
-from functools import partial
 from logging import getLogger
 
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server.types import (
+    Enrichment,
     Listing,
-    MirrorStore,
+    MirrorReader,
     NodeObservation,
-    NodeSyncService,
     Scanner,
     ScanPlan,
     ScanRunner,
@@ -51,7 +50,7 @@ class _MountPass(Scanner[_Folder]):
         self,
         *,
         drive_api: SynologyClient,
-        mirror: MirrorStore,
+        mirror: MirrorReader,
         syno_paths: SynologyPathService,
         last_max_ids: dict[str, int],
     ) -> None:
@@ -183,17 +182,17 @@ class StartupScanService:
         self,
         *,
         drive_api: SynologyClient,
-        mirror: MirrorStore,
+        mirror: MirrorReader,
         store: SynologyStore,
         syno_paths: SynologyPathService,
-        node_sync: NodeSyncService,
+        enrichment: Enrichment,
         scans: ScanRunner,
     ) -> None:
         self._drive_api = drive_api
         self._mirror = mirror
         self._store = store
         self._syno_paths = syno_paths
-        self._node_sync = node_sync
+        self._enrichment = enrichment
         self._scans = scans
 
     async def _scan_all_mounts(
@@ -235,21 +234,16 @@ class StartupScanService:
             _L.info("Resuming with per-mount max_ids: %s", last_max_ids)
 
         _, pre_scan_max_ids = await self._scan_all_mounts(last_max_ids)
-        await self._node_sync.retry_media_failures(locate=self._locate_failed)
+        await self._enrichment.retry_failures(self._locate_failed)
         for name, checkpoint in pre_scan_max_ids.items():
             if checkpoint > last_max_ids.get(name, 0):
-                await self._node_sync.enqueue(
-                    partial(
-                        self._store.set_mount_state,
-                        name,
-                        self._syno_paths.paths[name].path,
-                        checkpoint,
-                    )
+                await self._store.set_mount_state(
+                    name, self._syno_paths.paths[name].path, checkpoint
                 )
         _L.info("Scan complete; pre-scan checkpoints: %s", pre_scan_max_ids)
 
     async def run_until_ready(self) -> None:
         """Run the startup scan, and wait for everything it queued."""
         await self.run_initial_scan()
-        await self._node_sync.wait_enrichment_drained()
+        await self._enrichment.drain()
         _L.info("Startup scan applied")

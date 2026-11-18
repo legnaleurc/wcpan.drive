@@ -21,6 +21,7 @@ from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
 from wcpan.drive.server._services.off_main import OffMainService
+from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
@@ -206,7 +207,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -300,7 +301,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -385,7 +386,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -470,7 +471,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -557,7 +558,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -648,7 +649,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -766,7 +767,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -847,7 +848,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -945,7 +946,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
@@ -1048,7 +1049,7 @@ class TestDeferredScan(DecoyTestCase):
                                     mirror=mirror, ns=mirror.namespace("synology")
                                 ),
                             ),
-                            node_sync=cs,
+                            enrichment=Enrichment(cs),
                             scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when

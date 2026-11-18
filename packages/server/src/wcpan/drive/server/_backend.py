@@ -21,12 +21,13 @@ work, and calls ``run_command``, which connects only if the command needs it.
 
 import argparse
 import asyncio
+import sqlite3
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib import import_module
-from typing import Any, Protocol, cast
+from typing import Any, Concatenate, Protocol, cast
 
 from aiohttp import web
 from aiohttp.typedefs import Handler
@@ -38,14 +39,12 @@ from ._services.mirror.model import (
     BackendNamespace,
     BackendSchema,
 )
-from ._services.mirror.store import (
-    MirrorReader,
-    MirrorStore,
-)
+from ._services.mirror.store import MirrorReader
 from ._services.mounts import Mount as Mount
 from ._services.mounts import Mounts
 from ._services.off_main import OffMainService
 from ._services.operations import NodeOperations
+from ._services.sync.enrichment import Enrichment
 from ._services.sync.hints import ChangeHandler, HintStage
 from ._services.sync.ordering import NodeOrdering
 from ._services.sync.scan import Changes, ScanRunner
@@ -71,27 +70,52 @@ class CoreServices:
     ``media`` probes the instance's files through the source it registers while
     connected, and probes upload spools. ``scans`` runs the instance's scan
     passes, ``observe`` is the scope for writing what a source read found, and
-    ``hints`` queues the instance's raw change events.
+    ``hints`` queues the instance's raw change events. ``enrichment`` waits for
+    media probing and retries its failures.
     """
 
-    mirror: MirrorStore
+    mirror: MirrorReader
     node_sync: NodeSyncService
     off_main: OffMainService
     ids: NodeIdMap
     media: MediaProbing
     scans: ScanRunner = field(init=False, repr=False, compare=False)
     hints: HintStage = field(init=False, repr=False, compare=False)
+    enrichment: Enrichment = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         scans = ScanRunner(mirror=self.mirror, node_sync=self.node_sync)
         object.__setattr__(self, "scans", scans)
         object.__setattr__(self, "hints", HintStage())
+        object.__setattr__(self, "enrichment", Enrichment(self.node_sync))
 
     def observe(
         self, *, exclusive: bool = False
     ) -> AbstractAsyncContextManager[Changes]:
         """Number a source read; see ``ScanRunner.observe``."""
         return self.scans.observe(exclusive=exclusive)
+
+    async def enqueue_write[**A](
+        self,
+        fn: Callable[Concatenate[sqlite3.Connection, A], object],
+        /,
+        *args: A.args,
+        **kwargs: A.kwargs,
+    ) -> None:
+        """Queue ``fn(con, ...)`` as one transaction, in order with other writes.
+
+        For backend state such as checkpoints. *fn* runs only SQL, on the core's
+        connection, and must not commit or roll back.
+        """
+        await self.node_sync.enqueue_sql(fn, *args, **kwargs)
+
+    async def writes_landed(self) -> None:
+        """Wait for every write queued so far.
+
+        Raises:
+            WriterStoppedError: The write worker ended first.
+        """
+        await self.node_sync.barrier()
 
     async def bind_schema(self, schema: BackendSchema) -> BackendNamespace:
         """Register the instance with *schema* (tables, orphan cleanup)."""

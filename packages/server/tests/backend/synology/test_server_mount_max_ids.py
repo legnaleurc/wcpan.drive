@@ -33,7 +33,9 @@ class TestGetMountMaxIds(IsolatedAsyncioTestCase):
         )
         await self.mirror.ensure_schema()
         self.store = SynologyStore(
-            mirror=self.mirror, ns=self.mirror.namespace("synology")
+            mirror=self.mirror,
+            ns=self.mirror.namespace("synology"),
+            write=self.mirror.write,
         )
 
     async def asyncTearDown(self) -> None:
@@ -108,7 +110,9 @@ class TestSetMountState(IsolatedAsyncioTestCase):
         )
         await self.mirror.ensure_schema()
         self.store = SynologyStore(
-            mirror=self.mirror, ns=self.mirror.namespace("synology")
+            mirror=self.mirror,
+            ns=self.mirror.namespace("synology"),
+            write=self.mirror.write,
         )
 
     async def asyncTearDown(self) -> None:

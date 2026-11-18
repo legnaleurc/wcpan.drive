@@ -10,8 +10,10 @@ from contextlib import suppress
 from pathlib import Path
 from typing import cast
 from unittest import IsolatedAsyncioTestCase
+from unittest.mock import MagicMock
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
+from wcpan.drive.server._backend import CoreServices
 from wcpan.drive.server._lib.write_queue import (
     create_write_queue,
     write_worker,
@@ -34,7 +36,6 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.filesystem._blocking import Blocking
 from wcpan.drive.server.backend.filesystem._media import media_sources
@@ -134,7 +135,14 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         )
         # The backend's own view, as the server hands it over.
         self.node_sync = self.core_sync.for_backend("fs")
-        self.scans = ScanRunner(mirror=self.mirror, node_sync=self.node_sync)
+        self.core = CoreServices(
+            mirror=self.mirror,
+            node_sync=self.node_sync,
+            off_main=MagicMock(),
+            ids=MagicMock(),
+            media=self.media,
+        )
+        self.scans = self.core.scans
         self.ids = NodeIds(
             mirror=self.mirror,
             write_queue=self.write_queue,
@@ -148,7 +156,11 @@ class ScanTestCase(IsolatedAsyncioTestCase):
                 )
             ),
         ]
-        self.store = FilesystemStore(mirror=self.mirror, ns=self.mirror.namespace("fs"))
+        self.store = FilesystemStore(
+            mirror=self.mirror,
+            ns=self.mirror.namespace("fs"),
+            write=self.core.enqueue_write,
+        )
         self.mounts = make_mounts({"docs": str(self.source)})
         self.paths = NodePaths(mirror=self.mirror, mounts=self.mounts)
         blocking = Blocking(executor=self.io_pool)
@@ -159,7 +171,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         self.scanner = FilesystemScanner(
             mirror=self.mirror,
             store=self.store,
-            node_sync=self.node_sync,
+            enrichment=self.core.enrichment,
             scans=self.scans,
             ids=self.ids,
             paths=self.paths,

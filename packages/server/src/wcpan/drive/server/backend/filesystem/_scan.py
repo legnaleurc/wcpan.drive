@@ -18,19 +18,18 @@ import stat
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
-from functools import partial
 from logging import getLogger
 
 from wcpan.drive.protocol.lib import guess_mime_type
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.exceptions import LocateUndecidedError
 from wcpan.drive.server.types import (
+    Enrichment,
     Listing,
-    MirrorStore,
+    MirrorReader,
     Mounts,
     NodeIdMap,
     NodeObservation,
-    NodeSyncService,
     Scanner,
     ScanPlan,
     ScanRunner,
@@ -123,9 +122,9 @@ class FilesystemScanner:
     def __init__(
         self,
         *,
-        mirror: MirrorStore,
+        mirror: MirrorReader,
         store: FilesystemStore,
-        node_sync: NodeSyncService,
+        enrichment: Enrichment,
         scans: ScanRunner,
         ids: NodeIdMap,
         paths: NodePaths,
@@ -138,7 +137,7 @@ class FilesystemScanner:
         ``None`` keeps them."""
         self._mirror = mirror
         self._store = store
-        self._node_sync = node_sync
+        self._enrichment = enrichment
         self._scans = scans
         self._ids = ids
         self._paths = paths
@@ -352,9 +351,7 @@ class FilesystemScanner:
             return False
         known = await self._store.get_mount_fsid(name, root)
         if known is None:
-            await self._node_sync.enqueue(
-                partial(self._store.set_mount_fsid, name, root, fsid)
-            )
+            await self._store.set_mount_fsid(name, root, fsid)
             return True
         if known != fsid:
             _L.error(
@@ -509,7 +506,7 @@ class FilesystemScanner:
 
     async def prune_failures(self, *, before: int) -> None:
         """Drop failure records last marked before *before* (ms)."""
-        await self._node_sync.prune_media_failures(before=before)
+        await self._enrichment.prune_failures(before=before)
 
 
 class _FolderPass(Scanner[_Folder]):

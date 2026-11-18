@@ -30,15 +30,13 @@ from ._services.mirror.model import (
 from ._services.mirror.store import (
     MirrorReader as MirrorReader,
 )
-from ._services.mirror.store import (
-    MirrorStore as MirrorStore,
-)
 from ._services.mounts import Mount as Mount
 from ._services.mounts import Mounts as Mounts
 from ._services.off_main import OffMainService as OffMainService
 from ._services.operations import Locate as Locate
 from ._services.operations import NodeOperations as NodeOperations
 from ._services.paths import VirtualPathService as VirtualPathService
+from ._services.sync.enrichment import Enrichment as Enrichment
 from ._services.sync.hints import ChangeHandler as ChangeHandler
 from ._services.sync.hints import HintStage as HintStage
 from ._services.sync.ordering import NodeOrdering as NodeOrdering
@@ -74,6 +72,7 @@ __all__ = (
     "Changes",
     "CommandParser",
     "CoreServices",
+    "Enrichment",
     "FileOpener",
     "FolderLister",
     "HintStage",
@@ -83,7 +82,6 @@ __all__ = (
     "MediaProbing",
     "MediaSource",
     "MirrorReader",
-    "MirrorStore",
     "Mount",
     "Mounts",
     "NodeIdMap",

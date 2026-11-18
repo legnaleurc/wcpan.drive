@@ -9,7 +9,7 @@ from wcpan.drive.server.types import (
     Changes,
     HintStage,
     Listing,
-    MirrorStore,
+    MirrorReader,
     ScanRunner,
 )
 from wcpan.synology.types import (
@@ -78,7 +78,7 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
         self,
         *,
         drive_api: SynologyClient,
-        mirror: MirrorStore,
+        mirror: MirrorReader,
         store: SynologyStore,
         scans: ScanRunner,
         syno_paths: SynologyPathService,

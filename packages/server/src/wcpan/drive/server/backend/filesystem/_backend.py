@@ -149,7 +149,7 @@ async def create_backend(
     core = context.core
     # Read-only commands read the mirror only; the store writes.
     store = (
-        FilesystemStore(mirror=core.mirror, ns=ns)
+        FilesystemStore(mirror=core.mirror, ns=ns, write=core.enqueue_write)
         if isinstance(core, CoreServices)
         else None
     )
@@ -216,6 +216,7 @@ class FilesystemBackend:
                 self._require_store(), self._mounts, args.mount
             )
             if changed:
+                await writing(self._context.core).writes_landed()
                 print(f"Mount {args.mount!r} now expects filesystem {fsid}.")
             else:
                 print(f"Mount {args.mount!r} is already bound to filesystem {fsid}.")
@@ -238,7 +239,7 @@ class FilesystemBackend:
             scanner = FilesystemScanner(
                 mirror=core.mirror,
                 store=store,
-                node_sync=core.node_sync,
+                enrichment=core.enrichment,
                 scans=core.scans,
                 ids=core.ids,
                 paths=paths,
@@ -273,7 +274,7 @@ class FilesystemBackend:
                 core=core,
             )
             with core.media.register(self.name, media_sources(blocking)):
-                async with core.node_sync.retrying_with(scanner.rescan_parent):
+                async with core.enrichment.retrying_with(scanner.rescan_parent):
                     yield
         finally:
             self._runtime = None

@@ -207,7 +207,7 @@ class TestIdentity(ScanTestCase):
         self.scanner = FilesystemScanner(
             mirror=self.mirror,
             store=self.store,
-            node_sync=self.node_sync,
+            enrichment=self.core.enrichment,
             scans=self.scans,
             ids=self.ids,
             paths=self.paths,

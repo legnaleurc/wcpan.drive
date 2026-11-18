@@ -166,7 +166,7 @@ directions; Ruff's banned-api rule in `pyproject.toml` bans client packages.
   mirrored record; download streams exactly the bytes at an offset and length
   resolved against the mirrored size, and any exception while streaming is a
   failed stream. It writes the mirror through
-  `NodeSyncService` and raises the common errors:
+  `CoreServices.observe` and raises the common errors:
   `OperationConflictError` (409, with the existing node when known),
   `OperationNotFoundError` (404, the node or target folder is gone from the
   source but still mirrored), `OperationStorageFullError` (507),
@@ -188,7 +188,7 @@ only what its source supports:
 - Observation: metadata from a backend read, or a confirmed absence.
 - Coverage: which listings completed and which scopes remain unknown.
 - Progress: optional backend state, persisted only after the work it covers is
-  durable (`NodeSyncService.enqueue` keeps it in write order).
+  durable (`CoreServices.enqueue_write` keeps it in write order).
 
 Notifications, a replayable event stream, ordered source revisions, and
 checkpoints are all optional; polling and full traversal are valid. Backends are
@@ -198,13 +198,11 @@ not modeled as a Synology scan with renamed fields.
 
 This section is the target design for the backend API. Implemented so far:
 `CoreServices.observe` with `Changes`, `CoreServices.scans` with `Scanner`, `ScanPlan`, and
-`Listing`, `CoreServices.hints` with `ChangeHandler`, and the core-owned lifecycle
-(`BackendRuntime`, `BackendLifecycle`). Not yet built: read-only scans, the
-narrowed `core.enrichment` surface, and `core.reconcile`. The filesystem backend's scans run
-through `core.scans`, its writes through `core.observe`, and its change events through
-`core.hints`. Synology's startup scan runs through `core.scans` and its webhooks through
-`core.hints`, and its API writes, uploads, and webhook facts through `core.observe`. The
-filesystem's startup and media retries, and Synology's scan bookkeeping and backfill, still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
+`Listing`, `CoreServices.hints` with `ChangeHandler`, `CoreServices.enrichment`,
+`CoreServices.enqueue_write`, and the core-owned lifecycle (`BackendRuntime`,
+`BackendLifecycle`). Both built-in backends use these while serving, and `MirrorStore` is no
+longer public. Not yet built: read-only scans and `core.reconcile`. Synology's offline
+`backfill` still uses `NodeSyncService` and `reconcile_session` directly.
 
 ### Goal
 
@@ -326,11 +324,12 @@ core.enrichment   # drain, scope, retry_failures(locate), retrying(locate),
 core.hints        # publish(raw_event), later(key, delay, fn)
 core.scans        # await run(scanner), await walk(lister, root)
 core.observe(exclusive=False)   # the one way a backend produces facts
-core.enqueue_write(fn)          # fn(con) as one ordered transaction, for backend state
+await core.enqueue_write(fn, *args)   # fn(con, *args) as one ordered transaction
+await core.writes_landed()      # every write queued so far has landed
 await core.bind_schema(schema)
 ```
 
-`NodeSyncService` and `MirrorStore` stop being public once the built-in backends have moved.
+`NodeSyncService` stops being public once backfill has moved; `MirrorStore` already has.
 
 #### Producing facts
 

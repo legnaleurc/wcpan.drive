@@ -1,12 +1,14 @@
 """Central service for persisting node changes from scan, webhook, and API sources."""
 
 import asyncio
+import sqlite3
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from copy import copy
 from dataclasses import dataclass, replace
 from functools import partial
 from logging import getLogger
+from typing import Concatenate
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
@@ -676,6 +678,20 @@ class NodeSyncService:
         writes they cover.
         """
         await self._write_queue.put(job)
+
+    async def enqueue_sql[**A](
+        self,
+        fn: Callable[Concatenate[sqlite3.Connection, A], object],
+        /,
+        *args: A.args,
+        **kwargs: A.kwargs,
+    ) -> None:
+        """Queue ``fn(con, ...)`` as one transaction, in order with mirror writes."""
+
+        async def job() -> None:
+            await self._mirror.write(fn, *args, **kwargs)
+
+        await self.enqueue(job)
 
     async def touched_after(self, read: ReadSeq) -> set[NodeId]:
         """Nodes observed by reads that started after *read*, once queued writes land.

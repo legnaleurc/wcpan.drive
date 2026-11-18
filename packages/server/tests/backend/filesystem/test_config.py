@@ -4,6 +4,7 @@ import io
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import cast
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -72,6 +73,7 @@ _STORE = "wcpan.drive.server.backend.filesystem._commands.FilesystemStore"
 def _context(mounts: dict[str, str]) -> BackendContext:
     node_sync = MagicMock()
     node_sync.register_schema = AsyncMock()
+    node_sync.barrier = AsyncMock()
     return BackendContext(
         name="disk",
         mounts=make_mounts(mounts),
@@ -148,6 +150,10 @@ class TestFactory(IsolatedAsyncioTestCase):
                     # then: an unchanged ID is not written again
                     lookup.assert_awaited_once_with("docs", tmp)
                     self.assertEqual(record.await_count, writes)
+                    # and a new one has landed before the command reports it
+                    core = cast(CoreServices, context.core)
+                    barrier = cast(AsyncMock, core.node_sync.barrier)
+                    self.assertEqual(barrier.await_count, writes)
                     if writes:
                         record.assert_awaited_once_with("docs", tmp, filesystem_id(tmp))
                     else:

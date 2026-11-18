@@ -23,6 +23,7 @@ from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
 from wcpan.drive.server._services.off_main import OffMainService
+from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
@@ -132,7 +133,9 @@ class TestNewFolders(DecoyTestCase):
             [_dir(ROOT_ID, "", None), _dir(mount_id("a"), "a", ROOT_ID)]
         )
         self.store = SynologyStore(
-            mirror=self.mirror, ns=self.mirror.namespace("synology")
+            mirror=self.mirror,
+            ns=self.mirror.namespace("synology"),
+            write=lambda *args: self.node_sync.enqueue_sql(*args),
         )
         self.syno_paths = SynologyPathService(
             ids=IdentityIds(),
@@ -173,7 +176,7 @@ class TestNewFolders(DecoyTestCase):
             mirror=self.mirror,
             store=self.store,
             syno_paths=self.syno_paths,
-            node_sync=self.node_sync,
+            enrichment=Enrichment(self.node_sync),
             scans=ScanRunner(mirror=self.mirror, node_sync=self.node_sync),
         )
 

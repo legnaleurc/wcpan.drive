@@ -7,7 +7,7 @@ lookup never finds another NAS's node.
 """
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import closing
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
@@ -16,7 +16,6 @@ from wcpan.drive.server.types import (
     BackendLocator,
     BackendNamespace,
     MirrorReader,
-    MirrorStore,
 )
 from wcpan.synology.types import SynologyPath
 
@@ -93,15 +92,27 @@ class SynologyStoreReader:
         return await self._mirror.read(_get_mount_max_ids, self._ns, mounts)
 
 
+type StateWrite = Callable[..., Awaitable[object]]
+
+
 class SynologyStore(SynologyStoreReader):
     """Reads and writes of one instance's Synology tables."""
 
-    def __init__(self, *, mirror: MirrorStore, ns: BackendNamespace) -> None:
+    def __init__(
+        self,
+        *,
+        mirror: MirrorReader,
+        ns: BackendNamespace,
+        write: StateWrite | None = None,
+    ) -> None:
+        """*write* runs one SQL function as a transaction; reads work without it."""
         super().__init__(mirror=mirror, ns=ns)
-        self._writer = mirror
+        self._write = write
 
     async def set_mount_state(self, name: str, path: str, value: int) -> None:
-        await self._writer.write(_set_mount_state, self._ns, name, path, value)
+        if self._write is None:
+            raise RuntimeError("this store is read-only")
+        await self._write(_set_mount_state, self._ns, name, path, value)
 
 
 def _get_mount_max_ids(

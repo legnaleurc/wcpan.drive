@@ -255,7 +255,7 @@ class SynologyBackend:
     async def serving(self) -> AsyncGenerator[None, None]:
         """Connect, receive webhooks, and build the services the server uses."""
         core = writing(self._context.core)
-        store = SynologyStore(mirror=core.mirror, ns=self._ns)
+        store = SynologyStore(mirror=core.mirror, ns=self._ns, write=core.enqueue_write)
         async with AsyncExitStack() as stack:
             c = await stack.enter_async_context(self.connect())
             path = self._context.routes.add(
@@ -267,7 +267,7 @@ class SynologyBackend:
                 )
             )
             await stack.enter_async_context(
-                core.node_sync.retrying(partial(_locate_link, c))
+                core.enrichment.retrying(partial(_locate_link, c))
             )
             tmp_dir = self._config.upload_tmp_dir
             spool = stack.enter_context(
@@ -294,7 +294,7 @@ class SynologyBackend:
                     mirror=core.mirror,
                     store=store,
                     syno_paths=c.syno_paths,
-                    node_sync=core.node_sync,
+                    enrichment=core.enrichment,
                     scans=core.scans,
                 ),
                 webhook_service=WebhookService(

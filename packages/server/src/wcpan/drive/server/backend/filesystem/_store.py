@@ -11,12 +11,12 @@ an empty directory.
 """
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server.types import BackendLocator, BackendNamespace, MirrorStore
+from wcpan.drive.server.types import BackendLocator, BackendNamespace, MirrorReader
 
 from ._handles import FileIdentity
 from ._schema import DDL, SCHEMA_NAME, SCHEMA_VERSION
@@ -101,11 +101,22 @@ class FilesystemSchema:
 FILESYSTEM_SCHEMA = FilesystemSchema()
 
 
+type StateWrite = Callable[..., Awaitable[object]]
+
+
 class FilesystemStore:
     """Queries over one instance's tables through the core mirror connection."""
 
-    def __init__(self, *, mirror: MirrorStore, ns: BackendNamespace) -> None:
+    def __init__(
+        self,
+        *,
+        mirror: MirrorReader,
+        ns: BackendNamespace,
+        write: StateWrite | None = None,
+    ) -> None:
+        """*write* runs one SQL function as a transaction; reads work without it."""
         self._mirror = mirror
+        self._write = write
         self._ns = ns
 
     async def get_entries(self, node_ids: list[NodeId]) -> dict[NodeId, EntryState]:
@@ -119,7 +130,9 @@ class FilesystemStore:
         return await self._mirror.read(_get_mount_fsid, self._ns, name, path)
 
     async def set_mount_fsid(self, name: str, path: str, fsid: str) -> None:
-        await self._mirror.write(_set_mount_fsid, self._ns, name, path, fsid)
+        if self._write is None:
+            raise RuntimeError("this store is read-only")
+        await self._write(_set_mount_fsid, self._ns, name, path, fsid)
 
 
 def _get_entries(

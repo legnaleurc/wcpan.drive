@@ -21,6 +21,7 @@ from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
 from wcpan.drive.server._services.off_main import OffMainService
+from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
@@ -80,7 +81,9 @@ class TestScannerWriteBack(DecoyTestCase):
                         drive_api=self.decoy.mock(cls=SynologyClient),
                         mirror=mirror,
                         store=SynologyStore(
-                            mirror=mirror, ns=mirror.namespace("synology")
+                            mirror=mirror,
+                            ns=mirror.namespace("synology"),
+                            write=cs.enqueue_sql,
                         ),
                         syno_paths=SynologyPathService(
                             ids=IdentityIds(),
@@ -91,7 +94,7 @@ class TestScannerWriteBack(DecoyTestCase):
                                 mirror=mirror, ns=mirror.namespace("synology")
                             ),
                         ),
-                        node_sync=cs,
+                        enrichment=Enrichment(cs),
                         scans=ScanRunner(mirror=mirror, node_sync=cs),
                     )
                     await svc.run_initial_scan()
@@ -143,10 +146,14 @@ class TestScannerWriteBack(DecoyTestCase):
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
                 # Seed existing per-mount state
                 await SynologyStore(
-                    mirror=mirror, ns=mirror.namespace("synology")
+                    mirror=mirror,
+                    ns=mirror.namespace("synology"),
+                    write=mirror.write,
                 ).set_mount_state("a", "/vol/a", 100)
                 await SynologyStore(
-                    mirror=mirror, ns=mirror.namespace("synology")
+                    mirror=mirror,
+                    ns=mirror.namespace("synology"),
+                    write=mirror.write,
                 ).set_mount_state("b", "/vol/b", 80)
 
                 # when
@@ -175,10 +182,14 @@ class TestScannerWriteBack(DecoyTestCase):
                 await mirror.ensure_schema()
                 mounts = {"a": SynologyPath("/vol/a"), "b": SynologyPath("/vol/b")}
                 await SynologyStore(
-                    mirror=mirror, ns=mirror.namespace("synology")
+                    mirror=mirror,
+                    ns=mirror.namespace("synology"),
+                    write=mirror.write,
                 ).set_mount_state("a", "/vol/a", 100)
                 await SynologyStore(
-                    mirror=mirror, ns=mirror.namespace("synology")
+                    mirror=mirror,
+                    ns=mirror.namespace("synology"),
+                    write=mirror.write,
                 ).set_mount_state("b", "/vol/b", 80)
 
                 # when
@@ -288,3 +299,36 @@ class TestMountPass(IsolatedAsyncioTestCase):
     def test_mounts_are_scanned_one_at_a_time(self) -> None:
         # when, then
         self.assertFalse(self.scan.concurrent_roots)
+
+
+class TestStartupOrder(IsolatedAsyncioTestCase):
+    async def test_failed_media_is_retried_before_checkpoints_are_queued(self) -> None:
+        # given
+        log: list[str] = []
+        store: Any = MagicMock()
+        store.get_mount_max_ids = AsyncMock(return_value={"a": 10})
+        store.set_mount_state = AsyncMock(
+            side_effect=lambda *_: log.append("checkpoint")
+        )
+        enrichment: Any = MagicMock()
+        enrichment.retry_failures = AsyncMock(side_effect=lambda _: log.append("retry"))
+        paths: Any = MagicMock()
+        paths.mounts = {"a": MagicMock()}
+        paths.paths = {"a": SynologyPath("/vol/a")}
+        service = StartupScanService(
+            drive_api=MagicMock(),
+            mirror=MagicMock(),
+            store=store,
+            syno_paths=paths,
+            enrichment=enrichment,
+            scans=MagicMock(),
+        )
+        # when
+        with patch.object(
+            service,
+            "_scan_all_mounts",
+            new=AsyncMock(return_value=({"a": 20}, {"a": 20})),
+        ):
+            await service.run_initial_scan()
+        # then
+        self.assertEqual(log, ["retry", "checkpoint"])

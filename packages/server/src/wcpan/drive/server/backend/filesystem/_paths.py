@@ -3,13 +3,13 @@
 import os
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server.types import MirrorStore, Mounts
+from wcpan.drive.server.types import MirrorReader, Mounts
 
 
 class NodePaths:
     """Rebuild a node's path from its mirrored ancestors and mount source."""
 
-    def __init__(self, *, mirror: MirrorStore, mounts: Mounts) -> None:
+    def __init__(self, *, mirror: MirrorReader, mounts: Mounts) -> None:
         self._mirror = mirror
         self._mounts = mounts
 

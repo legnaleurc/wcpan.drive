@@ -3,6 +3,7 @@
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server._services.ids import NodeIds
 from wcpan.drive.server._services.mounts import ensure_mount_nodes
+from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server.backend.filesystem._blocking import Blocking
 from wcpan.drive.server.backend.filesystem._paths import NodePaths
@@ -24,8 +25,10 @@ class TestTwoInstances(ScanTestCase):
         self.node_sync2 = self.core_sync.for_backend("fs2")
         self.scanner2 = FilesystemScanner(
             mirror=self.mirror,
-            store=FilesystemStore(mirror=self.mirror, ns=ns),
-            node_sync=self.node_sync2,
+            store=FilesystemStore(
+                mirror=self.mirror, ns=ns, write=self.node_sync2.enqueue_sql
+            ),
+            enrichment=Enrichment(self.node_sync2),
             scans=ScanRunner(mirror=self.mirror, node_sync=self.node_sync2),
             ids=NodeIds(mirror=self.mirror, write_queue=self.write_queue, key=ns.key),
             paths=NodePaths(mirror=self.mirror, mounts=self.mounts2),
