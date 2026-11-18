@@ -230,7 +230,7 @@ class FilesystemBackend:
                 operations=FilesystemOperations(
                     scanner=scanner,
                     mirror=core.mirror,
-                    node_sync=core.node_sync,
+                    scans=core.scans,
                     paths=paths,
                     store=store,
                     blocking=blocking,
@@ -239,7 +239,7 @@ class FilesystemBackend:
                 uploader=FilesystemUploader(
                     scanner=scanner,
                     mirror=core.mirror,
-                    node_sync=core.node_sync,
+                    scans=core.scans,
                     blocking=blocking,
                     media=core.media,
                     read_only=read_only,

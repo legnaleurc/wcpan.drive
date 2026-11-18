@@ -1,7 +1,8 @@
 """Node operations and uploads for the filesystem backend.
 
-Every change runs while scan passes are held off, and is recorded in the mirror
-before they resume, so a pass that lists the result matches it to the same node.
+Every change runs in an exclusive ``observe`` block: scan passes are held off, and
+resume only once it is recorded in the mirror, so a pass that lists the result
+matches it to the same node. The block starts before the checks it depends on.
 Renames never replace an existing entry, and an entry is only renamed or deleted
 while its path still names the object the mirror knows.
 """
@@ -9,7 +10,7 @@ while its path still names the object the mirror knows.
 import errno
 import os
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Iterable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
 from functools import partial
 from logging import getLogger
@@ -31,11 +32,11 @@ from wcpan.drive.server.exceptions import (
 )
 from wcpan.drive.server.lib import LocalFileSource, upload_probe_kind
 from wcpan.drive.server.types import (
+    Changes,
     MediaProbing,
     MirrorStore,
     NodeObservation,
-    NodeSyncService,
-    ReadSeq,
+    ScanRunner,
 )
 
 from ._blocking import Blocking
@@ -97,19 +98,23 @@ class _Writes:
         *,
         scanner: FilesystemScanner,
         mirror: MirrorStore,
-        node_sync: NodeSyncService,
+        scans: ScanRunner,
         blocking: Blocking,
         read_only: bool,
     ) -> None:
         self._scanner = scanner
         self._mirror = mirror
-        self._node_sync = node_sync
+        self._scans = scans
         self._blocking = blocking
         self._read_only = read_only
 
     def _check_writable(self) -> None:
         if self._read_only:
             raise OperationNotSupportedError(_READ_ONLY)
+
+    def _writing(self) -> AbstractAsyncContextManager[Changes]:
+        """Hold off scan passes until what the block records has landed."""
+        return self._scans.observe(exclusive=True)
 
     async def _folder(self, folder_id: NodeId) -> str:
         if folder_id == self._scanner.mounts.root_id:
@@ -131,25 +136,22 @@ class _Writes:
     async def _mirrored_child(self, parent_id: NodeId, name: str) -> NodeRecord | None:
         """The node an existing entry maps to, reading its folder first."""
         await self._scanner.scan_folders([parent_id])
-        await self._node_sync.wait_enrichment_drained()
         children = await self._mirror.get_children(parent_id)
         return next((c for c in children if c.name == name), None)
 
     async def _record(
         self,
         observation: NodeObservation,
-        read: ReadSeq,
+        changes: Changes,
         *,
         folders: Iterable[NodeId | None],
     ) -> NodeRecord:
-        record = await self._node_sync.upsert(observation, read=read)
-        await self._refresh_folders(folders, read)
-        # Recorded before passes resume, so they match it instead of minting an ID.
-        await self._node_sync.flush()
+        record = await changes.upserted(observation)
+        await self._refresh_folders(folders, changes)
         return record
 
     async def _refresh_folders(
-        self, folder_ids: Iterable[NodeId | None], read: ReadSeq
+        self, folder_ids: Iterable[NodeId | None], changes: Changes
     ) -> None:
         """Record the times of folders whose entries a write just changed.
 
@@ -158,7 +160,6 @@ class _Writes:
         roots have no record of their own, and a folder that changed on disk
         meanwhile is left to that pass.
         """
-        observations: list[NodeObservation] = []
         for folder_id in dict.fromkeys(f for f in folder_ids if f is not None):
             current = await self._scanner.current(folder_id)
             if current is None:
@@ -167,10 +168,9 @@ class _Writes:
             parent_id = previous.record.parent_id
             if not entry.is_directory or parent_id is None:
                 continue
-            observations.append(
+            await changes.upserted(
                 FilesystemScanner.observation(entry, folder_id, parent_id, "")
             )
-        await self._node_sync.upsert_batch(observations, read=read)
 
 
 class FilesystemOperations(_Writes):
@@ -179,7 +179,7 @@ class FilesystemOperations(_Writes):
         *,
         scanner: FilesystemScanner,
         mirror: MirrorStore,
-        node_sync: NodeSyncService,
+        scans: ScanRunner,
         paths: NodePaths,
         store: FilesystemStore,
         blocking: Blocking,
@@ -188,7 +188,7 @@ class FilesystemOperations(_Writes):
         super().__init__(
             scanner=scanner,
             mirror=mirror,
-            node_sync=node_sync,
+            scans=scans,
             blocking=blocking,
             read_only=read_only,
         )
@@ -198,22 +198,21 @@ class FilesystemOperations(_Writes):
     async def create_folder(self, parent_id: NodeId, name: str) -> NodeRecord:
         self._check_writable()
         _check_name(name)
-        async with self._scanner.exclusive():
+        async with self._writing() as changes:
             folder = await self._folder(parent_id)
             path = os.path.join(folder, name)
-            async with self._node_sync.observe() as read:
-                try:
-                    await self._blocking(make_directory, path)
-                except FileExistsError:
-                    pass
-                except OSError as e:
-                    raise _translate(e) from e
-                else:
-                    entry = await self._entry(path)
-                    observation = FilesystemScanner.observation(
-                        entry, self._scanner.new_node_id(), parent_id, ""
-                    )
-                    return await self._record(observation, read, folders=[parent_id])
+            try:
+                await self._blocking(make_directory, path)
+            except FileExistsError:
+                pass
+            except OSError as e:
+                raise _translate(e) from e
+            else:
+                entry = await self._entry(path)
+                observation = FilesystemScanner.observation(
+                    entry, self._scanner.new_node_id(), parent_id, ""
+                )
+                return await self._record(observation, changes, folders=[parent_id])
         raise OperationConflictError(
             f"{name!r} already exists in this folder",
             record=await self._mirrored_child(parent_id, name),
@@ -233,7 +232,7 @@ class FilesystemOperations(_Writes):
             return record
         if new_name is not None:
             _check_name(new_name)
-        async with self._scanner.exclusive():
+        async with self._writing() as changes:
             current = await self._scanner.current(record.id)
             if current is None:
                 if not await self._still_exists(record.id):
@@ -246,50 +245,47 @@ class FilesystemOperations(_Writes):
             assert target is not None
             folder = await self._folder(target)
             destination = os.path.join(folder, new_name or entry.name)
-            async with self._node_sync.observe() as read:
-                try:
-                    await self._blocking(rename_no_replace, entry.path, destination)
-                except FileExistsError as e:
-                    raise OperationConflictError(
-                        f"{new_name or entry.name!r} already exists in this folder"
-                    ) from e
-                except OSError as e:
-                    raise _translate(e) from e
-                moved = await self._entry(destination)
-                hash_ = await self._scanner.checksum(moved, previous)
-                observation = FilesystemScanner.observation(
-                    moved, record.id, target, hash_ or previous.record.hash
-                )
-                return await self._record(
-                    observation, read, folders=[previous.record.parent_id, target]
-                )
+            try:
+                await self._blocking(rename_no_replace, entry.path, destination)
+            except FileExistsError as e:
+                raise OperationConflictError(
+                    f"{new_name or entry.name!r} already exists in this folder"
+                ) from e
+            except OSError as e:
+                raise _translate(e) from e
+            moved = await self._entry(destination)
+            hash_ = await self._scanner.checksum(moved, previous)
+            observation = FilesystemScanner.observation(
+                moved, record.id, target, hash_ or previous.record.hash
+            )
+            return await self._record(
+                observation, changes, folders=[previous.record.parent_id, target]
+            )
 
     async def delete(self, record: NodeRecord) -> None:
         """Delete permanently; a directory is removed with its contents."""
         self._check_writable()
         failure: OSError | None = None
-        async with self._scanner.exclusive():
+        async with self._writing() as changes:
             current = await self._scanner.current(record.id)
             if current is None and await self._still_exists(record.id):
                 raise OperationUnavailableError(
                     f"{record.name!r} changed on disk; retry after the next scan"
                 )
-            async with self._node_sync.observe() as read:
-                if current is not None:
-                    entry, _ = current
-                    try:
-                        await self._blocking(
-                            remove, entry.path, is_directory=entry.is_directory
-                        )
-                    except FileNotFoundError:
-                        pass
-                    except OSError as e:
-                        failure = e
-                if failure is None:
-                    await self._node_sync.delete(record.id, read=read)
-                    await self._refresh_folders([record.parent_id], read)
-                    await self._node_sync.flush()
-                    return
+            if current is not None:
+                entry, _ = current
+                try:
+                    await self._blocking(
+                        remove, entry.path, is_directory=entry.is_directory
+                    )
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    failure = e
+            if failure is None:
+                await changes.removed(record.id)
+                await self._refresh_folders([record.parent_id], changes)
+                return
         # Part of a directory may be gone; record what is left.
         folders = [record.id] + ([record.parent_id] if record.parent_id else [])
         await self._scanner.scan_folders(folders)
@@ -356,7 +352,7 @@ class FilesystemUploader(_Writes):
         *,
         scanner: FilesystemScanner,
         mirror: MirrorStore,
-        node_sync: NodeSyncService,
+        scans: ScanRunner,
         blocking: Blocking,
         media: MediaProbing,
         read_only: bool = False,
@@ -364,7 +360,7 @@ class FilesystemUploader(_Writes):
         super().__init__(
             scanner=scanner,
             mirror=mirror,
-            node_sync=node_sync,
+            scans=scans,
             blocking=blocking,
             read_only=read_only,
         )
@@ -448,41 +444,43 @@ class FilesystemUploader(_Writes):
         A retry after the rename finds the file already in place and only
         records it.
         """
-        async with self._scanner.exclusive():
+        record: NodeRecord | None = None
+        async with self._writing() as changes:
             folder = await self.staged_folder(file)
             destination = os.path.join(folder, file.name)
-            async with self._node_sync.observe() as read:
-                renamed_before = await self._blocking(file.staged.is_at, destination)
-                if renamed_before or await self._place(file, folder):
-                    node_id = self._scanner.new_node_id()
-                    if renamed_before:
-                        # A scan may have mirrored it since the earlier attempt;
-                        # read the mirror only, as a scan here would deadlock.
-                        children = await self._mirror.get_children(file.parent_id)
-                        for child in children:
-                            if child.name == file.name:
-                                node_id = child.id
-                    entry = await self._entry(destination)
-                    observation = FilesystemScanner.observation(
-                        entry, node_id, file.parent_id, digest
+            renamed_before = await self._blocking(file.staged.is_at, destination)
+            if renamed_before or await self._place(file, folder):
+                node_id = self._scanner.new_node_id()
+                if renamed_before:
+                    # A scan may have mirrored it since the earlier attempt;
+                    # read the mirror only, as a scan here would deadlock.
+                    children = await self._mirror.get_children(file.parent_id)
+                    for child in children:
+                        if child.name == file.name:
+                            node_id = child.id
+                entry = await self._entry(destination)
+                observation = FilesystemScanner.observation(
+                    entry, node_id, file.parent_id, digest
+                )
+                media_info = file.media_info
+                if media_info is not None:
+                    observation = replace(
+                        observation,
+                        record=replace(
+                            observation.record,
+                            is_image=media_info.is_image,
+                            is_video=media_info.is_video,
+                            width=media_info.width,
+                            height=media_info.height,
+                        ),
                     )
-                    media_info = file.media_info
-                    if media_info is not None:
-                        observation = replace(
-                            observation,
-                            record=replace(
-                                observation.record,
-                                is_image=media_info.is_image,
-                                is_video=media_info.is_video,
-                                width=media_info.width,
-                                height=media_info.height,
-                            ),
-                        )
-                    record = await self._record(
-                        observation, read, folders=[file.parent_id]
-                    )
-                    file.published()
-                    return record
+                record = await self._record(
+                    observation, changes, folders=[file.parent_id]
+                )
+        if record is not None:
+            # Only now: a retry must still finish a record that did not land.
+            file.published()
+            return record
         existing = await self._mirrored_child(file.parent_id, file.name)
         if existing is None:
             raise UploadPermanentError(

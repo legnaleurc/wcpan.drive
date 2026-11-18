@@ -170,7 +170,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         self.operations = FilesystemOperations(
             scanner=self.scanner,
             mirror=self.mirror,
-            node_sync=self.node_sync,
+            scans=self.scans,
             paths=self.paths,
             store=self.store,
             blocking=blocking,
@@ -179,7 +179,7 @@ class ScanTestCase(IsolatedAsyncioTestCase):
         self.uploader = FilesystemUploader(
             scanner=self.scanner,
             mirror=self.mirror,
-            node_sync=self.node_sync,
+            scans=self.scans,
             blocking=blocking,
             media=self.media,
             read_only=self.read_only,

@@ -6,12 +6,13 @@ import hashlib
 import os
 import shutil
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from wcpan.drive.protocol.types import MediaInfo, NodeRecord
+from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 from wcpan.drive.server._services.operations import (
     OperationConflictError,
     OperationInvalidError,
@@ -739,3 +740,64 @@ class TestWritesWithWatcher(_WriteTestCase):
         self.assertEqual(root_names.count("fresh"), 1)
         self.assertEqual(await self.node_id("fresh"), created.id)
         self.assertEqual(await self.node_id("fresh/f.txt"), uploaded.id)
+
+
+class TestWriteOrdering(_WriteTestCase):
+    async def test_pass_waits_until_a_new_entry_is_recorded(self) -> None:
+        # given: the write that records the new folder cannot land yet
+        log: list[str] = []
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def held_write() -> None:
+            entered.set()
+            await release.wait()
+
+        await self.node_sync.enqueue(held_write)
+        await entered.wait()
+        folder_path = self.scanner._folder_path
+
+        async def logged_path(folder_id: NodeId) -> str | None:
+            log.append("pass")
+            return await folder_path(folder_id)
+
+        with patch.object(self.scanner, "_folder_path", logged_path):
+            creating = asyncio.create_task(self.operations.create_folder(DOCS, "fresh"))
+            async with asyncio.timeout(5):
+                while not (self.source / "fresh").exists():
+                    await asyncio.sleep(0.005)
+            log.clear()
+            scanning = asyncio.create_task(self.scan())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            # when
+            log.append("released")
+            release.set()
+            created, _ = await asyncio.gather(creating, scanning)
+        # then
+        self.assertEqual(log[0], "released")
+        self.assertEqual(await self.node_id("fresh"), created.id)
+
+    async def test_close_is_retried_when_the_record_never_landed(self) -> None:
+        # given
+        file = await self.uploader.open(
+            await self.node_id("b"), "new.bin", 0, mime_type=None, media_info=None
+        )
+        await file.write(0, b"data")
+        real = self.uploader._writing
+
+        @asynccontextmanager
+        async def lost_write() -> AsyncGenerator[Any]:
+            async with real() as changes:
+                yield changes
+                raise OSError("writes did not land")
+
+        with patch.object(self.uploader, "_writing", lost_write):
+            with self.assertRaises(OSError):
+                await file.close()
+        # when
+        record = await file.close()
+        # then
+        self.assertEqual(await self.node_id("b/new.bin"), record.id)
+        await file.abort()
+        self.assertEqual((self.source / "b/new.bin").read_bytes(), b"data")

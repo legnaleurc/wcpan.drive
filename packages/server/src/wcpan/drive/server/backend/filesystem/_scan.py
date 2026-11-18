@@ -16,8 +16,7 @@ object that is still in place gets its own node.
 import os
 import stat
 import time
-from collections.abc import AsyncGenerator, Iterable
-from contextlib import asynccontextmanager
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
@@ -257,15 +256,6 @@ class FilesystemScanner:
             return
         for path in removed:
             _L.info("Removed abandoned upload file %s", path)
-
-    @asynccontextmanager
-    async def exclusive(self) -> AsyncGenerator[None, None]:
-        """Hold off passes while a write changes the tree and records it.
-
-        Otherwise a pass could list the new entry first and give it another ID.
-        """
-        async with self._scans.observe(exclusive=True):
-            yield
 
     async def current(self, node_id: NodeId) -> tuple[Entry, Previous] | None:
         """*node_id* at its mirrored path, if that path still names the same object."""

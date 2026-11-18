@@ -236,7 +236,7 @@ class TestPassExclusion(ScanTestCase):
             return await folder_path(folder_id)
 
         async def write() -> None:
-            async with self.scanner.exclusive():
+            async with self.scans.observe(exclusive=True):
                 entered.set()
                 await release.wait()
 
