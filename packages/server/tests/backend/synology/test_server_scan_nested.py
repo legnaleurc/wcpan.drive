@@ -26,6 +26,7 @@ from wcpan.drive.server._services.off_main import OffMainService
 from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.synology._backfill import BackfillService
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
@@ -173,6 +174,7 @@ class TestNewFolders(DecoyTestCase):
             store=self.store,
             syno_paths=self.syno_paths,
             node_sync=self.node_sync,
+            scans=ScanRunner(mirror=self.mirror, node_sync=self.node_sync),
         )
 
         # when

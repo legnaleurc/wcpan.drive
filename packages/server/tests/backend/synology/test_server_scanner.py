@@ -5,8 +5,11 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest import IsolatedAsyncioTestCase
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server._backend import Mounts
 from wcpan.drive.server._lib.write_queue import (
     WriteQueue,
@@ -18,10 +21,15 @@ from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
 from wcpan.drive.server._services.off_main import OffMainService
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
-from wcpan.drive.server.backend.synology._scan import StartupScanService
+from wcpan.drive.server.backend.synology._scan import (
+    StartupScanService,
+    _Folder,
+    _MountPass,
+)
 from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
 from wcpan.synology.types import (
     SynologyClient,
@@ -84,6 +92,7 @@ class TestScannerWriteBack(DecoyTestCase):
                             ),
                         ),
                         node_sync=cs,
+                        scans=ScanRunner(mirror=mirror, node_sync=cs),
                     )
                     await svc.run_initial_scan()
             finally:
@@ -223,3 +232,59 @@ class TestScannerWriteBack(DecoyTestCase):
                 self.assertEqual(result, {"a": 300})
         finally:
             os.unlink(db_path)
+
+
+class TestMountPass(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.mirror: Any = MagicMock()
+        self.mirror.get_children = AsyncMock(return_value=[MagicMock()])
+        self.drive_api: Any = MagicMock()
+        self.drive_api.list_folder = AsyncMock(return_value=([], 1))
+        self.paths: Any = MagicMock()
+        self.paths.mounts = {"a": MagicMock(id=NodeId("_a"))}
+        self.paths.permanent_link = AsyncMock(return_value="link")
+        self.scan = _MountPass(
+            drive_api=self.drive_api,
+            mirror=self.mirror,
+            syno_paths=self.paths,
+            last_max_ids={"a": 100},
+        )
+
+    def old_folder(self, *, force: bool = False) -> _Folder:
+        return _Folder(NodeId("d"), "a", max_id=50, force=force)
+
+    async def test_unchanged_folder_is_skipped(self) -> None:
+        # when, then
+        self.assertTrue(await self.scan.skip(self.old_folder()))
+
+    async def test_failed_count_check_still_skips(self) -> None:
+        # given
+        self.drive_api.list_folder.side_effect = OSError("NAS unavailable")
+        # when, then
+        self.assertTrue(await self.scan.skip(self.old_folder()))
+
+    async def test_new_folder_is_entered_whatever_its_max_id(self) -> None:
+        # when
+        skipped = await self.scan.skip(self.old_folder(force=True))
+        # then
+        self.assertFalse(skipped)
+        self.drive_api.list_folder.assert_not_awaited()
+
+    async def test_checkpoint_is_the_watermark_read_before_the_scan(self) -> None:
+        # given: the mount reports a watermark below a later change
+        item = {"type": "file", "sync_id": 200, "max_id": 150}
+        observation = MagicMock()
+        observation.record.id = NodeId("f")
+        self.paths.list_children = AsyncMock(return_value=[item])
+        self.paths.convert = AsyncMock(return_value=[(item, observation)])
+        root = _Folder(NodeId("_a"), "a", is_mount=True)
+        # when
+        await self.scan.list_folder(root)
+        await self.scan.root_finished(root, True)
+        # then
+        self.assertEqual(self.scan.pre_scan_max_ids["a"], 150)
+        self.assertEqual(self.scan.per_mount_highest["a"], 200)
+
+    def test_mounts_are_scanned_one_at_a_time(self) -> None:
+        # when, then
+        self.assertFalse(self.scan.concurrent_roots)

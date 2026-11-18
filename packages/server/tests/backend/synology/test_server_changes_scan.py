@@ -24,6 +24,7 @@ from wcpan.drive.server._services.off_main import OffMainService
 from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
+from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import (
     NodeObservation,
@@ -206,6 +207,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         await svc._scan_all_mounts({"a": 50, "b": 50})
@@ -299,6 +301,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         await svc._scan_all_mounts({"a": 100})
@@ -383,6 +386,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         await svc._scan_all_mounts({"a": 0})
@@ -467,6 +471,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         await svc._scan_all_mounts({"a": 100})
@@ -553,6 +558,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         await svc._scan_all_mounts({"a": 100})
@@ -643,6 +649,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         await svc._scan_all_mounts({"a": 50})
@@ -760,6 +767,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         await svc._scan_all_mounts({"a": 100})
@@ -840,6 +848,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         result = await svc._scan_all_mounts({"a": 100, "b": 100})
@@ -937,6 +946,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         per_mount_highest, pre_scan = await svc._scan_all_mounts(
@@ -1039,6 +1049,7 @@ class TestDeferredScan(DecoyTestCase):
                                 ),
                             ),
                             node_sync=cs,
+                            scans=ScanRunner(mirror=mirror, node_sync=cs),
                         )
                         # when
                         await svc._scan_all_mounts({"a": 100, "b": 50})

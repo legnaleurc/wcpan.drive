@@ -203,8 +203,9 @@ backend starts the consumer itself with `hints.run(handler)` and waits with `hin
 Not yet built: read-only scans, the core-owned lifecycle, the
 narrowed `core.enrichment` surface, and `core.reconcile`. The filesystem backend's scans run
 through `core.scans`, its writes through `core.observe`, and its change events through
-`core.hints`. Synology webhooks also run on `core.hints`. The filesystem's startup and media
-retries, and Synology's scans, writes, and webhook facts, still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
+`core.hints`. Synology's startup scan runs through `core.scans` and its webhooks through
+`core.hints`. The filesystem's startup and media retries, and Synology's API writes, webhook
+facts, and backfill, still use `NodeSyncService`, `MirrorStore`, and `reconcile_session` directly.
 
 ### Goal
 
@@ -458,8 +459,9 @@ enrichment is submitted and not awaited. A failed listing raises.
 
 `list_folder` installs any watch before its first source read. Synology sets
 `concurrent_roots = False`, keeps per-mount state keyed by root, handles the mount level in
-`list_folder`, and keeps the watermark read before the scan as its checkpoint. Its
-`pass_finished` calls `retry_failures` during startup. The filesystem's `pass_finished`
+`list_folder`, and keeps the watermark read before the scan as its checkpoint. It runs one
+pass, at startup, so it records results in `root_finished` and, once the pass returns, retries
+failed media and then queues the checkpoints. The filesystem's `pass_finished`
 prunes failure records after a full pass, using the pass start as the cutoff.
 
 The filesystem's hourly rescan, media retry rescans, and name-conflict lookup call

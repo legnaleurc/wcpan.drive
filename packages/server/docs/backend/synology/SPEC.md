@@ -27,8 +27,8 @@ public IDs.
 
 `sync_id`, `max_id`, watermarks, and count checks stay inside this backend.
 
-- The startup scan is an incremental breadth-first pass in one
-  `ReconcileSession` over all mounts. A folder whose `max_id` is not above the
+- The startup scan is an incremental breadth-first pass through the core's scan
+  runner, in one `ReconcileSession` over all mounts, one mount at a time. A folder whose `max_id` is not above the
   mount's checkpoint is skipped (its subtree preserved), unless the mirror has no
   children for it or the NAS reports a different child count. A count is only a
   reason to enter a folder; a matching count is not proof that nothing changed.

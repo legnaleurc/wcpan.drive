@@ -299,6 +299,7 @@ class SynologyBackend:
                     store=store,
                     syno_paths=c.syno_paths,
                     node_sync=core.node_sync,
+                    scans=core.scans,
                 ),
                 webhook_service=WebhookService(
                     drive_api=c.drive_api,
