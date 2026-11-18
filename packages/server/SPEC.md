@@ -203,8 +203,8 @@ This section is the target design for the backend API. Implemented so far:
 `Listing`, `CoreServices.hints` with `ChangeHandler`, `CoreServices.enrichment`,
 `CoreServices.enqueue_write`, and the core-owned lifecycle (`BackendRuntime`,
 `BackendLifecycle`), and `CoreServices.reconcile` with `ReconcilePass`. Both built-in backends
-use only these. `MirrorStore` and `NodeSyncService` are no longer public, and
-`tests/test_backend_boundary.py` keeps backends off `CoreServices.node_sync`.
+use only these. `MirrorStore` and `NodeSyncService` are not public, and `CoreServices` does not
+expose its sync service.
 
 ### Goal
 
@@ -331,8 +331,8 @@ await core.writes_landed()      # every write queued so far has landed
 await core.bind_schema(schema)
 ```
 
-`NodeSyncService` and `MirrorStore` are not public. `CoreServices.node_sync` remains for the
-core's own use.
+`NodeSyncService` and `MirrorStore` are not public. The core passes its sync service to
+`CoreServices` when it creates one, and the service is not an attribute backends can reach.
 
 #### Producing facts
 
@@ -821,9 +821,8 @@ A backend is an async context manager factory named by its import path
   services (mirror reads, ID map, media probing, and the framework services), a route
   registry, and the command's `access` (`None` while serving; `offline` is
   true otherwise). The core services are `CoreServices`, or
-  `ReadCoreServices` for a read-only command: the same field names typed as
-  their read sides (`MirrorReader`, `NodeOrdering`), so code that does not
-  narrow can only read. Work that writes narrows with `writing(core)`, which
+  `ReadCoreServices` for a read-only command, which offers only reads and dry
+  runs, so code that does not narrow can only read. Work that writes narrows with `writing(core)`, which
   fails for a read-only command. Schemas are bound through
   `core.bind_schema`, which registers when writing and only checks when
   reading.

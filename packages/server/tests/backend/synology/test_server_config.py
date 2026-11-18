@@ -106,20 +106,28 @@ class TestSettings(DecoyTestCase):
             )
 
 
-def _context(
-    *, offline: bool, decoy: Decoy, mounts: dict[str, str] | None = None
-) -> BackendContext:
-    node_sync: Any = MagicMock()
+def _sync() -> Any:
+    node_sync = MagicMock()
     node_sync.register_schema = AsyncMock(return_value=MagicMock())
     node_sync.enrichment_scope = MagicMock(side_effect=lambda: _no_retries())
     node_sync.retrying = MagicMock(side_effect=lambda _: _no_retries())
+    return node_sync
+
+
+def _context(
+    *,
+    offline: bool,
+    decoy: Decoy,
+    mounts: dict[str, str] | None = None,
+    node_sync: Any = None,
+) -> BackendContext:
     return BackendContext(
         name="nas",
         mounts=make_mounts(mounts or {"p": "/volume1/p"}),
         core=CoreServices(
             media=MediaProbing(runner=ProbeRunner()),
             mirror=decoy.mock(cls=MirrorReader),
-            node_sync=node_sync,
+            node_sync=node_sync or _sync(),
             ids=IdentityIds(),
         ),
         routes=BackendRoutes(name="nas"),
@@ -180,13 +188,14 @@ class TestFactory(DecoyTestCase):
 
     async def test_offline_instance_does_not_connect(self):
         # given
-        context = _context(offline=True, decoy=self.decoy)
+        node_sync = _sync()
+        context = _context(offline=True, decoy=self.decoy, node_sync=node_sync)
         with patch(f"{_BACKEND}.create_synology_client", _no_connection):
             # when
             async with create_backend(context, **_settings()):
                 pass
         # then
-        cast(Any, context.core.node_sync).register_schema.assert_awaited_once()
+        node_sync.register_schema.assert_awaited_once()
 
     async def test_backfill_connects_and_reconciles_this_instance(self):
         # given

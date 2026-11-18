@@ -482,9 +482,8 @@ class TestDeferredScan(DecoyTestCase):
             await fixture.settled()
 
             # then
-            per_mount_highest, _ = result
-            self.assertEqual(per_mount_highest["a"], 100)
-            self.assertEqual(per_mount_highest["b"], 200)
+            self.assertEqual(result["a"], 100)
+            self.assertEqual(result["b"], 200)
 
     async def test_failed_subfolder_does_not_advance_its_max_id(self) -> None:
         """A failed listing below a mount keeps that mount's checkpoint.
@@ -526,14 +525,11 @@ class TestDeferredScan(DecoyTestCase):
                 )
                 svc = fixture.service(self.decoy.mock(cls=SynologyClient))
                 # when
-                per_mount_highest, pre_scan = await svc._scan_all_mounts(
-                    {"a": 100, "b": 100}
-                )
+                pre_scan = await svc._scan_all_mounts({"a": 100, "b": 100})
             await fixture.settled()
 
             # then
             self.assertEqual(pre_scan["a"], 100)
-            self.assertEqual(per_mount_highest["a"], 100)
             self.assertEqual(pre_scan["b"], 200)
             self.assertIsNotNone(await mirror.get_node_by_id("childC"))
 

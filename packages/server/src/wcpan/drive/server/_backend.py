@@ -24,7 +24,7 @@ import asyncio
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from enum import Enum
 from importlib import import_module
 from typing import Any, Concatenate, Protocol, cast
@@ -66,9 +66,9 @@ def backend_route(backend: str, path: str) -> str:
 class CoreServices:
     """Server services a backend instance builds on.
 
-    ``node_sync`` tags every observation with the instance name. ``ids`` maps
-    the instance's native IDs to the public node IDs it uses with the core.
-    ``media`` probes the instance's files through the source it registers while
+    ``ids`` maps the instance's native IDs to the public node IDs it uses with
+    the core. ``media`` probes the instance's files through the source it
+    registers while
     connected, and probes upload spools. ``scans`` runs the instance's scan
     passes, ``observe`` is the scope for writing what a source read found, and
     ``hints`` queues the instance's raw change events. ``enrichment`` waits for
@@ -76,18 +76,20 @@ class CoreServices:
     """
 
     mirror: MirrorReader
-    node_sync: NodeSyncService
+    node_sync: InitVar[NodeSyncService]
     ids: NodeIdMap
     media: MediaProbing
+    _node_sync: NodeSyncService = field(init=False, repr=False, compare=False)
     scans: ScanRunner = field(init=False, repr=False, compare=False)
     hints: HintStage = field(init=False, repr=False, compare=False)
     enrichment: Enrichment = field(init=False, repr=False, compare=False)
 
-    def __post_init__(self) -> None:
-        scans = ScanRunner(mirror=self.mirror, node_sync=self.node_sync)
+    def __post_init__(self, node_sync: NodeSyncService) -> None:
+        scans = ScanRunner(mirror=self.mirror, node_sync=node_sync)
+        object.__setattr__(self, "_node_sync", node_sync)
         object.__setattr__(self, "scans", scans)
         object.__setattr__(self, "hints", HintStage())
-        object.__setattr__(self, "enrichment", Enrichment(self.node_sync))
+        object.__setattr__(self, "enrichment", Enrichment(node_sync))
 
     def observe(
         self, *, exclusive: bool = False
@@ -102,7 +104,7 @@ class CoreServices:
         return reconcile_pass(
             scope,
             mirror=self.mirror,
-            node_sync=self.node_sync,
+            node_sync=self._node_sync,
             locate=locate,
             dry_run=dry_run,
         )
@@ -119,7 +121,7 @@ class CoreServices:
         For backend state such as checkpoints. *fn* runs only SQL, on the core's
         connection, and must not commit or roll back.
         """
-        await self.node_sync.enqueue_sql(fn, *args, **kwargs)
+        await self._node_sync.enqueue_sql(fn, *args, **kwargs)
 
     async def writes_landed(self) -> None:
         """Wait for every write queued so far.
@@ -127,11 +129,11 @@ class CoreServices:
         Raises:
             WriterStoppedError: The write worker ended first.
         """
-        await self.node_sync.barrier()
+        await self._node_sync.barrier()
 
     async def bind_schema(self, schema: BackendSchema) -> BackendNamespace:
         """Register the instance with *schema* (tables, orphan cleanup)."""
-        return await self.node_sync.register_schema(schema)
+        return await self._node_sync.register_schema(schema)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -139,16 +141,20 @@ class ReadCoreServices:
     """What a read-only maintenance command gets instead of ``CoreServices``.
 
     Field names match ``CoreServices``, so code that does not narrow
-    ``BackendContext.core`` can use only what both offer: reads, read
-    ordering, ID lookups that persist nothing, and media sources that cannot
-    probe.
+    ``BackendContext.core`` can use only what both offer: reads, dry-run
+    reconciliation, ID lookups that persist nothing, and media sources that
+    cannot probe.
     """
 
     mirror: MirrorReader
-    node_sync: NodeOrdering
+    node_sync: InitVar[NodeOrdering]
     ids: NodeIdMap
     media: MediaProbing
     schemas: Callable[[BackendSchema], Awaitable[BackendNamespace]]
+    _ordering: NodeOrdering = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self, node_sync: NodeOrdering) -> None:
+        object.__setattr__(self, "_ordering", node_sync)
 
     def reconcile(
         self, scope: set[NodeId], *, locate: Locate, dry_run: bool = True
@@ -157,7 +163,7 @@ class ReadCoreServices:
         return reconcile_pass(
             scope,
             mirror=self.mirror,
-            node_sync=self.node_sync,
+            node_sync=self._ordering,
             locate=locate,
             dry_run=dry_run,
         )
@@ -322,7 +328,7 @@ class BackendLifecycle:
         self._scanned.set()
         if self._runtime.change_handler() is not None:
             await self._core.hints.join()
-        await self._core.node_sync.wait_enrichment_drained()
+        await self._core.enrichment.drain()
 
     async def run(self) -> None:
         await self._scanned.wait()

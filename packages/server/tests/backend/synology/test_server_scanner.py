@@ -17,7 +17,11 @@ from wcpan.drive.server.backend.synology._scan import (
     _Folder,
     _MountPass,
 )
-from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.backend.synology._store import (
+    SYNOLOGY_SCHEMA,
+    SynologyStore,
+    SynologyStoreReader,
+)
 from wcpan.drive.server.testing import BackendInstance, backend_harness
 from wcpan.synology.types import (
     SynologyClient,
@@ -33,11 +37,8 @@ class TestScannerWriteBack(DecoyTestCase):
         instance: BackendInstance,
         mirror: Any,
         mounts: dict[str, SynologyPath],
-        scan_result: dict[str, int],
-        pre_scan_result: dict[str, int] | None = None,
+        checkpoints: dict[str, int],
     ) -> None:
-        if pre_scan_result is None:
-            pre_scan_result = scan_result
         core = instance.core
         store = SynologyStore(
             mirror=mirror, ns=instance.namespace, write=core.enqueue_write
@@ -45,7 +46,7 @@ class TestScannerWriteBack(DecoyTestCase):
         with patch.object(
             StartupScanService,
             "_scan_all_mounts",
-            new=AsyncMock(return_value=(scan_result, pre_scan_result)),
+            new=AsyncMock(return_value=checkpoints),
         ):
             svc = StartupScanService(
                 drive_api=MagicMock(),
@@ -76,7 +77,7 @@ class TestScannerWriteBack(DecoyTestCase):
             await self._run_initial_sync(instance, mirror, mounts, {"a": 500, "b": 300})
 
             # then
-            result = await SynologyStore(
+            result = await SynologyStoreReader(
                 mirror=mirror, ns=mirror.namespace("synology")
             ).get_mount_max_ids(mounts)
             self.assertEqual(result, {"a": 500, "b": 300})
@@ -106,7 +107,7 @@ class TestScannerWriteBack(DecoyTestCase):
             await self._run_initial_sync(instance, mirror, mounts, {"a": 200, "b": 150})
 
             # then
-            result = await SynologyStore(
+            result = await SynologyStoreReader(
                 mirror=mirror, ns=mirror.namespace("synology")
             ).get_mount_max_ids(mounts)
             self.assertEqual(result, {"a": 200, "b": 150})
@@ -136,16 +137,16 @@ class TestScannerWriteBack(DecoyTestCase):
             await self._run_initial_sync(instance, mirror, mounts, {"a": 100, "b": 80})
 
             # then
-            result = await SynologyStore(
+            result = await SynologyStoreReader(
                 mirror=mirror, ns=mirror.namespace("synology")
             ).get_mount_max_ids(mounts)
             self.assertEqual(result, {"a": 100, "b": 80})
 
     async def test_initial_sync_uses_pre_scan_checkpoint(self) -> None:
-        """Initial sync saves the pre-scan checkpoint, not per_mount_highest.
+        """Initial sync saves the watermark the scan returned.
 
         Changes that occur in already-visited folders mid-BFS get sync_ids
-        lower than per_mount_highest but higher than pre_scan_max_id.  Saving
+        lower than the highest sync_id seen but higher than pre_scan_max_id.  Saving
         the checkpoint lets the first incremental scan cover that window.
         """
         # given
@@ -157,20 +158,17 @@ class TestScannerWriteBack(DecoyTestCase):
             )
 
             # when
-            # per_mount_highest=500 (saw a late folder), pre_scan=300 (snapshot
-            # taken before BFS started); the DB must record 300 so that the
-            # incremental scan re-covers sync_ids 301-500 and catches any
-            # mid-BFS changes in already-visited folders.
+            # The watermark read before traversal; the next scan re-covers
+            # anything that changed in folders already visited.
             await self._run_initial_sync(
                 instance,
                 mirror,
                 mounts,
-                scan_result={"a": 500},
-                pre_scan_result={"a": 300},
+                {"a": 300},
             )
 
             # then
-            result = await SynologyStore(
+            result = await SynologyStoreReader(
                 mirror=mirror, ns=mirror.namespace("synology")
             ).get_mount_max_ids(mounts)
             self.assertEqual(result, {"a": 300})
@@ -225,7 +223,6 @@ class TestMountPass(IsolatedAsyncioTestCase):
         await self.scan.root_finished(root, True)
         # then
         self.assertEqual(self.scan.pre_scan_max_ids["a"], 150)
-        self.assertEqual(self.scan.per_mount_highest["a"], 200)
 
     async def test_only_nodes_changed_since_the_checkpoint_are_written(self) -> None:
         # given: both are mirrored, and one changed after the checkpoint
@@ -282,7 +279,7 @@ class TestStartupOrder(IsolatedAsyncioTestCase):
         with patch.object(
             service,
             "_scan_all_mounts",
-            new=AsyncMock(return_value=({"a": 20}, {"a": 20})),
+            new=AsyncMock(return_value={"a": 20}),
         ):
             await service.run_initial_scan()
         # then

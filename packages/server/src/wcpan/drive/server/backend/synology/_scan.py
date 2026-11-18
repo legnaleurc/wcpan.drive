@@ -58,12 +58,10 @@ class _MountPass(Scanner[_Folder]):
         self._mirror = mirror
         self._syno_paths = syno_paths
         self._last_max_ids = last_max_ids
-        self._highest: dict[str, int] = {}
         self._watermarks: dict[str, int] = {}
-        self.per_mount_highest = {
+        self.pre_scan_max_ids = {
             name: last_max_ids.get(name, 0) for name in syno_paths.mounts
         }
-        self.pre_scan_max_ids = dict(self.per_mount_highest)
 
     def _last(self, mount: str) -> int:
         return self._last_max_ids.get(mount, 0)
@@ -134,12 +132,6 @@ class _MountPass(Scanner[_Folder]):
                 (item.get("max_id", item.get("sync_id", 0)) for item in items),
                 default=last,
             )
-        self._highest[mount] = max(
-            [
-                self._highest.get(mount, last),
-                *(item.get("sync_id", 0) for item in items),
-            ]
-        )
 
         changed: list[NodeObservation] = []
         subfolders: list[_Folder] = []
@@ -171,7 +163,6 @@ class _MountPass(Scanner[_Folder]):
             )
             return
         last = self._last(root.mount)
-        self.per_mount_highest[root.mount] = self._highest.get(root.mount, last)
         self.pre_scan_max_ids[root.mount] = self._watermarks.get(root.mount, last)
 
 
@@ -198,11 +189,11 @@ class StartupScanService:
     async def _scan_all_mounts(
         self,
         last_max_ids: dict[str, int],
-    ) -> tuple[dict[str, int], dict[str, int]]:
+    ) -> dict[str, int]:
         """Incremental sync_id scan across all mounts, then confirmed removals.
 
         Pass ``last_max_ids`` with zero values for a full initial scan. Returns
-        each mount's highest ``sync_id`` seen and its pre-scan watermark.
+        each mount's pre-scan watermark, or its old checkpoint if not covered.
         """
         scan = _MountPass(
             drive_api=self._drive_api,
@@ -211,7 +202,7 @@ class StartupScanService:
             last_max_ids=last_max_ids,
         )
         await self._scans.run(scan)
-        return scan.per_mount_highest, scan.pre_scan_max_ids
+        return scan.pre_scan_max_ids
 
     async def _locate_failed(self, source_key: str) -> NodeObservation | None:
         """The file whose media probe failed, by its permanent link."""
@@ -233,7 +224,7 @@ class StartupScanService:
         else:
             _L.info("Resuming with per-mount max_ids: %s", last_max_ids)
 
-        _, pre_scan_max_ids = await self._scan_all_mounts(last_max_ids)
+        pre_scan_max_ids = await self._scan_all_mounts(last_max_ids)
         await self._enrichment.retry_failures(self._locate_failed)
         for name, checkpoint in pre_scan_max_ids.items():
             if checkpoint > last_max_ids.get(name, 0):
@@ -242,7 +233,7 @@ class StartupScanService:
                 )
         _L.info("Scan complete; pre-scan checkpoints: %s", pre_scan_max_ids)
 
-    async def run_until_ready(self) -> None:
+    async def run(self) -> None:
         """Run the startup scan, and wait for everything it queued."""
         await self.run_initial_scan()
         await self._enrichment.drain()

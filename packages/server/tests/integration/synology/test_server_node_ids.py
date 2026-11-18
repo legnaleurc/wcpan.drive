@@ -31,7 +31,11 @@ from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._operations import SynologyNodeOperations
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
-from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.backend.synology._store import (
+    SYNOLOGY_SCHEMA,
+    SynologyStore,
+    SynologyStoreReader,
+)
 from wcpan.drive.server.backend.synology._webhook import WebhookService
 from wcpan.drive.server.types import HintStage
 from wcpan.synology.types import (
@@ -92,7 +96,7 @@ class _Instance:
         ns = mirror.namespace(name)
         self.name = name
         self.mount = mount_id(mount)
-        self.store = SynologyStore(mirror=mirror, ns=ns)
+        self.store = SynologyStoreReader(mirror=mirror, ns=ns)
         self.ids = NodeIds(mirror=mirror, write_queue=write_queue, key=ns.key)
         self.paths = SynologyPathService(
             registry=MountRegistry(

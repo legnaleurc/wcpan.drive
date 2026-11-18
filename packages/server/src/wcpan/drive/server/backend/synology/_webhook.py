@@ -23,7 +23,7 @@ from ._convert import SynologyLocator
 from ._lookup import find_file
 from ._mounts import MountRegistry
 from ._paths import SynologyPathService
-from ._store import SynologyStore
+from ._store import SynologyStoreReader
 
 
 _L = getLogger(__name__)
@@ -79,7 +79,7 @@ class WebhookService(ChangeHandler[SynologyWebhookEvent]):
         *,
         drive_api: SynologyClient,
         mirror: MirrorReader,
-        store: SynologyStore,
+        store: SynologyStoreReader,
         scans: ScanRunner,
         syno_paths: SynologyPathService,
         mount_registry: MountRegistry,

@@ -16,7 +16,11 @@ from wcpan.drive.server._services.mirror.store import (
 from wcpan.drive.server._services.off_main import OffMainService
 from wcpan.drive.server._types import NodeObservation
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
-from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.backend.synology._store import (
+    SYNOLOGY_SCHEMA,
+    SynologyStore,
+    SynologyStoreReader,
+)
 
 from ...backend.synology._lib import ROOT_ID, mount_id
 
@@ -63,7 +67,7 @@ class TestLocatorPersistence(IsolatedAsyncioTestCase):
             schemas={"synology": SYNOLOGY_SCHEMA},
         )
         await self.mirror.ensure_schema()
-        self.store = SynologyStore(
+        self.store = SynologyStoreReader(
             mirror=self.mirror, ns=self.mirror.namespace("synology")
         )
         await self.mirror.bulk_upsert_nodes(

@@ -103,15 +103,13 @@ class SynologyStore(SynologyStoreReader):
         *,
         mirror: MirrorReader,
         ns: BackendNamespace,
-        write: StateWrite | None = None,
+        write: StateWrite,
     ) -> None:
-        """*write* runs one SQL function as a transaction; reads work without it."""
+        """*write* runs one SQL function as a transaction."""
         super().__init__(mirror=mirror, ns=ns)
         self._write = write
 
     async def set_mount_state(self, name: str, path: str, value: int) -> None:
-        if self._write is None:
-            raise RuntimeError("this store is read-only")
         await self._write(_set_mount_state, self._ns, name, path, value)
 
 

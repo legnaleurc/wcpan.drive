@@ -112,9 +112,9 @@ class FilesystemStore:
         *,
         mirror: MirrorReader,
         ns: BackendNamespace,
-        write: StateWrite | None = None,
+        write: StateWrite,
     ) -> None:
-        """*write* runs one SQL function as a transaction; reads work without it."""
+        """*write* runs one SQL function as a transaction."""
         self._mirror = mirror
         self._write = write
         self._ns = ns
@@ -130,8 +130,6 @@ class FilesystemStore:
         return await self._mirror.read(_get_mount_fsid, self._ns, name, path)
 
     async def set_mount_fsid(self, name: str, path: str, fsid: str) -> None:
-        if self._write is None:
-            raise RuntimeError("this store is read-only")
         await self._write(_set_mount_fsid, self._ns, name, path, fsid)
 
 

@@ -45,7 +45,11 @@ from wcpan.drive.server.backend.synology._backfill import BackfillService
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
-from wcpan.drive.server.backend.synology._store import SYNOLOGY_SCHEMA, SynologyStore
+from wcpan.drive.server.backend.synology._store import (
+    SYNOLOGY_SCHEMA,
+    SynologyStore,
+    SynologyStoreReader,
+)
 from wcpan.synology.exceptions import (
     SynologyApiError,
     SynologyDirectoryNotFoundError,
@@ -323,14 +327,14 @@ class TestBackfillOrdering(_RaceTestCase):
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
             registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
-            store=SynologyStore(
+            store=SynologyStoreReader(
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
         )
         backfill = BackfillService(
             drive_api=object(),  # type: ignore[arg-type]
             mirror=self.mirror,
-            store=SynologyStore(
+            store=SynologyStoreReader(
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
@@ -415,7 +419,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         self.syno_paths = SynologyPathService(
             ids=IdentityIds(),
             registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
-            store=SynologyStore(
+            store=SynologyStoreReader(
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
         )
@@ -540,7 +544,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
             registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
-            store=SynologyStore(
+            store=SynologyStoreReader(
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
         )
@@ -552,7 +556,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         backfill = BackfillService(
             drive_api=drive_api,
             mirror=self.mirror,
-            store=SynologyStore(
+            store=SynologyStoreReader(
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,

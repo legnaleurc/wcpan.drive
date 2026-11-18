@@ -851,7 +851,7 @@ class _Scan:
     def __init__(self) -> None:
         self.release = asyncio.Event()
 
-    async def run_until_ready(self) -> None:
+    async def run(self) -> None:
         await self.release.wait()
 
 

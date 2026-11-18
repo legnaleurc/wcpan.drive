@@ -89,12 +89,12 @@ async def _reconcile_with_worker(
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
             registry=MountRegistry(mounts=make_mounts(mounts), root_ids={}),
-            store=SynologyStore(mirror=mirror, ns=mirror.namespace("synology")),
+            store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
         )
         bf = BackfillService(
             drive_api=drive_api,
             mirror=mirror,
-            store=SynologyStore(mirror=mirror, ns=mirror.namespace("synology")),
+            store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
             syno_paths=syno_paths,
             reconcile=partial(reconcile_pass, mirror=mirror, node_sync=cs),
         )

@@ -154,7 +154,7 @@ class SynologyBackend:
         return self._require_serving().files
 
     async def startup_scan(self) -> None:
-        await self._require_serving().startup_scan.run_until_ready()
+        await self._require_serving().startup_scan.run()
 
     def change_handler(self) -> WebhookService:
         return self._require_serving().webhook_service
