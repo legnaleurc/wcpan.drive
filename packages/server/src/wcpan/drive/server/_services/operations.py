@@ -56,7 +56,7 @@ type Locate = Callable[[NodeId], Awaitable[NodeObservation | None]]
 class NodeOperations(Protocol):
     """Mutate and read backend nodes, keeping the mirror in step.
 
-    Implementations order their mirror writes through ``NodeSyncService`` and
+    Implementations record their changes through ``CoreServices.observe`` and
     translate backend errors into the exceptions above.
     """
 

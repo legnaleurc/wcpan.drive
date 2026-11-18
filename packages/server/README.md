@@ -13,7 +13,8 @@ Included backends:
 - [Synology Drive](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/server/docs/backend/synology/README.md)
 - [Local directories](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/server/docs/backend/filesystem/README.md)
 
-A third-party backend is a separate package, loaded the same way.
+A third-party backend is a separate package, loaded the same way. See
+[Writing a storage backend](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/server/docs/writing-a-backend.md).
 
 Clients connect with
 [`wcpan-drive-client-feed`](https://github.com/legnaleurc/wcpan.drive/blob/master/packages/client-feed/README.md).

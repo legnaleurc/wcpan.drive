@@ -196,6 +196,8 @@ not modeled as a Synology scan with renamed fields.
 
 ## Backend framework
 
+A guide for backend authors is in `docs/writing-a-backend.md`.
+
 This section is the target design for the backend API. Implemented so far:
 `CoreServices.observe` with `Changes`, `CoreServices.scans` with `Scanner`, `ScanPlan`, and
 `Listing`, `CoreServices.hints` with `ChangeHandler`, `CoreServices.enrichment`,
