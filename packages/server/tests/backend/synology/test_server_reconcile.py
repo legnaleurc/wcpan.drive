@@ -8,9 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path, PurePosixPath
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from decoy import matchers
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
@@ -35,9 +36,9 @@ from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
 from wcpan.drive.server._services.sync.ordering import ReadOrdering
-from wcpan.drive.server._services.sync.reconcile import ReconcileSession
+from wcpan.drive.server._services.sync.reconcile import reconcile_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
-from wcpan.drive.server._types import NodeObservation
+from wcpan.drive.server._types import NodeObservation, ReadSeq
 from wcpan.drive.server.backend.synology._backfill import BackfillService
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
@@ -89,7 +90,7 @@ async def _reconcile_with_worker(
             mirror=mirror,
             store=SynologyStore(mirror=mirror, ns=mirror.namespace("synology")),
             syno_paths=syno_paths,
-            node_sync=cs,
+            reconcile=partial(reconcile_pass, mirror=mirror, node_sync=cs),
         )
         write_task = asyncio.create_task(write_worker(q))
         meta_task = asyncio.create_task(metadata_worker(mq, cs.process_metadata_item))
@@ -687,7 +688,7 @@ class TestReadOnlyDryRun(DecoyTestCase):
             mirror=mirror,
             store=store,
             syno_paths=syno_paths,
-            node_sync=ReadOrdering(),
+            reconcile=partial(reconcile_pass, mirror=mirror, node_sync=ReadOrdering()),
         )
         listings = {
             "dir-1": [
@@ -716,16 +717,30 @@ class TestReadOnlyDryRun(DecoyTestCase):
         self.assertEqual(after, before)
 
     async def test_a_real_run_needs_a_writer(self) -> None:
-        # given
-        backfill = BackfillService(
-            drive_api=self.decoy.mock(cls=SynologyClient),
-            mirror=self.decoy.mock(cls=MirrorStore),
-            store=self.decoy.mock(cls=SynologyStore),
-            syno_paths=self.decoy.mock(cls=SynologyPathService),
-            node_sync=ReadOrdering(),
-        )
         # when / then
         with self.assertRaisesRegex(RuntimeError, "only a dry run"):
-            await backfill._reconcile_in_session(
-                [], session=self.decoy.mock(cls=ReconcileSession), dry_run=False
-            )
+            async with reconcile_pass(
+                set(),
+                mirror=self.decoy.mock(cls=MirrorStore),
+                node_sync=ReadOrdering(),
+                locate=AsyncMock(),
+            ):
+                pass
+
+    async def test_a_dry_run_cannot_write_even_with_a_writer(self) -> None:
+        # given
+        node_sync = self.decoy.mock(cls=NodeSyncService)
+        self.decoy.when(node_sync.observe()).then_enter_with(ReadSeq(1))
+        # when
+        async with reconcile_pass(
+            set(),
+            mirror=self.decoy.mock(cls=MirrorStore),
+            node_sync=node_sync,
+            locate=AsyncMock(),
+            dry_run=True,
+        ) as session:
+            async with session.listing() as writes:
+                # then
+                self.assertIsNone(writes)
+            with self.assertRaisesRegex(RuntimeError, "dry run"):
+                await session.commit_removals()

@@ -32,6 +32,7 @@ from typing import Any, Concatenate, Protocol, cast
 from aiohttp import web
 from aiohttp.typedefs import Handler
 from wcpan.drive.plugin import check_settings
+from wcpan.drive.protocol.types import NodeId
 
 from ._services.ids import NodeIdMap
 from ._services.media.probing import MediaProbing
@@ -43,10 +44,11 @@ from ._services.mirror.store import MirrorReader
 from ._services.mounts import Mount as Mount
 from ._services.mounts import Mounts
 from ._services.off_main import OffMainService
-from ._services.operations import NodeOperations
+from ._services.operations import Locate, NodeOperations
 from ._services.sync.enrichment import Enrichment
 from ._services.sync.hints import ChangeHandler, HintStage
 from ._services.sync.ordering import NodeOrdering
+from ._services.sync.reconcile import ReconcilePass, reconcile_pass
 from ._services.sync.scan import Changes, ScanRunner
 from ._services.sync.service import NodeSyncService
 from ._services.upload.service import FileOpener, Uploader
@@ -95,6 +97,18 @@ class CoreServices:
         """Number a source read; see ``ScanRunner.observe``."""
         return self.scans.observe(exclusive=exclusive)
 
+    def reconcile(
+        self, scope: set[NodeId], *, locate: Locate, dry_run: bool = False
+    ) -> AbstractAsyncContextManager[ReconcilePass]:
+        """Open a backend-driven comparison of *scope*; see ``reconcile_pass``."""
+        return reconcile_pass(
+            scope,
+            mirror=self.mirror,
+            node_sync=self.node_sync,
+            locate=locate,
+            dry_run=dry_run,
+        )
+
     async def enqueue_write[**A](
         self,
         fn: Callable[Concatenate[sqlite3.Connection, A], object],
@@ -138,6 +152,18 @@ class ReadCoreServices:
     ids: NodeIdMap
     media: MediaProbing
     schemas: Callable[[BackendSchema], Awaitable[BackendNamespace]]
+
+    def reconcile(
+        self, scope: set[NodeId], *, locate: Locate, dry_run: bool = True
+    ) -> AbstractAsyncContextManager[ReconcilePass]:
+        """Open a comparison of *scope*, which here can only be a dry run."""
+        return reconcile_pass(
+            scope,
+            mirror=self.mirror,
+            node_sync=self.node_sync,
+            locate=locate,
+            dry_run=dry_run,
+        )
 
     async def bind_schema(self, schema: BackendSchema) -> BackendNamespace:
         """Check the instance's tables against *schema*, changing nothing."""

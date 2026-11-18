@@ -9,9 +9,9 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from logging import getLogger
 
-from wcpan.drive.protocol.types import NodeId
+from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from ..._types import ReadSeq
+from ..._types import NodeObservation, ReadSeq
 from ..mirror.store import (
     MirrorReader,
 )
@@ -135,4 +135,93 @@ async def reconcile_session(
     async with node_sync.observe() as read:
         yield ReconcileSession(
             scope, read, mirror=mirror, node_sync=node_sync, locate=locate
+        )
+
+
+class ReconcileWrites:
+    """Writes from one listing of a pass, numbered by that listing's read."""
+
+    def __init__(self, read: ReadSeq, *, writer: NodeSyncService) -> None:
+        self._read = read
+        self._writer = writer
+
+    async def inserted(self, observation: NodeObservation) -> None:
+        """Record a node the mirror lacks; a file is probed first."""
+        await self._writer.reconcile_insert(observation, read=self._read)
+
+    async def updated(self, observation: NodeObservation, existing: NodeRecord) -> None:
+        """Replace *existing*, probing again unless its dimensions still apply."""
+        await self._writer.reconcile_update(observation, existing, read=self._read)
+
+
+class ReconcilePass:
+    """A backend-driven pass comparing the source with the mirror under a scope.
+
+    A dry run has no writer: its listings get no ``ReconcileWrites``, and it can
+    report removal candidates but not commit them.
+    """
+
+    def __init__(
+        self,
+        session: ReconcileSession,
+        *,
+        ordering: NodeSyncService | NodeOrdering,
+        writer: NodeSyncService | None,
+    ) -> None:
+        self._session = session
+        self._ordering = ordering
+        self._writer = writer
+
+    @asynccontextmanager
+    async def listing(self) -> AsyncGenerator[ReconcileWrites | None, None]:
+        """Number one listing; enter before reading the source."""
+        async with self._ordering.observe() as read:
+            writer = self._writer
+            yield None if writer is None else ReconcileWrites(read, writer=writer)
+
+    def saw(self, node_ids: Iterable[NodeId]) -> None:
+        """Record nodes reported by a successful listing."""
+        self._session.saw(node_ids)
+
+    def preserve(self, root: NodeId) -> None:
+        """Keep the mirrored subtree under *root*; this pass did not cover it."""
+        self._session.preserve(root)
+
+    async def removal_roots(self) -> list[NodeId]:
+        """Roots of the mirrored subtrees no listing accounted for."""
+        return await self._session.removal_roots()
+
+    async def commit_removals(self) -> list[NodeId]:
+        """Confirm and apply removals; returns the subtree roots removed.
+
+        Raises:
+            RuntimeError: For a dry run.
+        """
+        if self._writer is None:
+            raise RuntimeError("a dry run cannot remove nodes")
+        return await self._session.commit_removals()
+
+
+@asynccontextmanager
+async def reconcile_pass(
+    scope: set[NodeId],
+    *,
+    mirror: MirrorReader,
+    node_sync: NodeSyncService | NodeOrdering,
+    locate: Locate,
+    dry_run: bool = False,
+) -> AsyncGenerator[ReconcilePass, None]:
+    """Open a pass over *scope*; enter before the first listing starts.
+
+    Raises:
+        RuntimeError: If it is not a dry run and *node_sync* cannot write.
+    """
+    writer = node_sync if isinstance(node_sync, NodeSyncService) else None
+    if writer is None and not dry_run:
+        raise RuntimeError("only a dry run can reconcile without a writer")
+    async with reconcile_session(
+        scope, mirror=mirror, node_sync=node_sync, locate=locate
+    ) as session:
+        yield ReconcilePass(
+            session, ordering=node_sync, writer=None if dry_run else writer
         )

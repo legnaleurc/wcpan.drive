@@ -9,6 +9,7 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from functools import partial
 from unittest.mock import patch
 
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE
@@ -27,6 +28,7 @@ from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
+from wcpan.drive.server._services.sync.reconcile import reconcile_pass
 from wcpan.drive.server._services.sync.scan import ScanRunner
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.synology._backfill import BackfillService
@@ -194,7 +196,9 @@ class TestNewFolders(DecoyTestCase):
             mirror=self.mirror,
             store=self.store,
             syno_paths=self.syno_paths,
-            node_sync=self.node_sync,
+            reconcile=partial(
+                reconcile_pass, mirror=self.mirror, node_sync=self.node_sync
+            ),
         )
 
         # when

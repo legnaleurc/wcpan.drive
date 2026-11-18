@@ -39,22 +39,20 @@ from ._services.paths import VirtualPathService as VirtualPathService
 from ._services.sync.enrichment import Enrichment as Enrichment
 from ._services.sync.hints import ChangeHandler as ChangeHandler
 from ._services.sync.hints import HintStage as HintStage
-from ._services.sync.ordering import NodeOrdering as NodeOrdering
-from ._services.sync.reconcile import ReconcileSession as ReconcileSession
+from ._services.sync.reconcile import ReconcilePass as ReconcilePass
+from ._services.sync.reconcile import ReconcileWrites as ReconcileWrites
 from ._services.sync.scan import Changes as Changes
 from ._services.sync.scan import FolderLister as FolderLister
 from ._services.sync.scan import Listing as Listing
 from ._services.sync.scan import Scanner as Scanner
 from ._services.sync.scan import ScanPlan as ScanPlan
 from ._services.sync.scan import ScanRunner as ScanRunner
-from ._services.sync.service import NodeSyncService as NodeSyncService
 from ._services.upload.service import FileOpener as FileOpener
 from ._services.upload.service import Uploader as Uploader
 from ._services.upload.service import WritableFile as WritableFile
 from ._services.upload.spool import SpoolArea as SpoolArea
 from ._types import BackendLocator as BackendLocator
 from ._types import NodeObservation as NodeObservation
-from ._types import ReadSeq as ReadSeq
 from ._types import VirtualPath as VirtualPath
 
 
@@ -87,14 +85,12 @@ __all__ = (
     "NodeIdMap",
     "NodeObservation",
     "NodeOperations",
-    "NodeOrdering",
-    "NodeSyncService",
     "OffMainService",
     "OpenMediaSource",
     "ProbeFailure",
     "ReadCoreServices",
-    "ReadSeq",
-    "ReconcileSession",
+    "ReconcilePass",
+    "ReconcileWrites",
     "ScanPlan",
     "ScanRunner",
     "Scanner",

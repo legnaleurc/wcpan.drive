@@ -20,12 +20,11 @@ from wcpan.drive.server.types import (
     BackendCommand,
     BackendContext,
     BackendNamespace,
+    CoreServices,
     MediaFailure,
-    MirrorReader,
     Mounts,
     NodeObservation,
-    NodeOrdering,
-    NodeSyncService,
+    ReadCoreServices,
     Uploader,
 )
 from wcpan.synology.types import (
@@ -171,18 +170,14 @@ class SynologyBackend:
                 # Reads only, so it runs on whichever core the command got.
                 core = self._context.core
                 async with self.connect() as c:
-                    stats = await self._backfill(
-                        c, core.mirror, core.node_sync, path, dry_run=True
-                    )
+                    stats = await self._backfill(c, core, path, dry_run=True)
             else:
                 writer = writing(self._context.core)
                 async with (
                     self.connect() as c,
-                    writer.node_sync.enrichment_scope(),
+                    writer.enrichment.scope(),
                 ):
-                    stats = await self._backfill(
-                        c, writer.mirror, writer.node_sync, path, dry_run=False
-                    )
+                    stats = await self._backfill(c, writer, path, dry_run=False)
             print_stats(stats)
         elif args.command == "pending":
             failures = await self._context.core.mirror.get_media_failures(self.name)
@@ -194,18 +189,17 @@ class SynologyBackend:
     async def _backfill(
         self,
         c: "_Connection",
-        mirror: MirrorReader,
-        node_sync: NodeSyncService | NodeOrdering,
+        core: CoreServices | ReadCoreServices,
         path: str,
         *,
         dry_run: bool,
     ) -> dict[str, int]:
         service = BackfillService(
             drive_api=c.drive_api,
-            mirror=mirror,
+            mirror=core.mirror,
             store=c.store,
             syno_paths=c.syno_paths,
-            node_sync=node_sync,
+            reconcile=core.reconcile,
         )
         return await service.run_virtual_path(path, dry_run=dry_run)
 

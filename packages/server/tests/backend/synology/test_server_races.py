@@ -32,7 +32,10 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.reconcile import reconcile_session
+from wcpan.drive.server._services.sync.reconcile import (
+    reconcile_pass,
+    reconcile_session,
+)
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import (
     NodeObservation,
@@ -325,7 +328,9 @@ class TestBackfillOrdering(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            node_sync=self.node_sync,
+            reconcile=partial(
+                reconcile_pass, mirror=self.mirror, node_sync=self.node_sync
+            ),
         )
         return backfill, syno_paths
 
@@ -545,7 +550,9 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            node_sync=self.node_sync,
+            reconcile=partial(
+                reconcile_pass, mirror=self.mirror, node_sync=self.node_sync
+            ),
         )
 
         async def list_children(_api: object, parent_id: str) -> list[object]:

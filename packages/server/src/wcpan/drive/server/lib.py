@@ -18,7 +18,6 @@ from ._services.media.probing import upload_probe_kind as upload_probe_kind
 from ._services.mirror.reads import (
     row_to_record as row_to_record,
 )
-from ._services.sync.reconcile import reconcile_session as reconcile_session
 from ._services.upload.service import UPLOAD_SESSION_TTL as UPLOAD_SESSION_TTL
 from ._services.upload.spool import SpooledFiles as SpooledFiles
 from ._services.upload.spool import SpoolingUploader as SpoolingUploader
@@ -38,7 +37,6 @@ __all__ = (
     "normalize_name",
     "parallel_bfs",
     "pread_stream",
-    "reconcile_session",
     "row_to_record",
     "run_to_completion",
     "upload_probe_kind",

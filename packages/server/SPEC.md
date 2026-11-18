@@ -200,9 +200,9 @@ This section is the target design for the backend API. Implemented so far:
 `CoreServices.observe` with `Changes`, `CoreServices.scans` with `Scanner`, `ScanPlan`, and
 `Listing`, `CoreServices.hints` with `ChangeHandler`, `CoreServices.enrichment`,
 `CoreServices.enqueue_write`, and the core-owned lifecycle (`BackendRuntime`,
-`BackendLifecycle`). Both built-in backends use these while serving, and `MirrorStore` is no
-longer public. Not yet built: read-only scans and `core.reconcile`. Synology's offline
-`backfill` still uses `NodeSyncService` and `reconcile_session` directly.
+`BackendLifecycle`), and `CoreServices.reconcile` with `ReconcilePass`. Both built-in backends
+use only these. `MirrorStore` and `NodeSyncService` are no longer public, and
+`tests/test_backend_boundary.py` keeps backends off `CoreServices.node_sync`.
 
 ### Goal
 
@@ -329,7 +329,8 @@ await core.writes_landed()      # every write queued so far has landed
 await core.bind_schema(schema)
 ```
 
-`NodeSyncService` stops being public once backfill has moved; `MirrorStore` already has.
+`NodeSyncService` and `MirrorStore` are not public. `CoreServices.node_sync` remains for the
+core's own use.
 
 #### Producing facts
 
@@ -360,15 +361,17 @@ async with core.observe(exclusive=True) as changes:    # read number taken here
 - Node-tied backend state uses `BackendSchema` hooks in the node's transaction. Checkpoints
   and other progress use `enqueue_write`, ordered after the work they cover.
 
-Read-only commands receive a core without `hints`, `observe`, or `enqueue_write`, with
-provisional IDs and a schema check that does not write. Their scans report would-be changes
-and do not persist IDs, write, probe, or call finish hooks. This differs from a backend's
+Read-only commands receive a core without `scans`, `hints`, `observe`, or `enqueue_write`, with
+provisional IDs and a schema check that does not write. To report what would change, they use
+`core.reconcile(..., dry_run=True)`. This differs from a backend's
 own `read_only` setting: a read-only filesystem source still writes the mirror and probes
 while serving.
 
-Backfill stays on a lower-level public API at first: `core.reconcile(scope, locate=...)`
-for read ordering, coverage, and removal candidates, plus `reconcile_insert`,
-`reconcile_update`, and `core.enrichment.scope()`.
+A backend whose comparison does not fit `Scanner`, such as Synology's `backfill`, drives the
+pass itself with `core.reconcile(scope, locate=..., dry_run=...)`. Each `listing()` numbers one
+read and yields `ReconcileWrites` (`inserted`, `updated`), or `None` in a dry run, and the pass
+ends with `removal_roots()` or `commit_removals()`. Offline, the command runs enrichment
+workers in `core.enrichment.scope()`.
 
 ### Hint stage
 
@@ -575,10 +578,9 @@ at the end.
    backend-specific absence and error rules are in the backend specs.
 5. A backend confirms its source is present before declaring its root covered,
    so an unmounted source exposing an empty directory cannot erase the mirror.
-6. A pass can run on the read ordering alone (`NodeOrdering`): listing,
-   coverage, and `removal_roots` need no writer, so a dry run (Synology
-   `backfill --dry-run`) reports candidates without writing. Only
-   `commit_removals` needs a `NodeSyncService`, and fails without one.
+6. A pass can run without a writer: listing, coverage, and `removal_roots` need
+   none, so a dry run (Synology `backfill --dry-run`) reports candidates without
+   writing. `commit_removals` fails in a dry run.
 
 Database check-then-write races are handled by the single writer and checks
 inside each transaction; stale external reads are handled by targeted validation
@@ -820,7 +822,7 @@ A backend is an async context manager factory named by its import path
   workers start after the backends and stop before them, so no probe outlives
   the connection it reads through. Offline, no metadata workers start with the
   backends; a command that queues enrichment (Synology `backfill`) runs them
-  in `NodeSyncService.enrichment_scope()` inside its connection. A normal exit
+  in `core.enrichment.scope()` inside its connection. A normal exit
   drains enrichment and its writes, a wait that also ends when the write
   worker task ends. An error cancels running probes and re-raises without
   waiting for queued work, so running the command again redoes it; the

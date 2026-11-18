@@ -1,17 +1,17 @@
 """Subtree reconcile against Synology (CLI ``backfill``); same deps as server scan."""
 
 import logging
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from functools import partial
 from pathlib import PurePosixPath
 
 from wcpan.drive.protocol.types import NodeId, NodeRecord
-from wcpan.drive.server.lib import parallel_bfs, reconcile_session
+from wcpan.drive.server.lib import parallel_bfs
 from wcpan.drive.server.types import (
     MirrorReader,
-    NodeOrdering,
-    NodeSyncService,
-    ReadSeq,
-    ReconcileSession,
+    ReconcilePass,
+    ReconcileWrites,
     VirtualPath,
     VirtualPathService,
 )
@@ -22,6 +22,8 @@ from ._store import SynologyStoreReader
 
 
 _L = logging.getLogger(__name__)
+
+type OpenReconcile = Callable[..., AbstractAsyncContextManager[ReconcilePass]]
 
 
 def _norm_hash(h: str) -> str:
@@ -67,9 +69,8 @@ class BackfillService:
     """API-vs-DB subtree reconcile; constructed with the same services as ``StartupScanService``.
 
     One traversal serves both modes: listing, conversion, and comparison need
-    only the read side, and the writes (inserts, updates, confirmed removals)
-    happen only when *node_sync* is a ``NodeSyncService`` and the run is not a
-    dry run. A dry run can therefore pass the read ordering alone.
+    only the read side, and a dry run's pass offers no writes. *reconcile* is
+    ``reconcile`` of the core the command received.
     """
 
     def __init__(
@@ -79,19 +80,14 @@ class BackfillService:
         mirror: MirrorReader,
         store: SynologyStoreReader,
         syno_paths: SynologyPathService,
-        node_sync: NodeSyncService | NodeOrdering,
+        reconcile: OpenReconcile,
     ) -> None:
         self._drive_api = drive_api
         self._mirror = mirror
         self._store = store
         self._syno_paths = syno_paths
-        self._node_sync = node_sync
+        self._reconcile = reconcile
         self._virtual_paths = VirtualPathService(mirror=mirror)
-
-    def _require_writer(self) -> NodeSyncService:
-        if not isinstance(self._node_sync, NodeSyncService):
-            raise RuntimeError("only a dry run can reconcile without a writer")
-        return self._node_sync
 
     async def run_virtual_path(
         self, virtual_path: str, *, dry_run: bool = False
@@ -108,9 +104,9 @@ class BackfillService:
         *,
         dry_run: bool = False,
     ) -> dict[str, int]:
-        """Reconcile: full API vs DB compare per folder; writes via NodeSyncService.
+        """Reconcile: full API vs DB compare per folder.
 
-        Removals are decided at the end of the pass (see ``ReconcileSession``).
+        Removals are decided at the end of the pass.
         """
         mounts = self._syno_paths.mounts
         if root_node_id == mounts.root_id:
@@ -125,11 +121,10 @@ class BackfillService:
                 ("checked", "added", "updated", "removed", "list_errors"), 0
             )
 
-        async with reconcile_session(
+        async with self._reconcile(
             set(initial),
-            mirror=self._mirror,
-            node_sync=self._node_sync,
             locate=partial(self._syno_paths.locate, self._drive_api),
+            dry_run=dry_run,
         ) as session:
             return await self._reconcile_in_session(
                 initial, session=session, dry_run=dry_run
@@ -139,18 +134,18 @@ class BackfillService:
         self,
         initial: list[NodeId],
         *,
-        session: ReconcileSession,
+        session: ReconcilePass,
         dry_run: bool,
     ) -> dict[str, int]:
-        ordering = self._node_sync
-        writer = None if dry_run else self._require_writer()
         checked = added = updated = list_errors = 0
 
         async def _visit(parent_id: NodeId) -> list[NodeId]:
-            async with ordering.observe() as read:
-                return await _visit_observed(parent_id, read)
+            async with session.listing() as writes:
+                return await _visit_observed(parent_id, writes)
 
-        async def _visit_observed(parent_id: NodeId, read: ReadSeq) -> list[NodeId]:
+        async def _visit_observed(
+            parent_id: NodeId, writes: ReconcileWrites | None
+        ) -> list[NodeId]:
             nonlocal checked, added, updated, list_errors
             try:
                 items = await self._syno_paths.list_children(self._drive_api, parent_id)
@@ -181,8 +176,8 @@ class BackfillService:
                         item["name"],
                         parent_id,
                     )
-                    if writer is not None:
-                        await writer.reconcile_insert(from_api, read=read)
+                    if writes is not None:
+                        await writes.inserted(from_api)
                 else:
                     if (
                         _reconcile_api_fields_differ(existing, from_api.record)
@@ -190,14 +185,14 @@ class BackfillService:
                         or _dimensions_missing(existing, from_api.record)
                     ):
                         updated += 1
-                        if writer is None:
+                        if writes is None:
                             _L.info(
                                 "dry-run: would update %r (%r)",
                                 node_id,
                                 item["name"],
                             )
                         else:
-                            await writer.reconcile_update(from_api, existing, read=read)
+                            await writes.updated(from_api, existing)
 
                 if item["type"] == "dir":
                     children.append(node_id)
@@ -206,7 +201,7 @@ class BackfillService:
 
         await parallel_bfs(initial, _visit)
 
-        if writer is None:
+        if dry_run:
             candidates = await session.removal_roots()
             for node_id in candidates:
                 _L.info("dry-run: would remove %r absent from API", node_id)
