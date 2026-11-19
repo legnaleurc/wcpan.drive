@@ -1,4 +1,4 @@
-"""One reconciliation pass over a scope, shared by scans and comparisons.
+"""What one pass covered, and the removals it decides at the end.
 
 Listings report what they saw and which folders they could not cover; removals
 are decided once, at the end of the pass, rather than from any single listing.

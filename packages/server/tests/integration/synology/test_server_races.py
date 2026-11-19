@@ -27,12 +27,12 @@ from wcpan.drive.server._services.mirror.store import (
 )
 from wcpan.drive.server._services.off_main import OffMainService
 from wcpan.drive.server._services.operations import LocateUndecidedError
+from wcpan.drive.server._services.sync.coverage import reconcile_session
 from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.reconcile import reconcile_session
-from wcpan.drive.server._services.sync.scan import ComparisonReport
+from wcpan.drive.server._services.sync.scanner import ComparisonReport
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import (
     NodeObservation,

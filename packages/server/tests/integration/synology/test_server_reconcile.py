@@ -35,7 +35,8 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.scan import ComparisonReport, compare_pass
+from wcpan.drive.server._services.sync.scan import compare_pass
+from wcpan.drive.server._services.sync.scanner import ComparisonReport
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import NodeObservation, ReadSeq
 from wcpan.drive.server.backend.synology._convert import SynologyLocator

@@ -1,7 +1,8 @@
 """Helpers for Synology tests that reach into the core."""
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server._services.sync.scan import ComparisonReport, compare_pass
+from wcpan.drive.server._services.sync.scan import compare_pass
+from wcpan.drive.server._services.sync.scanner import ComparisonReport
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.synology._backfill import SubtreeComparison
 from wcpan.drive.server.backend.synology._paths import SynologyPathService

@@ -45,13 +45,8 @@ from ._services.mounts import Mounts
 from ._services.operations import NodeOperations
 from ._services.sync.enrichment import Enrichment
 from ._services.sync.hints import ChangeHandler, HintStage
-from ._services.sync.scan import (
-    Changes,
-    Comparison,
-    ComparisonReport,
-    ScanRunner,
-    compare_pass,
-)
+from ._services.sync.scan import Changes, ScanRunner, compare_pass
+from ._services.sync.scanner import Comparison, ComparisonReport
 from ._services.sync.service import NodeSyncService
 from ._services.upload.service import FileOpener, Uploader
 
