@@ -33,7 +33,7 @@ from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
 from wcpan.drive.server._services.sync.mounts import ensure_mount_nodes
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server._types import BackendLocator, NodeObservation, ProbeFailure
 
 from ._mounts import ROOT_ID, make_mounts, mount_id
@@ -176,7 +176,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         await self.mirror.ensure_schema()
         self.write_queue = wq = create_write_queue()
         mq = create_metadata_queue()
-        self.node_sync = NodeSyncService(
+        self.writer = MirrorWriter(
             mirror=self.mirror,
             write_queue=wq,
             probing=MediaProbing(runner=ProbeRunner()),
@@ -184,12 +184,10 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         )
         self.tasks = [
             asyncio.create_task(write_worker(wq)),
-            asyncio.create_task(
-                metadata_worker(mq, self.node_sync.process_metadata_item)
-            ),
+            asyncio.create_task(metadata_worker(mq, self.writer.process_metadata_item)),
         ]
         await ensure_mount_nodes(
-            _mounts("one", "two"), mirror=self.mirror, node_sync=self.node_sync
+            _mounts("one", "two"), mirror=self.mirror, writer=self.writer
         )
 
     async def asyncTearDown(self) -> None:
@@ -204,8 +202,8 @@ class TestBackendViews(IsolatedAsyncioTestCase):
 
     async def test_locators_bind_with_their_backend_schema(self) -> None:
         # given
-        view_a = self.node_sync.for_backend("a")
-        view_b = self.node_sync.for_backend("b")
+        view_a = self.writer.for_backend("a")
+        view_b = self.writer.for_backend("b")
         # when
         async with view_a.observe() as read:
             await view_a.upsert(
@@ -221,7 +219,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
                 ),
                 read=read,
             )
-        await self.node_sync.wait_enrichment_drained()
+        await self.writer.wait_enrichment_drained()
 
         # then
         self.assertEqual(self.a.bound, [("fa", "la")])
@@ -237,8 +235,8 @@ class TestBackendViews(IsolatedAsyncioTestCase):
             located.append(source_key)
 
         # when: a's file is gone
-        await Enrichment(self.node_sync.for_backend("a")).retry_failures(locate)
-        await self.node_sync.wait_enrichment_drained()
+        await Enrichment(self.writer.for_backend("a")).retry_failures(locate)
+        await self.writer.wait_enrichment_drained()
 
         # then
         self.assertEqual(located, ["sa"])
@@ -250,7 +248,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         cursor = await self.mirror.get_cursor()
         # when
         await ensure_mount_nodes(
-            _mounts("one", "two"), mirror=self.mirror, node_sync=self.node_sync
+            _mounts("one", "two"), mirror=self.mirror, writer=self.writer
         )
         # then
         self.assertEqual(await self.mirror.get_cursor(), cursor)
@@ -259,7 +257,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
         await ensure_mount_nodes(
             _mounts("one", "two", "three"),
             mirror=self.mirror,
-            node_sync=self.node_sync,
+            writer=self.writer,
         )
         # then
         changes, _, _ = await self.mirror.get_changes_since(cursor, 100)
@@ -267,14 +265,14 @@ class TestBackendViews(IsolatedAsyncioTestCase):
 
     async def test_observed_nodes_belong_to_their_backend(self) -> None:
         # given
-        view_a = self.node_sync.for_backend("a")
+        view_a = self.writer.for_backend("a")
         # when
         async with view_a.observe() as read:
             await view_a.upsert(
                 NodeObservation(record=_file("fa", mount_id("one")), locator=None),
                 read=read,
             )
-        await self.node_sync.wait_enrichment_drained()
+        await self.writer.wait_enrichment_drained()
 
         # then: mounts belong to the core
         self.assertEqual(await self.mirror.owner_of(NodeId("fa")), "a")
@@ -355,7 +353,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
 
         # when
         registering = asyncio.create_task(
-            self.node_sync.for_backend("c").register_schema(_OtherSchema())
+            self.writer.for_backend("c").register_schema(_OtherSchema())
         )
         await asyncio.sleep(0.05)
 

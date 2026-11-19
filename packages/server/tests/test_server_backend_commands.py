@@ -26,7 +26,7 @@ from wcpan.drive.server._services.mirror.store import (
     MirrorReader,
     MirrorStore,
 )
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 
 
 def _parse(name: str, argv: list[str]) -> BackendCommand:
@@ -126,7 +126,7 @@ class TestCoreAccess(IsolatedAsyncioTestCase):
         # given
         core = CoreServices(
             mirror=MagicMock(),
-            node_sync=MagicMock(),
+            writer=MagicMock(),
             ids=MagicMock(),
             media=MediaProbing(runner=None),
         )

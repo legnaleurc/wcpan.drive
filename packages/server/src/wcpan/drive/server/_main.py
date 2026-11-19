@@ -227,7 +227,7 @@ async def run_backend_command(
             entered_backends(config, core, offline=True, names=[name])
         )
         await backends[name].run_command(command)
-        await core.node_sync.wait_enrichment_drained()
+        await core.writer.wait_enrichment_drained()
 
 
 def _lifecycle_parser(name: str) -> argparse.ArgumentParser:

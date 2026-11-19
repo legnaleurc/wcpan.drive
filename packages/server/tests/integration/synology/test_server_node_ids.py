@@ -23,7 +23,7 @@ from wcpan.drive.server._services.mirror.store import (
 )
 from wcpan.drive.server._services.off_main import OffMainService
 from wcpan.drive.server._services.sync.scan import ScanRunner
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server._types import (
     ReadSeq,
 )
@@ -220,13 +220,13 @@ class TestTwoInstances(DecoyTestCase):
     async def test_webhook_removal_looks_up_without_minting(self) -> None:
         # given
         node_id = await self._mirror(self.nas1, _info())
-        node_sync = self.decoy.mock(cls=NodeSyncService)
-        self.decoy.when(node_sync.observe()).then_enter_with(_READ)
+        writer = self.decoy.mock(cls=MirrorWriter)
+        self.decoy.when(writer.observe()).then_enter_with(_READ)
         service = WebhookService(
             drive_api=self.decoy.mock(cls=SynologyClient),
             mirror=self.mirror,
             store=self.nas1.store,
-            scans=ScanRunner(mirror=self.mirror, node_sync=node_sync),
+            scans=ScanRunner(mirror=self.mirror, writer=writer),
             syno_paths=self.nas1.paths,
             mount_registry=MountRegistry(mounts=Mounts(root_id=ROOT_ID), root_ids={}),
             hints=HintStage(),
@@ -250,10 +250,8 @@ class TestTwoInstances(DecoyTestCase):
             )
 
         # then
-        self.decoy.verify(await node_sync.delete(node_id, read=_READ), times=1)
-        self.decoy.verify(
-            await node_sync.delete(matchers.Anything(), read=_READ), times=1
-        )
+        self.decoy.verify(await writer.delete(node_id, read=_READ), times=1)
+        self.decoy.verify(await writer.delete(matchers.Anything(), read=_READ), times=1)
         self.assertIsNone(await self.nas1.ids.lookup("never-seen"))
 
     async def test_move_that_changes_the_link_replaces_the_node(self) -> None:
@@ -270,19 +268,19 @@ class TestTwoInstances(DecoyTestCase):
         self.decoy.when(
             await drive_api.get_file(SynologyPermanentLink("link"))
         ).then_return(moved)
-        node_sync = self.decoy.mock(cls=NodeSyncService)
-        self.decoy.when(node_sync.observe()).then_enter_with(_READ)
+        writer = self.decoy.mock(cls=MirrorWriter)
+        self.decoy.when(writer.observe()).then_enter_with(_READ)
         operations = SynologyNodeOperations(
             drive_api=drive_api,
             syno_paths=self.nas1.paths,
-            scans=ScanRunner(mirror=self.mirror, node_sync=node_sync),
+            scans=ScanRunner(mirror=self.mirror, writer=writer),
         )
 
         # when
         await operations.update(record, name=None, parent_id=folder)
 
         # then
-        self.decoy.verify(await node_sync.delete(record.id, read=_READ), times=1)
+        self.decoy.verify(await writer.delete(record.id, read=_READ), times=1)
 
     async def test_move_keeps_the_node_when_its_link_is_unchanged(self) -> None:
         # given: a node mirrored under a folder of the mount
@@ -298,12 +296,12 @@ class TestTwoInstances(DecoyTestCase):
         self.decoy.when(
             await drive_api.get_file(SynologyPermanentLink("link"))
         ).then_return(moved)
-        node_sync = self.decoy.mock(cls=NodeSyncService)
-        self.decoy.when(node_sync.observe()).then_enter_with(_READ)
+        writer = self.decoy.mock(cls=MirrorWriter)
+        self.decoy.when(writer.observe()).then_enter_with(_READ)
         operations = SynologyNodeOperations(
             drive_api=drive_api,
             syno_paths=self.nas1.paths,
-            scans=ScanRunner(mirror=self.mirror, node_sync=node_sync),
+            scans=ScanRunner(mirror=self.mirror, writer=writer),
         )
 
         # when
@@ -314,11 +312,9 @@ class TestTwoInstances(DecoyTestCase):
             await drive_api.move(SynologyPermanentLink("link"), SynologyFileId("8")),
             times=1,
         )
+        self.decoy.verify(await writer.delete(matchers.Anything(), read=_READ), times=0)
         self.decoy.verify(
-            await node_sync.delete(matchers.Anything(), read=_READ), times=0
-        )
-        self.decoy.verify(
-            await node_sync.upsert(
+            await writer.upsert(
                 matchers.HasAttributes(
                     {"record": matchers.HasAttributes({"id": record.id})}
                 ),

@@ -26,7 +26,7 @@ from .scanner import (
     Scanner,
     ScanPlan,
 )
-from .service import NodeSyncService
+from .writer import MirrorWriter
 
 
 _L = getLogger(__name__)
@@ -39,9 +39,9 @@ _LISTING_FAILURES = (OSError, ListingUnavailableError)
 class Changes:
     """Writes facts from the read that an ``observe`` block numbered."""
 
-    def __init__(self, read: ReadSeq, *, node_sync: NodeSyncService) -> None:
+    def __init__(self, read: ReadSeq, *, writer: MirrorWriter) -> None:
         self._read = read
-        self._node_sync = node_sync
+        self._writer = writer
 
     async def upserted(
         self, observation: NodeObservation, *, strict: bool = False
@@ -51,11 +51,11 @@ class Changes:
         Raises:
             MediaEnrichmentError: With *strict*, if the media probe fails.
         """
-        return await self._node_sync.upsert(observation, read=self._read, strict=strict)
+        return await self._writer.upsert(observation, read=self._read, strict=strict)
 
     async def removed(self, node_id: NodeId) -> None:
         """Queue the removal of the subtree under *node_id*."""
-        await self._node_sync.delete(node_id, read=self._read)
+        await self._writer.delete(node_id, read=self._read)
 
     async def landed(self) -> None:
         """Wait for every write queued so far, not for later ones.
@@ -63,7 +63,7 @@ class Changes:
         Raises:
             WriterStoppedError: The write worker ended first.
         """
-        await self._node_sync.barrier()
+        await self._writer.barrier()
 
 
 @dataclass(kw_only=True)
@@ -74,9 +74,9 @@ class _RootProgress:
 class ScanRunner:
     """Runs one backend instance's scan passes, one at a time."""
 
-    def __init__(self, *, mirror: MirrorReader, node_sync: NodeSyncService) -> None:
+    def __init__(self, *, mirror: MirrorReader, writer: MirrorWriter) -> None:
         self._mirror = mirror
-        self._node_sync = node_sync
+        self._writer = writer
         self._pass_lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -92,11 +92,11 @@ class ScanRunner:
                 before the writes landed and the block itself succeeded.
         """
         if not exclusive:
-            async with self._node_sync.observe() as read:
-                yield Changes(read, node_sync=self._node_sync)
+            async with self._writer.observe() as read:
+                yield Changes(read, writer=self._writer)
             return
-        async with self._pass_lock, self._node_sync.observe() as read:
-            changes = Changes(read, node_sync=self._node_sync)
+        async with self._pass_lock, self._writer.observe() as read:
+            changes = Changes(read, writer=self._writer)
             try:
                 yield changes
             except Exception as failed:
@@ -117,7 +117,7 @@ class ScanRunner:
         async with self._pass_lock:
             plan = await scanner.prepare()
             await self._settled(
-                run_pass(scanner, plan, mirror=self._mirror, writer=self._node_sync)
+                run_pass(scanner, plan, mirror=self._mirror, writer=self._writer)
             )
 
     async def compare[F](
@@ -135,7 +135,7 @@ class ScanRunner:
                 compare_pass(
                     comparison,
                     mirror=self._mirror,
-                    writer=None if dry_run else self._node_sync,
+                    writer=None if dry_run else self._writer,
                 )
             )
 
@@ -149,7 +149,7 @@ class ScanRunner:
         Raises:
             Exception: What failed in a listing.
         """
-        writer = self._node_sync
+        writer = self._writer
 
         async def visit(folder: F) -> list[F]:
             async with writer.observe() as read:
@@ -164,7 +164,7 @@ class ScanRunner:
         try:
             return await work
         except Exception as failed:
-            await _settle_after(failed, self._node_sync.wait_enrichment_drained)
+            await _settle_after(failed, self._writer.wait_enrichment_drained)
             raise
 
 
@@ -181,7 +181,7 @@ async def run_pass[F](
     plan: ScanPlan[F],
     *,
     mirror: MirrorReader,
-    writer: NodeSyncService | None,
+    writer: MirrorWriter | None,
 ) -> _PassResult:
     """Traverse *plan*, write what *scanner* reports changed, and decide removals.
 
@@ -263,7 +263,7 @@ async def run_pass[F](
 
 
 async def _submit[F](
-    writer: NodeSyncService,
+    writer: MirrorWriter,
     listing: Listing[F],
     read: ReadSeq,
     *,
@@ -281,7 +281,7 @@ async def compare_pass[F](
     comparison: Comparison[F],
     *,
     mirror: MirrorReader,
-    writer: NodeSyncService | None,
+    writer: MirrorWriter | None,
 ) -> ComparisonReport:
     """Run *comparison* as a scan pass that compares every child with the mirror.
 

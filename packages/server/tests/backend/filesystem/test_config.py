@@ -70,22 +70,20 @@ _STORE = "wcpan.drive.server.backend.filesystem._commands.FilesystemStore"
 
 
 def _sync() -> MagicMock:
-    node_sync = MagicMock()
-    node_sync.register_schema = AsyncMock()
-    node_sync.barrier = AsyncMock()
-    return node_sync
+    writer = MagicMock()
+    writer.register_schema = AsyncMock()
+    writer.barrier = AsyncMock()
+    return writer
 
 
-def _context(
-    mounts: dict[str, str], node_sync: MagicMock | None = None
-) -> BackendContext:
+def _context(mounts: dict[str, str], writer: MagicMock | None = None) -> BackendContext:
     return BackendContext(
         name="disk",
         mounts=make_mounts(mounts),
         core=CoreServices(
             media=MediaProbing(runner=ProbeRunner()),
             mirror=MagicMock(),
-            node_sync=node_sync or _sync(),
+            writer=writer or _sync(),
             ids=MagicMock(),
         ),
         routes=BackendRoutes(name="disk"),
@@ -136,8 +134,8 @@ class TestFactory(IsolatedAsyncioTestCase):
         # given
         with tempfile.TemporaryDirectory() as tmp:
             for stored, writes in ((None, 1), ("old", 1), (filesystem_id(tmp), 0)):
-                node_sync = _sync()
-                context = _context({"docs": tmp}, node_sync)
+                writer = _sync()
+                context = _context({"docs": tmp}, writer)
                 out = io.StringIO()
                 with (
                     self.subTest(stored=stored),
@@ -156,7 +154,7 @@ class TestFactory(IsolatedAsyncioTestCase):
                     lookup.assert_awaited_once_with("docs", tmp)
                     self.assertEqual(record.await_count, writes)
                     # and a new one has landed before the command reports it
-                    self.assertEqual(node_sync.barrier.await_count, writes)
+                    self.assertEqual(writer.barrier.await_count, writes)
                     if writes:
                         record.assert_awaited_once_with("docs", tmp, filesystem_id(tmp))
                     else:

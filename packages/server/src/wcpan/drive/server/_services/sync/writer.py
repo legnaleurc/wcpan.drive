@@ -1,4 +1,4 @@
-"""Central service for persisting node changes from scan, webhook, and API sources."""
+"""The ordered write path into the mirror, for scans, hints, and API mutations."""
 
 import asyncio
 import sqlite3
@@ -50,13 +50,12 @@ class WriterStoppedError(RuntimeError):
 _L = getLogger(__name__)
 
 
-class NodeSyncService:
-    """Central gateway for persisting node changes.
+class MirrorWriter:
+    """Writes facts into the mirror in read order; ``MirrorReader`` reads it.
 
-    Accepts infrastructure (mirror, queues, media probing) and exposes
-    a narrow interface of reusable primitives. Internally handles
-    media enrichment, write-queue enqueuing, and mirror method dispatch so
-    callers are not aware of those concerns.
+    Routes each observation: written directly, or probed first by the
+    ``Prober``, inline or through the metadata queue. The write job then
+    publishes it, deciding there what a failed probe publishes.
 
     Every write names the backend read it came from (``observe``). A write is
     applied only if no observation from a later-started read was applied to the
@@ -77,15 +76,15 @@ class NodeSyncService:
         probing: MediaProbing,
         retries: MediaRetries | None = None,
         require_workers: bool = False,
-        writer: "asyncio.Task[None] | None" = None,
+        write_worker: "asyncio.Task[None] | None" = None,
     ) -> None:
         """With *require_workers* (offline), queuing enrichment fails unless
         ``enrichment_scope`` runs the workers, since nothing else would.
-        *writer* is the task consuming *write_queue*; cleanup stops waiting
+        *write_worker* is the task consuming *write_queue*; cleanup stops waiting
         for queued writes once it has ended."""
         self._mirror = mirror
         # Shared by every view, like the queues.
-        self._writer = writer
+        self._write_worker = write_worker
         self._write_queue = write_queue
         self._metadata_queue = metadata_queue
         self._order = ObservationOrder()
@@ -99,7 +98,7 @@ class NodeSyncService:
             require_workers=require_workers,
         )
 
-    def for_backend(self, name: str) -> "NodeSyncService":
+    def for_backend(self, name: str) -> "MirrorWriter":
         """A view whose observations are tagged as coming from backend *name*."""
         view = copy(self)
         view._backend = name
@@ -141,12 +140,12 @@ class NodeSyncService:
             WriterStoppedError: The write worker ended before the writes landed.
         """
         landed = asyncio.ensure_future(run_queued(self._write_queue, _nothing))
-        writer = self._writer
-        if writer is None:
+        worker = self._write_worker
+        if worker is None:
             await landed
             return
         try:
-            await asyncio.wait({landed, writer}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({landed, worker}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             if not landed.done():
                 landed.cancel()
@@ -168,13 +167,13 @@ class NodeSyncService:
         Raises:
             WriterStoppedError: The write worker ended before the writes landed.
         """
-        writer = self._writer
-        if writer is None:
+        worker = self._write_worker
+        if worker is None:
             await self._write_queue.join()
             return
         joined = asyncio.ensure_future(self._write_queue.join())
         try:
-            await asyncio.wait({joined, writer}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({joined, worker}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             joined.cancel()
         if not joined.done() or joined.cancelled():

@@ -42,7 +42,7 @@ from ._services.mounts import Mount, Mounts
 from ._services.off_main import OffMainService
 from ._services.sync.metadata import create_metadata_queue, metadata_worker
 from ._services.sync.mounts import ensure_mount_nodes
-from ._services.sync.service import NodeSyncService
+from ._services.sync.writer import MirrorWriter
 from ._types import ProbeFailure
 
 
@@ -144,7 +144,7 @@ class BackendHarness:
         *,
         mirror: MirrorStore,
         database_path: Path,
-        node_sync: NodeSyncService,
+        writer: MirrorWriter,
         media: MediaProbing,
         probes: FakeProbes,
         retries: MediaRetries,
@@ -153,7 +153,7 @@ class BackendHarness:
         self.mirror = mirror
         self.database_path = database_path
         self.probes = probes
-        self._node_sync = node_sync
+        self._writer = writer
         self._media = media
         self._retries = retries
         self._make_ids = make_ids
@@ -162,13 +162,13 @@ class BackendHarness:
         self, name: str, schema: BackendSchema, sources: Mapping[str, str]
     ) -> BackendInstance:
         """Register instance *name*, serving a mount per item of *sources*."""
-        node_sync = self._node_sync.for_backend(name)
-        namespace = await node_sync.register_schema(schema)
+        writer = self._writer.for_backend(name)
+        namespace = await writer.register_schema(schema)
         mounts = make_mounts(sources)
-        await ensure_mount_nodes(mounts, mirror=self.mirror, node_sync=self._node_sync)
+        await ensure_mount_nodes(mounts, mirror=self.mirror, writer=self._writer)
         core = CoreServices(
             mirror=self.mirror,
-            node_sync=node_sync,
+            writer=writer,
             ids=self._make_ids(namespace.key),
             media=self._media,
         )
@@ -186,7 +186,7 @@ class BackendHarness:
     async def hold_writes(self) -> WriteGate:
         """Stop the write worker; returns once it is held."""
         gate = WriteGate()
-        await self._node_sync.enqueue(gate.hold)
+        await self._writer.enqueue(gate.hold)
         await gate.entered()
         return gate
 
@@ -223,22 +223,22 @@ async def backend_harness(
         await mirror.ensure_schema()
         write_queue = create_write_queue()
         metadata_queue = create_metadata_queue()
-        writer = asyncio.create_task(write_worker(write_queue))
-        tasks.append(writer)
+        write_task = asyncio.create_task(write_worker(write_queue))
+        tasks.append(write_task)
         probes = FakeProbes()
         media = MediaProbing(runner=cast(ProbeRunner, probes))
         retries = MediaRetries(first_delay=first_retry_delay)
-        node_sync = NodeSyncService(
+        writer = MirrorWriter(
             mirror=mirror,
             write_queue=write_queue,
             metadata_queue=metadata_queue,
             probing=media,
             retries=retries,
-            writer=writer,
+            write_worker=write_task,
         )
         tasks.append(
             asyncio.create_task(
-                metadata_worker(metadata_queue, node_sync.process_metadata_item)
+                metadata_worker(metadata_queue, writer.process_metadata_item)
             )
         )
 
@@ -250,7 +250,7 @@ async def backend_harness(
         yield BackendHarness(
             mirror=mirror,
             database_path=database_path,
-            node_sync=node_sync,
+            writer=writer,
             media=media,
             probes=probes,
             retries=retries,

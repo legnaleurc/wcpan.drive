@@ -3,11 +3,11 @@
 from ..._types import NodeObservation
 from ..mirror.store import MirrorStore
 from ..mounts import Mounts, mount_node_records
-from .service import NodeSyncService
+from .writer import MirrorWriter
 
 
 async def ensure_mount_nodes(
-    mounts: Mounts, *, mirror: MirrorStore, node_sync: NodeSyncService
+    mounts: Mounts, *, mirror: MirrorStore, writer: MirrorWriter
 ) -> None:
     """Create the root and any missing mount nodes, publishing each new one.
 
@@ -20,8 +20,8 @@ async def ensure_mount_nodes(
     missing = [r for r in records if r.id not in existing]
     if not missing:
         return
-    async with node_sync.observe() as read:
-        await node_sync.upsert_batch(
+    async with writer.observe() as read:
+        await writer.upsert_batch(
             [NodeObservation(record=r, locator=None) for r in missing], read=read
         )
-    await node_sync.flush()
+    await writer.flush()

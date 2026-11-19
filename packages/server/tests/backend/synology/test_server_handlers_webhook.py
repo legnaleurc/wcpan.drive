@@ -870,11 +870,11 @@ class _Handler(ChangeHandler[str]):
 class TestWebhookLifecycle(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         context: Any = MagicMock()
-        node_sync: Any = MagicMock()
-        node_sync.wait_enrichment_drained = AsyncMock()
+        writer: Any = MagicMock()
+        writer.wait_enrichment_drained = AsyncMock()
         self.core = CoreServices(
             mirror=MagicMock(),
-            node_sync=node_sync,
+            writer=writer,
             ids=IdentityIds(),
             media=MagicMock(),
         )

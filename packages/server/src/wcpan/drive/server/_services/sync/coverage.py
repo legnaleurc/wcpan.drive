@@ -16,7 +16,7 @@ from ..mirror.store import (
     MirrorReader,
 )
 from ..operations import Locate, LocateUndecidedError
-from .service import NodeSyncService
+from .writer import MirrorWriter
 
 
 _L = getLogger(__name__)
@@ -75,7 +75,7 @@ class ReconcileSession(Coverage):
         read: ReadSeq,
         *,
         mirror: MirrorReader,
-        writer: NodeSyncService,
+        writer: MirrorWriter,
         locate: Locate,
     ) -> None:
         super().__init__(scope, mirror=mirror)
@@ -136,7 +136,7 @@ async def reconcile_session(
     scope: set[NodeId],
     *,
     mirror: MirrorReader,
-    writer: NodeSyncService,
+    writer: MirrorWriter,
     locate: Locate,
 ) -> AsyncGenerator[ReconcileSession, None]:
     """Open a pass over *scope*; enter before the first listing starts."""

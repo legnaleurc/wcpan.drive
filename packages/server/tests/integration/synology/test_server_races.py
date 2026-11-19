@@ -34,7 +34,7 @@ from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
 from wcpan.drive.server._services.sync.scanner import ComparisonReport
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server._types import (
     NodeObservation,
     ProbeFailure,
@@ -177,7 +177,7 @@ class _RaceTestCase(DecoyTestCase):
         self.write_queue = create_write_queue()
         self.metadata_queue = create_metadata_queue()
         self.mounts = {"docs": SynologyPath("/docs")}
-        self.node_sync = NodeSyncService(
+        self.writer = MirrorWriter(
             mirror=self.mirror,
             write_queue=self.write_queue,
             probing=MediaProbing(runner=ProbeRunner()),
@@ -188,14 +188,10 @@ class _RaceTestCase(DecoyTestCase):
         self.tasks = [
             asyncio.create_task(write_worker(self.write_queue)),
             asyncio.create_task(
-                metadata_worker(
-                    self.metadata_queue, self.node_sync.process_metadata_item
-                )
+                metadata_worker(self.metadata_queue, self.writer.process_metadata_item)
             ),
             asyncio.create_task(
-                metadata_worker(
-                    self.metadata_queue, self.node_sync.process_metadata_item
-                )
+                metadata_worker(self.metadata_queue, self.writer.process_metadata_item)
             ),
         ]
 
@@ -209,17 +205,17 @@ class _RaceTestCase(DecoyTestCase):
 
     def gate(self, predicate: Callable[[NodeRecord], bool]) -> _Gate:
         gate = _Gate(predicate)
-        patcher = patch.object(self.node_sync._prober._enricher, "enrich", gate.enrich)
+        patcher = patch.object(self.writer._prober._enricher, "enrich", gate.enrich)
         patcher.start()
         self.addCleanup(patcher.stop)
         return gate
 
     async def drain(self) -> None:
-        await self.node_sync.wait_enrichment_drained()
+        await self.writer.wait_enrichment_drained()
 
     async def observed(self, op: Callable[[ReadSeq], Awaitable[object]]) -> None:
         """Run *op* as one backend read; the read starts when this coroutine runs."""
-        async with self.node_sync.observe() as read:
+        async with self.writer.observe() as read:
             await op(read)
 
     async def run_gated(
@@ -231,7 +227,7 @@ class _RaceTestCase(DecoyTestCase):
             task = asyncio.ensure_future(start)
             await gate.entered.wait()
             await race()
-            await self.node_sync.flush()
+            await self.writer.flush()
             gate.release.set()
             await task
             await self.drain()
@@ -250,9 +246,9 @@ class TestStaleEnrichment(_RaceTestCase):
         await self.run_gated(
             gate,
             self.observed(
-                lambda r: self.node_sync.upsert_file_batch([_obs(listed)], read=r)
+                lambda r: self.writer.upsert_file_batch([_obs(listed)], read=r)
             ),
-            lambda: self.observed(lambda r: self.node_sync.delete(f.id, read=r)),
+            lambda: self.observed(lambda r: self.writer.delete(f.id, read=r)),
         )
 
         # then
@@ -267,10 +263,8 @@ class TestStaleEnrichment(_RaceTestCase):
         # when
         await self.run_gated(
             gate,
-            self.observed(
-                lambda r: self.node_sync.upsert_file_batch([_obs(old)], read=r)
-            ),
-            lambda: self.observed(lambda r: self.node_sync.upsert(_obs(new), read=r)),
+            self.observed(lambda r: self.writer.upsert_file_batch([_obs(old)], read=r)),
+            lambda: self.observed(lambda r: self.writer.upsert(_obs(new), read=r)),
         )
 
         # then
@@ -290,10 +284,8 @@ class TestStaleEnrichment(_RaceTestCase):
         # when
         await self.run_gated(
             gate,
-            self.observed(
-                lambda r: self.node_sync.upsert_file_batch([_obs(f)], read=r)
-            ),
-            lambda: self.observed(lambda r: self.node_sync.delete(d.id, read=r)),
+            self.observed(lambda r: self.writer.upsert_file_batch([_obs(f)], read=r)),
+            lambda: self.observed(lambda r: self.writer.delete(d.id, read=r)),
         )
 
         # then
@@ -310,8 +302,8 @@ class TestStaleEnrichment(_RaceTestCase):
         # when
         await self.run_gated(
             gate,
-            self.observed(lambda r: self.node_sync.upsert(_obs(f), read=r)),
-            lambda: self.observed(lambda r: self.node_sync.delete(f.id, read=r)),
+            self.observed(lambda r: self.writer.upsert(_obs(f), read=r)),
+            lambda: self.observed(lambda r: self.writer.delete(f.id, read=r)),
         )
 
         # then
@@ -327,10 +319,8 @@ class TestStaleEnrichment(_RaceTestCase):
         # when
         await self.run_gated(
             gate,
-            self.observed(
-                lambda r: self.node_sync.upsert_file_batch([_obs(f)], read=r)
-            ),
-            lambda: self.observed(lambda r: self.node_sync.delete(g.id, read=r)),
+            self.observed(lambda r: self.writer.upsert_file_batch([_obs(f)], read=r)),
+            lambda: self.observed(lambda r: self.writer.delete(g.id, read=r)),
         )
 
         # then
@@ -357,7 +347,7 @@ class TestBackfillOrdering(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            writer=self.node_sync,
+            writer=self.writer,
         )
         return backfill, syno_paths
 
@@ -407,9 +397,9 @@ class TestBackfillOrdering(_RaceTestCase):
         async def list_children(_api: object, parent_id: str) -> list[object]:
             # The listing still reports the old name; a webhook read that starts
             # afterwards observes the rename and is applied first.
-            async with self.node_sync.observe() as read:
-                await self.node_sync.upsert(_obs(renamed), read=read)
-            await self.node_sync.flush()
+            async with self.writer.observe() as read:
+                await self.writer.upsert(_obs(renamed), read=read)
+            await self.writer.flush()
             return [_syno_item("x")]
 
         # when
@@ -449,7 +439,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         async with reconcile_session(
             {_MOUNT},
             mirror=self.mirror,
-            writer=self.node_sync,
+            writer=self.writer,
             locate=partial(self.syno_paths.locate, self.drive_api),
         ) as session:
             session.saw([self.a.id, self.b.id])
@@ -536,7 +526,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         async with reconcile_session(
             {_MOUNT},
             mirror=self.mirror,
-            writer=self.node_sync,
+            writer=self.writer,
             locate=partial(self.syno_paths.locate, self.drive_api),
         ) as session:
             # when
@@ -578,7 +568,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            writer=self.node_sync,
+            writer=self.writer,
         )
 
         async def list_children(_api: object, parent_id: str) -> list[object]:
@@ -615,7 +605,7 @@ class TestMediaFailures(_RaceTestCase):
                 raise MediaEnrichmentError(record, ProbeFailure.INVALID, "unreadable")
             return replace(record, width=20, height=20)
 
-        patcher = patch.object(self.node_sync._prober._enricher, "enrich", enrich)
+        patcher = patch.object(self.writer._prober._enricher, "enrich", enrich)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -628,7 +618,7 @@ class TestMediaFailures(_RaceTestCase):
         renamed = replace(self.old, name="renamed", width=0, height=0)
 
         # when
-        await self.observed(lambda r: self.node_sync.upsert(_obs(renamed), read=r))
+        await self.observed(lambda r: self.writer.upsert(_obs(renamed), read=r))
         await self.drain()
 
         # then
@@ -643,7 +633,7 @@ class TestMediaFailures(_RaceTestCase):
         changed = replace(self.old, size=5, hash="def", width=0, height=0)
 
         # when
-        await self.observed(lambda r: self.node_sync.upsert(_obs(changed), read=r))
+        await self.observed(lambda r: self.writer.upsert(_obs(changed), read=r))
         await self.drain()
 
         # then
@@ -657,7 +647,7 @@ class TestMediaFailures(_RaceTestCase):
         self.fail_enrichment()
 
         # when
-        await self.observed(lambda r: self.node_sync.upsert(_obs(self.fresh), read=r))
+        await self.observed(lambda r: self.writer.upsert(_obs(self.fresh), read=r))
         await self.drain()
 
         # then
@@ -670,7 +660,7 @@ class TestMediaFailures(_RaceTestCase):
         self.fail_enrichment()
 
         # when
-        await self.observed(lambda r: self.node_sync.upsert(_obs(self.fresh), read=r))
+        await self.observed(lambda r: self.writer.upsert(_obs(self.fresh), read=r))
         await self.drain()
 
         # then
@@ -694,11 +684,11 @@ class TestMediaFailures(_RaceTestCase):
             published.set()
             return _obs(self.fresh)
 
-        with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
-            async with Enrichment(self.node_sync).retrying(locate):
+        with patch.object(self.writer._prober._enricher, "enrich", enrich):
+            async with Enrichment(self.writer).retrying(locate):
                 # when
                 await self.observed(
-                    lambda r: self.node_sync.upsert(_obs(self.fresh), read=r)
+                    lambda r: self.writer.upsert(_obs(self.fresh), read=r)
                 )
                 await self.drain()
                 async with asyncio.timeout(5):
@@ -719,15 +709,13 @@ class TestMediaFailures(_RaceTestCase):
         async def locate(_source_key: str) -> NodeObservation:
             raise AssertionError("must not retry")
 
-        async with Enrichment(self.node_sync).retrying(locate):
+        async with Enrichment(self.writer).retrying(locate):
             # when
-            await self.observed(
-                lambda r: self.node_sync.upsert(_obs(self.fresh), read=r)
-            )
+            await self.observed(lambda r: self.writer.upsert(_obs(self.fresh), read=r))
             await self.drain()
 
             # then
-            self.assertEqual(self.node_sync._retries.pending("synology"), set())
+            self.assertEqual(self.writer._retries.pending("synology"), set())
 
     async def test_retry_publishes_and_clears_the_record(self) -> None:
         # given
@@ -740,7 +728,7 @@ class TestMediaFailures(_RaceTestCase):
             return _obs(self.fresh)
 
         # when
-        await Enrichment(self.node_sync).retry_failures(locate)
+        await Enrichment(self.writer).retry_failures(locate)
         await self.drain()
 
         # then
@@ -763,15 +751,13 @@ class TestMediaFailures(_RaceTestCase):
             await answer.wait()
             return None
 
-        retry = asyncio.ensure_future(Enrichment(self.node_sync).retry_failures(locate))
+        retry = asyncio.ensure_future(Enrichment(self.writer).retry_failures(locate))
         async with asyncio.timeout(5):
             await asked.wait()
             await asyncio.sleep(0.01)
             # when: a newer read records a failure, then the older answer
             # arrives saying the file is gone
-            await self.observed(
-                lambda r: self.node_sync.upsert(_obs(self.fresh), read=r)
-            )
+            await self.observed(lambda r: self.writer.upsert(_obs(self.fresh), read=r))
             await self.drain()
             answer.set()
             await retry
@@ -791,7 +777,7 @@ class TestMediaFailures(_RaceTestCase):
             return None
 
         # when
-        await Enrichment(self.node_sync).retry_failures(locate)
+        await Enrichment(self.writer).retry_failures(locate)
         await self.drain()
 
         # then
@@ -808,7 +794,7 @@ class TestMediaFailures(_RaceTestCase):
             return _obs(self.fresh)
 
         # when
-        await Enrichment(self.node_sync).retry_failures(locate)
+        await Enrichment(self.writer).retry_failures(locate)
         await self.drain()
 
         # then
@@ -827,7 +813,7 @@ class TestMediaFailures(_RaceTestCase):
             return None
 
         # when
-        await Enrichment(self.node_sync).retry_failures(locate)
+        await Enrichment(self.writer).retry_failures(locate)
         await self.drain()
 
         # then
@@ -843,7 +829,7 @@ class TestMediaFailures(_RaceTestCase):
             raise LocateUndecidedError("down")
 
         # when
-        await Enrichment(self.node_sync).retry_failures(locate)
+        await Enrichment(self.writer).retry_failures(locate)
         await self.drain()
 
         # then
@@ -862,11 +848,11 @@ class TestMediaFailures(_RaceTestCase):
                 ),
             )
         )
-        await self.observed(lambda r: self.node_sync.upsert(_obs(self.fresh), read=r))
+        await self.observed(lambda r: self.writer.upsert(_obs(self.fresh), read=r))
         await self.drain()
 
         # when: a webhook reports the file removed
-        await self.observed(lambda r: self.node_sync.delete(self.fresh.id, read=r))
+        await self.observed(lambda r: self.writer.delete(self.fresh.id, read=r))
         await self.drain()
 
         # then
@@ -886,19 +872,19 @@ class TestMediaFailures(_RaceTestCase):
             return replace(record, width=20, height=20)
 
         stall = asyncio.Event()
-        with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
+        with patch.object(self.writer._prober._enricher, "enrich", enrich):
             await self.observed(
-                lambda r: self.node_sync.upsert_file_batch([_obs(older)], read=r)
+                lambda r: self.writer.upsert_file_batch([_obs(older)], read=r)
             )
             await probing.entered.wait()
-            await self.node_sync.enqueue(stall.wait)
+            await self.writer.enqueue(stall.wait)
             probing.release.set()
             await self.metadata_queue.join()
 
             # when: a newer read of changed content fails to probe
             newer_batch = asyncio.ensure_future(
                 self.observed(
-                    lambda r: self.node_sync.upsert_file_batch([_obs(newer)], read=r)
+                    lambda r: self.writer.upsert_file_batch([_obs(newer)], read=r)
                 )
             )
             await asyncio.sleep(0.05)
@@ -931,14 +917,14 @@ class TestMediaFailures(_RaceTestCase):
                 raise MediaEnrichmentError(record, ProbeFailure.INVALID, "garbage")
             return replace(record, width=20, height=20)
 
-        with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
+        with patch.object(self.writer._prober._enricher, "enrich", enrich):
             async with asyncio.timeout(5):
                 await self.observed(
-                    lambda r: self.node_sync.upsert_file_batch([_obs(older)], read=r)
+                    lambda r: self.writer.upsert_file_batch([_obs(older)], read=r)
                 )
                 await older_probe.entered.wait()
                 await self.observed(
-                    lambda r: self.node_sync.upsert_file_batch([_obs(newer)], read=r)
+                    lambda r: self.writer.upsert_file_batch([_obs(newer)], read=r)
                 )
                 await newer_probe.entered.wait()
                 # when: the older success lands, then the newer probe fails
@@ -968,12 +954,12 @@ class TestMediaFailures(_RaceTestCase):
             return replace(record, width=20, height=20)
 
         # when
-        with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
+        with patch.object(self.writer._prober._enricher, "enrich", enrich):
             await self.run_gated(
                 gate,
-                self.observed(lambda r: self.node_sync.upsert(_obs(older), read=r)),
+                self.observed(lambda r: self.writer.upsert(_obs(older), read=r)),
                 lambda: self.observed(
-                    lambda r: self.node_sync.upsert(_obs(newer), read=r)
+                    lambda r: self.writer.upsert(_obs(newer), read=r)
                 ),
             )
 
@@ -995,14 +981,12 @@ class TestMediaFailures(_RaceTestCase):
             return replace(record, width=20, height=20)
 
         # when
-        with patch.object(self.node_sync._prober._enricher, "enrich", fail_after_gate):
+        with patch.object(self.writer._prober._enricher, "enrich", fail_after_gate):
             await self.run_gated(
                 gate,
-                self.observed(
-                    lambda r: self.node_sync.upsert(_obs(self.fresh), read=r)
-                ),
+                self.observed(lambda r: self.writer.upsert(_obs(self.fresh), read=r)),
                 lambda: self.observed(
-                    lambda r: self.node_sync.upsert_batch([_obs(newer)], read=r)
+                    lambda r: self.writer.upsert_batch([_obs(newer)], read=r)
                 ),
             )
         await self.drain()

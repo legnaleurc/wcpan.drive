@@ -92,9 +92,7 @@ async def _set_up(config_path: Path) -> None:
         managed_core(config, off_main=off_main, probes=False) as core,
         entered_backends(config, core, offline=True),
     ):
-        await ensure_mount_nodes(
-            core.mounts, mirror=core.mirror, node_sync=core.node_sync
-        )
+        await ensure_mount_nodes(core.mounts, mirror=core.mirror, writer=core.writer)
         await core.mirror.mark_media_failure("disk", "/docs/a.jpg", ProbeFailure.LIMIT)
         await core.mirror.mark_media_failure("nas", "link-1", ProbeFailure.INVALID)
         await core.write_queue.join()

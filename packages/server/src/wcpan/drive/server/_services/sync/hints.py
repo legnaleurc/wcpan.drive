@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from logging import getLogger
 from typing import Any
 
-from .service import WriterStoppedError
+from .writer import WriterStoppedError
 
 
 _L = getLogger(__name__)

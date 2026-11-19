@@ -22,7 +22,7 @@ from ._services.operations import (
 )
 from ._services.operations import OperationUnavailableError as OperationUnavailableError
 from ._services.sync.scanner import ListingUnavailableError as ListingUnavailableError
-from ._services.sync.service import WriterStoppedError as WriterStoppedError
+from ._services.sync.writer import WriterStoppedError as WriterStoppedError
 from ._services.upload.service import UploadConflictError as UploadConflictError
 from ._services.upload.service import UploadInvalidMediaError as UploadInvalidMediaError
 from ._services.upload.service import UploadNameTooLongError as UploadNameTooLongError

@@ -49,13 +49,11 @@ class LifecycleTest(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.drain_release = asyncio.Event()
         self.drain_release.set()
-        node_sync: Any = MagicMock()
-        node_sync.wait_enrichment_drained = AsyncMock(
-            side_effect=self.drain_release.wait
-        )
+        writer: Any = MagicMock()
+        writer.wait_enrichment_drained = AsyncMock(side_effect=self.drain_release.wait)
         self.core = CoreServices(
             mirror=MagicMock(),
-            node_sync=node_sync,
+            writer=writer,
             ids=MagicMock(),
             media=MagicMock(),
         )

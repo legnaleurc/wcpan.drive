@@ -75,12 +75,12 @@ can overlap. Root tests cover the client against the server.
 Code style rule for function signatures:
 
 - Keep semantic inputs positional when they are the subject of the operation.
-- Make infrastructure and wiring parameters keyword-only when they act as facilities for the function or object, such as `storage`, `drive_api`, `network`, `node_sync`, `off_main`, or similar service/session dependencies.
+- Make infrastructure and wiring parameters keyword-only when they act as facilities for the function or object, such as `storage`, `drive_api`, `network`, `writer`, `off_main`, or similar service/session dependencies.
 
 Example:
 
 ```python
-await copy_node(src, dst, node_sync=node_sync)
+await copy_node(src, dst, writer=writer)
 ```
 
 ### Releasing

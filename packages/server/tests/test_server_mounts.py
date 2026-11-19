@@ -38,7 +38,7 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
 )
 from wcpan.drive.server._services.sync.mounts import ensure_mount_nodes
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server._services.upload.service import (
     FileOpener,
     UploadConflictError,
@@ -481,18 +481,18 @@ class TestMountRestart(IsolatedAsyncioTestCase):
         )
         await self.mirror.ensure_schema()
         write_queue = create_write_queue()
-        self.node_sync = NodeSyncService(
+        self.writer = MirrorWriter(
             mirror=self.mirror,
             write_queue=write_queue,
             probing=MediaProbing(runner=ProbeRunner()),
             metadata_queue=create_metadata_queue(),
         )
-        self.writer = asyncio.create_task(write_worker(write_queue))
+        self.write_task = asyncio.create_task(write_worker(write_queue))
 
     async def asyncTearDown(self) -> None:
-        self.writer.cancel()
+        self.write_task.cancel()
         with suppress(asyncio.CancelledError):
-            await self.writer
+            await self.write_task
         self.pool.shutdown(wait=False, cancel_futures=True)
         for suffix in ("", "-wal", "-shm"):
             with suppress(FileNotFoundError):
@@ -500,7 +500,7 @@ class TestMountRestart(IsolatedAsyncioTestCase):
 
     async def _start(self, sources: dict[str, str]) -> Mounts:
         mounts = await load_mounts(sources, mirror=self.mirror)
-        await ensure_mount_nodes(mounts, mirror=self.mirror, node_sync=self.node_sync)
+        await ensure_mount_nodes(mounts, mirror=self.mirror, writer=self.writer)
         return mounts
 
     async def test_restart_keeps_ids_and_publishes_nothing(self) -> None:

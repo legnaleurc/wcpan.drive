@@ -49,12 +49,12 @@ class BackendHarnessTest(IsolatedAsyncioTestCase):
             self.assertIs(instance.context.core, instance.core)
             self.assertFalse(instance.context.offline)
 
-    async def test_core_services_do_not_expose_the_sync_service(self) -> None:
+    async def test_core_services_do_not_expose_the_writer(self) -> None:
         async with backend_harness() as server:
             # when
             instance = await server.add_instance("a", FakeSchema(), {"docs": "/d"})
             # then
-            self.assertFalse(hasattr(instance.core, "node_sync"))
+            self.assertFalse(hasattr(instance.core, "writer"))
 
     async def test_instances_share_one_mirror(self) -> None:
         async with backend_harness() as server:

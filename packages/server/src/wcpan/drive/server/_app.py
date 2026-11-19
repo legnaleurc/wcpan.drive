@@ -90,7 +90,7 @@ from ._services.sync.metadata import (
     metadata_worker,
 )
 from ._services.sync.mounts import ensure_mount_nodes
-from ._services.sync.service import NodeSyncService
+from ._services.sync.writer import MirrorWriter
 from ._services.upload.service import UploadService, UploadSessionStore
 from ._types import (
     ServerConfig,
@@ -134,7 +134,7 @@ async def managed_off_main() -> AsyncGenerator[OffMainService, None]:
 @dataclass(frozen=True, kw_only=True)
 class Core:
     mirror: MirrorStore
-    node_sync: NodeSyncService
+    writer: MirrorWriter
     write_queue: WriteQueue
     metadata_queue: MetadataQueue
     off_main: OffMainService
@@ -150,7 +150,7 @@ async def managed_core(
     probes: bool = True,
     offline: bool = False,
 ) -> AsyncGenerator[Core, None]:
-    """The mirror store, the write worker, the probe runner, and ``NodeSyncService``.
+    """The mirror store, the write worker, the probe runner, and ``MirrorWriter``.
 
     Backend schemas are registered later, by each factory, and the metadata
     workers start once the factories are entered (``entered_backends``). Also
@@ -178,20 +178,20 @@ async def managed_core(
         runner = await stack.enter_async_context(ProbeRunner()) if probes else None
         media = MediaProbing(runner=runner)
         group = await stack.enter_async_context(asyncio.TaskGroup())
-        writer = await stack.enter_async_context(
+        write_task = await stack.enter_async_context(
             _background(group, write_worker(write_queue))
         )
-        node_sync = NodeSyncService(
+        writer = MirrorWriter(
             mirror=mirror,
             write_queue=write_queue,
             metadata_queue=metadata_queue,
             probing=media,
             require_workers=offline,
-            writer=writer,
+            write_worker=write_task,
         )
         yield Core(
             mirror=mirror,
-            node_sync=node_sync,
+            writer=writer,
             write_queue=write_queue,
             metadata_queue=metadata_queue,
             off_main=off_main,
@@ -293,7 +293,7 @@ async def entered_backends(
     Serving, then starts the metadata workers, which stop before the backends
     close, so no probe outlives the connection it reads through. Offline, a
     command that queues enrichment runs the workers itself, inside its
-    connection (``NodeSyncService.enrichment_scope``).
+    connection (``MirrorWriter.enrichment_scope``).
     """
     selected = list(config.backends) if names is None else list(names)
     async with AsyncExitStack() as stack:
@@ -305,7 +305,7 @@ async def entered_backends(
             )
             services = CoreServices(
                 mirror=core.mirror,
-                node_sync=core.node_sync.for_backend(name),
+                writer=core.writer.for_backend(name),
                 ids=NodeIds(mirror=core.mirror, write_queue=core.write_queue, key=key),
                 media=core.media,
             )
@@ -335,7 +335,7 @@ async def entered_backends(
                 _background(
                     group,
                     metadata_worker(
-                        core.metadata_queue, core.node_sync.process_metadata_item
+                        core.metadata_queue, core.writer.process_metadata_item
                     ),
                 )
             )
@@ -359,7 +359,7 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
             await core.media.check()
 
             await ensure_mount_nodes(
-                core.mounts, mirror=core.mirror, node_sync=core.node_sync
+                core.mounts, mirror=core.mirror, writer=core.writer
             )
             released = await run_queued(
                 core.write_queue,
@@ -383,7 +383,7 @@ def _create_lifecycle(routes: Mapping[str, BackendRoutes]):
                 operations={n: b.operations for n, b in backends.items()},
                 uploaders={n: b.uploader for n, b in backends.items()},
                 files={n: b.files for n, b in backends.items()},
-                barrier=core.node_sync.barrier,
+                barrier=core.writer.barrier,
             )
             app[NODE_OPERATIONS_KEY] = router
             upload_service = UploadService(

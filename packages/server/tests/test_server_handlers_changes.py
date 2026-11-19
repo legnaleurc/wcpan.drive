@@ -22,7 +22,7 @@ from wcpan.drive.server._keys import (
 from wcpan.drive.server._lib.write_queue import (
     create_write_queue,
 )
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server._types import NodeObservation
 
 from ._mounts import ROOT_ID

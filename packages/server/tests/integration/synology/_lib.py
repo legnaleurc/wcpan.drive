@@ -3,7 +3,7 @@
 from wcpan.drive.protocol.types import NodeId
 from wcpan.drive.server._services.sync.scan import compare_pass
 from wcpan.drive.server._services.sync.scanner import ComparisonReport
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server.backend.synology._backfill import SubtreeComparison
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.drive.server.backend.synology._store import SynologyStoreReader
@@ -18,7 +18,7 @@ async def backfill(
     mirror: MirrorReader,
     store: SynologyStoreReader,
     syno_paths: SynologyPathService,
-    writer: NodeSyncService | None,
+    writer: MirrorWriter | None,
 ) -> ComparisonReport:
     """Run the ``backfill`` comparison of *root_id*, as the command would.
 

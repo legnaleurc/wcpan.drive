@@ -204,8 +204,8 @@ This section is the target design for the backend API. Implemented so far:
 `Listing`, `CoreServices.hints` with `ChangeHandler`, `CoreServices.enrichment`,
 `CoreServices.enqueue_write`, and the core-owned lifecycle (`BackendRuntime`,
 `BackendLifecycle`), and `CoreServices.compare` with `Comparison` and `Contents`. Both built-in backends
-use only these. `MirrorStore` and `NodeSyncService` are not public, and `CoreServices` does not
-expose its sync service.
+use only these. `MirrorStore` and `MirrorWriter` are not public, and `CoreServices` does not
+expose its writer.
 
 ### Goal
 
@@ -334,8 +334,10 @@ await core.writes_landed()      # every write queued so far has landed
 await core.bind_schema(schema)
 ```
 
-`NodeSyncService` and `MirrorStore` are not public. The core passes its sync service to
-`CoreServices` when it creates one, and the service is not an attribute backends can reach.
+`MirrorWriter` and `MirrorStore` are not public. `MirrorReader` is how backends read the
+mirror; `MirrorWriter` is the core's ordered write path into it (read numbers, probing,
+publication), which backends reach only through `observe` and `Changes`. The core passes its
+writer to `CoreServices` when it creates one, and it is not an attribute backends can reach.
 
 #### Producing facts
 
@@ -902,7 +904,7 @@ A backend is an async context manager factory named by its import path
   still uses.
 - The write worker marks a job done only once it has landed: a job that
   fails or is interrupted stays unfinished, so the queue's `join` never
-  reports a write that did not happen. `NodeSyncService.flush` and the other
+  reports a write that did not happen. `MirrorWriter.flush` and the other
   waits on queued writes also stop when the worker task ends, raising
   `WriterStoppedError` instead of waiting forever.
 - Maintenance commands (server stopped) are parsed before anything starts. A

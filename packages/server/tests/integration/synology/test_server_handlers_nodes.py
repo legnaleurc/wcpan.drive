@@ -36,7 +36,7 @@ from wcpan.drive.server._lib.write_queue import (
 from wcpan.drive.server._services.media.probe.runner import ProbeRunner
 from wcpan.drive.server._services.media.probing import MediaProbing
 from wcpan.drive.server._services.sync.scan import ScanRunner
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server._services.upload.service import (
     UploadService,
     UploadSessionStore,
@@ -241,7 +241,7 @@ class _NodesTestCase(DecoyTestCase):
             registry=MountRegistry(mounts=Mounts(root_id=ROOT_ID), root_ids={}),
             store=mirror,  # type: ignore[arg-type]
         )
-        node_sync = NodeSyncService(
+        writer = MirrorWriter(
             mirror=mirror,
             write_queue=wq,
             probing=MediaProbing(runner=ProbeRunner()),
@@ -253,16 +253,16 @@ class _NodesTestCase(DecoyTestCase):
         app[MIRROR_KEY] = mirror
         app[OFF_MAIN_KEY] = off_main
         app[WRITE_QUEUE_KEY] = wq
-        self.node_sync = node_sync
+        self.writer = writer
         app[NODE_OPERATIONS_KEY] = SynologyNodeOperations(
             drive_api=self.drive_api,
             syno_paths=syno_paths,
-            scans=ScanRunner(mirror=mirror, node_sync=node_sync),
+            scans=ScanRunner(mirror=mirror, writer=writer),
         )
         uploader = SynologyUploader(
             drive_api=self.drive_api,
             syno_paths=syno_paths,
-            scans=ScanRunner(mirror=mirror, node_sync=node_sync),
+            scans=ScanRunner(mirror=mirror, writer=writer),
         )
         app[UPLOAD_SERVICE_KEY] = UploadService(
             store=UploadSessionStore(),
@@ -486,7 +486,7 @@ class TestUpdateNode(_NodesTestCase):
         # given
         self.mirror._nodes["n1"] = _make_node()
         app = self._make_app()
-        node_sync = self.node_sync
+        writer = self.writer
         self.decoy.when(await self.drive_api.get_file(_N1)).then_return(
             {
                 "file_id": "n2",
@@ -503,7 +503,7 @@ class TestUpdateNode(_NodesTestCase):
                 "hash": "def",
             }
         )
-        with patch.object(node_sync, "delete", new_callable=AsyncMock) as delete_mock:
+        with patch.object(writer, "delete", new_callable=AsyncMock) as delete_mock:
             async with TestClient(TestServer(app)) as client:
                 # when
                 resp = await client.patch(

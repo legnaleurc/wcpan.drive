@@ -29,7 +29,7 @@ from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
 from wcpan.drive.server._services.sync.scan import ScanRunner, compare_pass
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.drive.server.backend.synology._scan import StartupScanService
@@ -142,7 +142,7 @@ class TestNewFolders(DecoyTestCase):
         self.store = SynologyStore(
             mirror=self.mirror,
             ns=self.mirror.namespace("synology"),
-            write=lambda *args: self.node_sync.enqueue_sql(*args),
+            write=lambda *args: self.writer.enqueue_sql(*args),
         )
         self.syno_paths = SynologyPathService(
             ids=IdentityIds(),
@@ -151,7 +151,7 @@ class TestNewFolders(DecoyTestCase):
         )
         q = create_write_queue()
         mq: asyncio.Queue = asyncio.Queue()
-        self.node_sync = NodeSyncService(
+        self.writer = MirrorWriter(
             mirror=self.mirror,
             write_queue=q,
             probing=MediaProbing(runner=ProbeRunner()),
@@ -159,9 +159,7 @@ class TestNewFolders(DecoyTestCase):
         ).for_backend("synology")
         for task in (
             asyncio.create_task(_slow_drain(q)),
-            asyncio.create_task(
-                metadata_worker(mq, self.node_sync.process_metadata_item)
-            ),
+            asyncio.create_task(metadata_worker(mq, self.writer.process_metadata_item)),
         ):
             self.addAsyncCleanup(self._stop, task)
 
@@ -183,13 +181,13 @@ class TestNewFolders(DecoyTestCase):
             mirror=self.mirror,
             store=self.store,
             syno_paths=self.syno_paths,
-            enrichment=Enrichment(self.node_sync),
-            scans=ScanRunner(mirror=self.mirror, node_sync=self.node_sync),
+            enrichment=Enrichment(self.writer),
+            scans=ScanRunner(mirror=self.mirror, writer=self.writer),
         )
 
         # when
         await svc.run_initial_scan()
-        await self.node_sync.wait_enrichment_drained()
+        await self.writer.wait_enrichment_drained()
 
         # then
         await self._assert_chain_mirrored()
@@ -202,12 +200,12 @@ class TestNewFolders(DecoyTestCase):
             mirror=self.mirror,
             store=self.store,
             syno_paths=self.syno_paths,
-            writer=self.node_sync,
+            writer=self.writer,
         )
 
         # when
         result = await svc(mount_id("a"))
-        await self.node_sync.wait_enrichment_drained()
+        await self.writer.wait_enrichment_drained()
 
         # then
         self.assertEqual(result.list_errors, 0)

@@ -37,7 +37,7 @@ from wcpan.drive.server._services.sync.metadata import (
 )
 from wcpan.drive.server._services.sync.scan import compare_pass
 from wcpan.drive.server._services.sync.scanner import ComparisonReport
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server._types import NodeObservation, ReadSeq
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
@@ -77,7 +77,7 @@ async def _reconcile_with_worker(
 ) -> ComparisonReport:
     q = create_write_queue()
     mq = create_metadata_queue()
-    cs = NodeSyncService(
+    cs = MirrorWriter(
         mirror=mirror,
         write_queue=q,
         probing=MediaProbing(runner=ProbeRunner()),

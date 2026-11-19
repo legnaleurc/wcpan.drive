@@ -1,4 +1,4 @@
-"""Tests for NodeSyncService methods and has_complete_media_dims."""
+"""Tests for MirrorWriter methods and has_complete_media_dims."""
 
 import asyncio
 import contextlib
@@ -31,8 +31,8 @@ from wcpan.drive.server._services.sync.metadata import (
     METADATA_WORKER_COUNT,
 )
 from wcpan.drive.server._services.sync.prober import has_complete_media_dims
-from wcpan.drive.server._services.sync.service import (
-    NodeSyncService,
+from wcpan.drive.server._services.sync.writer import (
+    MirrorWriter,
     WriterStoppedError,
 )
 from wcpan.drive.server._types import NodeObservation
@@ -40,7 +40,7 @@ from wcpan.drive.server._types import NodeObservation
 
 _EPOCH = 0
 
-logging.getLogger("wcpan.drive.server._services.sync.service").setLevel(
+logging.getLogger("wcpan.drive.server._services.sync.writer").setLevel(
     logging.CRITICAL + 1
 )
 
@@ -184,14 +184,14 @@ def _make_service(
     *,
     metadata_queue: asyncio.Queue | None = None,
     write_queue: asyncio.Queue | None = None,
-) -> tuple[NodeSyncService, _FakeMirror, asyncio.Queue]:
+) -> tuple[MirrorWriter, _FakeMirror, asyncio.Queue]:
     cs, mirror, wq = _make_core_service(
         mirror, metadata_queue=metadata_queue, write_queue=write_queue
     )
     return cs.for_backend("b"), mirror, wq
 
 
-def _without_writer(cs: NodeSyncService) -> NodeSyncService:
+def _without_writer(cs: MirrorWriter) -> MirrorWriter:
     """*cs* for a write queue no worker consumes.
 
     These tests run queued jobs by hand, so a barrier job would never land;
@@ -206,12 +206,12 @@ def _make_core_service(
     *,
     metadata_queue: asyncio.Queue | None = None,
     write_queue: asyncio.Queue | None = None,
-) -> tuple[NodeSyncService, _FakeMirror, asyncio.Queue]:
+) -> tuple[MirrorWriter, _FakeMirror, asyncio.Queue]:
     """The unscoped service, as the core uses it for its own nodes."""
     mirror = mirror or _FakeMirror()
     wq: asyncio.Queue = write_queue if write_queue is not None else asyncio.Queue()
     off_main = _FakeOffMain()
-    cs = NodeSyncService(
+    cs = MirrorWriter(
         mirror=mirror,  # type: ignore[arg-type]
         write_queue=wq,
         probing=MediaProbing(runner=ProbeRunner()),
@@ -221,11 +221,11 @@ def _make_core_service(
 
 
 # ---------------------------------------------------------------------------
-# NodeSyncService
+# MirrorWriter
 # ---------------------------------------------------------------------------
 
 
-class TestNodeSyncServiceInit(IsolatedAsyncioTestCase):
+class TestMirrorWriterInit(IsolatedAsyncioTestCase):
     async def test_enqueues_write(self):
         # given
         cs, mirror, wq = _make_service()
@@ -407,7 +407,7 @@ class TestMediaFailurePolicy(IsolatedAsyncioTestCase):
         self.assertEqual(mirror._pending, set())
 
 
-class TestNodeSyncServiceDelete(IsolatedAsyncioTestCase):
+class TestMirrorWriterDelete(IsolatedAsyncioTestCase):
     async def test_enqueues_delete(self):
         # given
         cs, mirror, wq = _make_service()
@@ -424,7 +424,7 @@ class TestNodeSyncServiceDelete(IsolatedAsyncioTestCase):
         self.assertNotIn("n1", mirror._nodes)
 
 
-class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
+class TestMirrorWriterUpsertBatch(IsolatedAsyncioTestCase):
     async def test_empty_is_noop(self):
         # given
         cs, mirror, wq = _make_service()
@@ -507,7 +507,7 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
         self.assertEqual(mirror._pending, {record.id})
 
 
-class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
+class TestMirrorWriterUpsertFileBatch(IsolatedAsyncioTestCase):
     async def test_empty_is_noop(self):
         # given
         cs, _, wq = _make_service()
@@ -603,7 +603,7 @@ class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
         self.assertTrue(mq.get_nowait().force_refresh)
 
 
-class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
+class TestMirrorWriterLifecycle(IsolatedAsyncioTestCase):
     async def test_enqueue_runs_backend_write_in_queue_order(self):
         # given
         cs, _, wq = _make_service()
@@ -680,7 +680,7 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
         self.assertEqual(mirror._pending, {record.id})
 
 
-def _held(cs: NodeSyncService) -> dict:
+def _held(cs: MirrorWriter) -> dict:
     """Reads still outstanding: in progress or held by a pending write."""
     return dict(cs._order._outstanding)
 
@@ -867,12 +867,12 @@ class TestEnrichmentScope(IsolatedAsyncioTestCase):
         writer = asyncio.create_task(write_worker(wq))
         with self.assertRaisesRegex(RuntimeError, "disk full"):
             await writer
-        cs = NodeSyncService(
+        cs = MirrorWriter(
             mirror=_FakeMirror(),  # type: ignore[arg-type]
             write_queue=wq,
             metadata_queue=asyncio.Queue(),
             probing=MediaProbing(runner=None),
-            writer=writer,
+            write_worker=writer,
         ).for_backend("b")
         entered = asyncio.Event()
 
@@ -899,12 +899,12 @@ class TestEnrichmentScope(IsolatedAsyncioTestCase):
         writer = asyncio.create_task(write_worker(wq))
         with self.assertRaisesRegex(RuntimeError, "disk full"):
             await writer
-        cs = NodeSyncService(
+        cs = MirrorWriter(
             mirror=_FakeMirror(),  # type: ignore[arg-type]
             write_queue=wq,
             metadata_queue=asyncio.Queue(),
             probing=MediaProbing(runner=None),
-            writer=writer,
+            write_worker=writer,
         )
         # when / then: the failed write is not reported as landed
         async with asyncio.timeout(1):
@@ -973,8 +973,8 @@ class TestEnrichmentScope(IsolatedAsyncioTestCase):
 class TestUndeclaredProbing(IsolatedAsyncioTestCase):
     """Without a runner, both probe paths stop and leave no read held."""
 
-    def _service(self, mq: asyncio.Queue | None = None) -> NodeSyncService:
-        cs = NodeSyncService(
+    def _service(self, mq: asyncio.Queue | None = None) -> MirrorWriter:
+        cs = MirrorWriter(
             mirror=_FakeMirror(),  # type: ignore[arg-type]
             write_queue=asyncio.Queue(),
             metadata_queue=mq or asyncio.Queue(),
@@ -1015,9 +1015,9 @@ class TestUndeclaredProbing(IsolatedAsyncioTestCase):
 class TestOfflineWorkersRequired(IsolatedAsyncioTestCase):
     """Offline, queued enrichment needs ``enrichment_scope`` to run workers."""
 
-    def _service(self) -> tuple[NodeSyncService, asyncio.Queue]:
+    def _service(self) -> tuple[MirrorWriter, asyncio.Queue]:
         mq: asyncio.Queue = asyncio.Queue()
-        cs = NodeSyncService(
+        cs = MirrorWriter(
             mirror=_FakeMirror(),  # type: ignore[arg-type]
             write_queue=asyncio.Queue(),
             metadata_queue=mq,
@@ -1060,15 +1060,13 @@ class TestOfflineWorkersRequired(IsolatedAsyncioTestCase):
 
 
 class TestBarrier(IsolatedAsyncioTestCase):
-    def _service(
-        self, wq: asyncio.Queue, writer: "asyncio.Task[None]"
-    ) -> NodeSyncService:
-        return NodeSyncService(
+    def _service(self, wq: asyncio.Queue, writer: "asyncio.Task[None]") -> MirrorWriter:
+        return MirrorWriter(
             mirror=_FakeMirror(),  # type: ignore[arg-type]
             write_queue=wq,
             metadata_queue=asyncio.Queue(),
             probing=MediaProbing(runner=None),
-            writer=writer,
+            write_worker=writer,
         )
 
     async def test_waits_for_writes_queued_before_it(self):

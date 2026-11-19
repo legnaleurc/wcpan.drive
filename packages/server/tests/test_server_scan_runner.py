@@ -25,8 +25,8 @@ from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
 from wcpan.drive.server._services.sync.scan import compare_pass, run_pass
-from wcpan.drive.server._services.sync.service import (
-    NodeSyncService,
+from wcpan.drive.server._services.sync.writer import (
+    MirrorWriter,
     WriterStoppedError,
 )
 from wcpan.drive.server._types import ProbeFailure
@@ -290,13 +290,13 @@ class _FlowTestCase(IsolatedAsyncioTestCase):
         )
         self.write_queue = create_write_queue()
         self.metadata_queue = create_metadata_queue()
-        self.writer = asyncio.create_task(write_worker(self.write_queue))
-        self.sync = NodeSyncService(
+        self.write_task = asyncio.create_task(write_worker(self.write_queue))
+        self.sync = MirrorWriter(
             mirror=self.mirror,
             write_queue=self.write_queue,
             metadata_queue=self.metadata_queue,
             probing=MediaProbing(runner=None),
-            writer=self.writer,
+            write_worker=self.write_task,
         ).for_backend("fake")
         self.enricher = _Enricher()
         enricher_patch = patch.object(self.sync._prober, "_enricher", self.enricher)
@@ -307,7 +307,7 @@ class _FlowTestCase(IsolatedAsyncioTestCase):
         )
         self.core = CoreServices(
             mirror=self.mirror,
-            node_sync=self.sync,
+            writer=self.sync,
             ids=NodeIds(
                 mirror=self.mirror,
                 write_queue=self.write_queue,
@@ -317,7 +317,7 @@ class _FlowTestCase(IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self) -> None:
-        for task in (self.worker, self.writer):
+        for task in (self.worker, self.write_task):
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
@@ -344,7 +344,7 @@ class _FlowTestCase(IsolatedAsyncioTestCase):
 
         await self.sync.enqueue(fail)
         with suppress(RuntimeError):
-            await self.writer
+            await self.write_task
 
     async def settle(self) -> None:
         """Let tasks that are ready run until they next block."""

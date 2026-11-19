@@ -25,7 +25,7 @@ from wcpan.drive.server._services.off_main import OffMainService
 from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
 )
-from wcpan.drive.server._services.sync.service import NodeSyncService
+from wcpan.drive.server._services.sync.writer import MirrorWriter
 from wcpan.drive.server._types import NodeObservation
 from wcpan.drive.server.backend.synology._convert import (
     SynologyLocator,
@@ -41,7 +41,7 @@ def _convert(info, parent_id):
     return observation.record
 
 
-class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
+class TestMirrorWriterMetadataQueue(DecoyTestCase):
     async def test_process_metadata_of_a_new_file_enqueues_write(self) -> None:
         # given
         wq = create_write_queue()
@@ -49,7 +49,7 @@ class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
         with ThreadPoolExecutor(1) as pool:
             off_main = OffMainService(pool=pool)
             mirror = self.decoy.mock(cls=MirrorStore)
-            cs = NodeSyncService(
+            cs = MirrorWriter(
                 mirror=mirror,
                 write_queue=wq,
                 probing=MediaProbing(runner=ProbeRunner()),

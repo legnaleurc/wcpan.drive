@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from unittest import IsolatedAsyncioTestCase
 
-from wcpan.drive.server._services.sync.service import WriterStoppedError
+from wcpan.drive.server._services.sync.writer import WriterStoppedError
 from wcpan.drive.server.types import ChangeHandler, HintStage
 
 

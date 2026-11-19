@@ -47,7 +47,7 @@ from ._services.sync.enrichment import Enrichment
 from ._services.sync.hints import ChangeHandler, HintStage
 from ._services.sync.scan import Changes, ScanRunner, compare_pass
 from ._services.sync.scanner import Comparison, ComparisonReport
-from ._services.sync.service import NodeSyncService
+from ._services.sync.writer import MirrorWriter
 from ._services.upload.service import FileOpener, Uploader
 
 
@@ -74,20 +74,20 @@ class CoreServices:
     """
 
     mirror: MirrorReader
-    node_sync: InitVar[NodeSyncService]
+    writer: InitVar[MirrorWriter]
     ids: NodeIdMap
     media: MediaProbing
-    _node_sync: NodeSyncService = field(init=False, repr=False, compare=False)
+    _writer: MirrorWriter = field(init=False, repr=False, compare=False)
     scans: ScanRunner = field(init=False, repr=False, compare=False)
     hints: HintStage = field(init=False, repr=False, compare=False)
     enrichment: Enrichment = field(init=False, repr=False, compare=False)
 
-    def __post_init__(self, node_sync: NodeSyncService) -> None:
-        scans = ScanRunner(mirror=self.mirror, node_sync=node_sync)
-        object.__setattr__(self, "_node_sync", node_sync)
+    def __post_init__(self, writer: MirrorWriter) -> None:
+        scans = ScanRunner(mirror=self.mirror, writer=writer)
+        object.__setattr__(self, "_writer", writer)
         object.__setattr__(self, "scans", scans)
         object.__setattr__(self, "hints", HintStage())
-        object.__setattr__(self, "enrichment", Enrichment(node_sync))
+        object.__setattr__(self, "enrichment", Enrichment(writer))
 
     def observe(
         self, *, exclusive: bool = False
@@ -113,7 +113,7 @@ class CoreServices:
         For backend state such as checkpoints. *fn* runs only SQL, on the core's
         connection, and must not commit or roll back.
         """
-        await self._node_sync.enqueue_sql(fn, *args, **kwargs)
+        await self._writer.enqueue_sql(fn, *args, **kwargs)
 
     async def writes_landed(self) -> None:
         """Wait for every write queued so far.
@@ -121,11 +121,11 @@ class CoreServices:
         Raises:
             WriterStoppedError: The write worker ended first.
         """
-        await self._node_sync.barrier()
+        await self._writer.barrier()
 
     async def bind_schema(self, schema: BackendSchema) -> BackendNamespace:
         """Register the instance with *schema* (tables, orphan cleanup)."""
-        return await self._node_sync.register_schema(schema)
+        return await self._writer.register_schema(schema)
 
 
 @dataclass(frozen=True, kw_only=True)
