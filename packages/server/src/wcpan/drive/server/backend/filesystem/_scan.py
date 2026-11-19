@@ -23,6 +23,7 @@ from logging import getLogger
 from wcpan.drive.protocol.lib import guess_mime_type
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server.exceptions import LocateUndecidedError
+from wcpan.drive.server.lib import same_public_metadata
 from wcpan.drive.server.types import (
     Enrichment,
     Listing,
@@ -62,37 +63,6 @@ class Previous:
 
     record: NodeRecord
     state: EntryState
-
-
-def _same_public_metadata(a: NodeRecord, b: NodeRecord) -> bool:
-    """Equal apart from probed media dimensions, which scans do not produce."""
-    return (
-        a.parent_id,
-        a.name,
-        a.is_directory,
-        a.created_time,
-        a.modified_time,
-        a.changed_time,
-        a.mime_type,
-        a.hash,
-        a.hash_algorithm,
-        a.size,
-        a.is_image,
-        a.is_video,
-    ) == (
-        b.parent_id,
-        b.name,
-        b.is_directory,
-        b.created_time,
-        b.modified_time,
-        b.changed_time,
-        b.mime_type,
-        b.hash,
-        b.hash_algorithm,
-        b.size,
-        b.is_image,
-        b.is_video,
-    )
 
 
 def _record(entry: Entry, node_id: NodeId, parent_id: NodeId, hash_: str) -> NodeRecord:
@@ -436,7 +406,7 @@ class FilesystemScanner:
         if (
             previous is not None
             and previous.state == state
-            and _same_public_metadata(previous.record, record)
+            and same_public_metadata(previous.record, record)
         ):
             return None
         return NodeObservation(

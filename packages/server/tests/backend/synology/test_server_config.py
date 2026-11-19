@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from decoy import Decoy, matchers
 from wcpan.drive.protocol.types import NodeId, NodeRecord
@@ -198,7 +198,7 @@ class TestFactory(DecoyTestCase):
         # then
         node_sync.register_schema.assert_awaited_once()
 
-    async def test_backfill_connects_and_reconciles_this_instance(self):
+    async def test_backfill_connects_and_compares_this_instance(self):
         # given
         stats = ComparisonReport(
             checked=0, added=0, updated=0, removed=0, list_errors=0
@@ -208,7 +208,7 @@ class TestFactory(DecoyTestCase):
             with (
                 self.subTest(dry_run=dry_run),
                 patch(
-                    f"{_BACKEND}.BackfillService.run_virtual_path",
+                    f"{_BACKEND}.SynologyBackend._backfill",
                     AsyncMock(return_value=stats),
                 ) as run,
                 redirect_stdout(io.StringIO()),
@@ -217,7 +217,7 @@ class TestFactory(DecoyTestCase):
                 async with create_backend(context, **_settings()) as backend:
                     await backend.run_command(parse_command("nas", ["backfill", *argv]))
                 # then: only a real backfill runs the metadata workers
-                run.assert_awaited_once_with("/p", dry_run=dry_run)
+                run.assert_awaited_once_with(ANY, ANY, "/p", dry_run=dry_run)
 
     async def test_pending_without_failures_does_not_connect(self):
         # given

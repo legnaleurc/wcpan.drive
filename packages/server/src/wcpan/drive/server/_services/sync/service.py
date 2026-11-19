@@ -626,7 +626,7 @@ class NodeSyncService:
 
         return await run_queued(self._write_queue, prune)
 
-    # --- Reconcile / backfill ---
+    # --- Comparison pass writes ---
 
     async def reconcile_insert(
         self, from_api: NodeObservation, *, read: ReadSeq

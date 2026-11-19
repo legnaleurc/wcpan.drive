@@ -387,8 +387,9 @@ async def create_backend(context: BackendContext) -> AsyncGenerator[MemoryBacken
   source cannot list a folder now, raise `OSError` or `ListingUnavailableError`: the
   subtree is kept and its root is incomplete. Any other exception fails the pass, so
   translate only your source's own failures and let bugs propagate.
-- `skip` may return true for a folder known to be unchanged. `keep` lists children
-  you deliberately do not visit.
+- `skip` may return true for a folder known to be unchanged. If it raises, the same
+  rule as for `list_folder` applies. `keep` lists children you deliberately do not
+  visit.
 - `locate` confirms each removal candidate. Raise `LocateUndecidedError` if the
   source cannot tell, and the node is kept.
 - `root_finished` and `pass_finished` run after the pass's writes have landed. Save
@@ -478,8 +479,10 @@ with the server stopped. Read-only commands get `ReadCoreServices`. To repair a 
 without trusting checkpoints, implement `Comparison`: like a `Scanner`, but `list_folder`
 returns every child in `Contents` and the core decides what changed. Override `differs`
 if some of your state, such as a locator in your own table, can change while the record
-does not. Run it with `core.compare(comparison, dry_run=...)`, which returns a
-`ComparisonReport`; a read-only command can only run a dry run.
+does not. Listing failures follow the same rule as for a `Scanner`. Run it with
+`core.compare(comparison, dry_run=...)`, which returns a `ComparisonReport`; a
+read-only command can only run a dry run. `lib.same_public_metadata` compares two
+records the way a comparison does, for a scanner that decides what changed itself.
 
 ## Testing
 

@@ -198,17 +198,21 @@ class SynologyPathService:
         self,
         drive_api: SynologyClient,
         parent_node_id: NodeId,
-    ) -> list[SynologyFileInfo]:
-        """``list_children`` for a scan or comparison pass.
+    ) -> list[tuple[SynologyFileInfo, NodeObservation]]:
+        """The converted children of a folder, for a scan or comparison pass.
+
+        Items without a permanent link are left out, as by ``convert``.
 
         Raises:
             ListingUnavailableError: The NAS could not list the folder; the
-                pass keeps its subtree. Anything else is a bug and fails it.
+                pass keeps its subtree. Anything else, such as a reply this
+                backend misreads, is a bug and fails it.
         """
         try:
-            return await self.list_children(drive_api, parent_node_id)
+            items = await self.list_children(drive_api, parent_node_id)
         except SynologyError as e:
             raise ListingUnavailableError(str(e)) from e
+        return await self.convert(items, parent_node_id)
 
     async def find_child_by_name(
         self,

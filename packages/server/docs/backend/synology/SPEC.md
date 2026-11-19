@@ -20,8 +20,8 @@ public IDs.
 - Calls that send a node to the NAS use `native_of`.
 - Webhook deletions use `lookup`; an unknown permanent link has nothing to
   delete.
-- Comparisons inside the backend (the move check, backfill against mirror IDs)
-  stay correct because both sides are public IDs.
+- ID comparisons in this backend, such as the move check, stay correct
+  because both sides are public IDs.
 
 ## Discovery
 
@@ -49,11 +49,12 @@ public IDs.
   node moved during the scan is recorded as moved, not removed. Only a missing
   node (`SynologyNotFoundError`) or an unresolvable parent counts as absence;
   any other failure keeps the candidate.
-- `backfill` is an offline command that runs a core comparison pass over this
-  instance's mounts under one virtual path, rather than trusting checkpoints.
-  Its `differs` reports children whose stored locator no longer matches the
-  listing. The core also probes published images and videos without complete
-  dimensions. `checked` counts listed items that have a permanent link.
+- `backfill` is an offline command that runs a core comparison pass (see
+  "Comparison pass" in the server's `SPEC.md`) over this instance's mounts under
+  one virtual path, rather than trusting checkpoints. The backend supplies the
+  scope, the listing, and `differs`, which reports children whose stored locator
+  no longer matches the listing. `checked` counts listed items that have a
+  permanent link.
 
 Failures are let to crash. A NAS call that fails while processing a webhook
 (fetching the file, listing a moved folder, a debounced update) stops the server
@@ -64,7 +65,9 @@ registration failures likewise stop startup. Events the NAS never delivers
 cannot be detected, since there is no webhook health check; the next start's
 scan, or a manual `backfill`, picks those changes up.
 
-Scan and backfill passes tolerate only NAS failures: `list_for_pass` turns a
+Scan and backfill passes list through `list_for_pass`, which converts the items
+and leaves out those without a permanent link, so they also do not count toward a
+mount's watermark. They tolerate only NAS failures: `list_for_pass` turns a
 `SynologyError` from listing into `ListingUnavailableError`, and the count check
 keeps a folder only on a `SynologyError`. Anything else, such as a `KeyError`
 from a reply missing a key the library promises, is a bug here and fails the

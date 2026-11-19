@@ -10,6 +10,7 @@ from ._lib.bfs import parallel_bfs as parallel_bfs
 from ._lib.executor import allocate as allocate
 from ._lib.executor import run_to_completion as run_to_completion
 from ._lib.names import normalize_name as normalize_name
+from ._lib.records import same_public_metadata as same_public_metadata
 from ._services.media.probe.source import CHUNK_SIZE as CHUNK_SIZE
 from ._services.media.probe.source import LocalFileSource as LocalFileSource
 from ._services.media.probe.source import pread_stream as pread_stream
@@ -37,6 +38,7 @@ __all__ = (
     "pread_stream",
     "row_to_record",
     "run_to_completion",
+    "same_public_metadata",
     "upload_probe_kind",
     "writing",
 )

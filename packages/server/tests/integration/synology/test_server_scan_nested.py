@@ -30,7 +30,6 @@ from wcpan.drive.server._services.sync.metadata import (
 )
 from wcpan.drive.server._services.sync.scan import ScanRunner, compare_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
-from wcpan.drive.server.backend.synology._backfill import BackfillService
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
 from wcpan.drive.server.backend.synology._scan import StartupScanService
@@ -47,6 +46,7 @@ from ...backend.synology._lib import (
     make_mounts,
     mount_id,
 )
+from ._lib import backfill as run_backfill
 
 
 def _dir(node_id: str, name: str, parent_id: str | None) -> NodeRecord:
@@ -196,16 +196,17 @@ class TestNewFolders(DecoyTestCase):
 
     async def test_backfill_lists_children_of_added_folders(self) -> None:
         # given
-        svc = BackfillService(
+        svc = partial(
+            run_backfill,
             drive_api=_FakeDrive(_TREE),  # type: ignore[arg-type]
             mirror=self.mirror,
             store=self.store,
             syno_paths=self.syno_paths,
-            compare=partial(compare_pass, mirror=self.mirror, node_sync=self.node_sync),
+            node_sync=self.node_sync,
         )
 
         # when
-        result = await svc._reconcile_subtree(mount_id("a"))
+        result = await svc(mount_id("a"))
         await self.node_sync.wait_enrichment_drained()
 
         # then

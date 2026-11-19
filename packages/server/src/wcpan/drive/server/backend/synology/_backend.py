@@ -5,7 +5,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from wcpan.drive.server.exceptions import LocateUndecidedError
@@ -27,13 +27,15 @@ from wcpan.drive.server.types import (
     NodeObservation,
     ReadCoreServices,
     Uploader,
+    VirtualPath,
+    VirtualPathService,
 )
 from wcpan.synology.types import (
     SynologyClient,
     SynologyPermanentLink,
 )
 
-from ._backfill import BackfillService
+from ._backfill import SubtreeComparison
 from ._commands import parse_command, print_stats
 from ._config import SynologyConfig, create_synology_client
 from ._handlers import webhook_handler
@@ -195,14 +197,17 @@ class SynologyBackend:
         *,
         dry_run: bool,
     ) -> ComparisonReport:
-        service = BackfillService(
+        root_id = await VirtualPathService(
+            mirror=core.mirror
+        ).resolve_to_directory_node_id(VirtualPath(PurePosixPath(path)))
+        comparison = SubtreeComparison(
+            root_id,
             drive_api=c.drive_api,
             mirror=core.mirror,
             store=c.store,
             syno_paths=c.syno_paths,
-            compare=core.compare,
         )
-        return await service.run_virtual_path(path, dry_run=dry_run)
+        return await core.compare(comparison, dry_run=dry_run)
 
     async def _print_media_failures(
         self, c: "_Connection", failures: list[MediaFailure]

@@ -1,4 +1,4 @@
-"""Tests for API backfill / subtree reconcile."""
+"""The Synology backfill comparison against a real mirror."""
 
 import asyncio
 import os
@@ -39,7 +39,6 @@ from wcpan.drive.server._services.sync.ordering import ReadOrdering
 from wcpan.drive.server._services.sync.scan import compare_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import NodeObservation, ReadSeq
-from wcpan.drive.server.backend.synology._backfill import BackfillService
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
@@ -62,6 +61,7 @@ from ...backend.synology._lib import (
     make_mounts,
     mount_id,
 )
+from ._lib import backfill as run_backfill
 
 
 _TS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp())
@@ -91,12 +91,13 @@ async def _reconcile_with_worker(
             registry=MountRegistry(mounts=make_mounts(mounts), root_ids={}),
             store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
         )
-        bf = BackfillService(
+        bf = partial(
+            run_backfill,
             drive_api=drive_api,
             mirror=mirror,
             store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
             syno_paths=syno_paths,
-            compare=partial(compare_pass, mirror=mirror, node_sync=cs),
+            node_sync=cs,
         )
         write_task = asyncio.create_task(write_worker(q))
         meta_task = asyncio.create_task(metadata_worker(mq, cs.process_metadata_item))
@@ -106,7 +107,7 @@ async def _reconcile_with_worker(
                 "list_children",
                 side_effect=list_children_side_effect,
             ):
-                stats = await bf._reconcile_subtree(root_id, dry_run=dry_run)
+                stats = await bf(root_id, dry_run=dry_run)
             await mq.join()
             await q.join()
             return stats
@@ -689,12 +690,13 @@ class TestReadOnlyDryRun(DecoyTestCase):
             ),
             store=store,
         )
-        backfill = BackfillService(
+        backfill = partial(
+            run_backfill,
             drive_api=self.decoy.mock(cls=SynologyClient),
             mirror=mirror,
             store=store,
             syno_paths=syno_paths,
-            compare=partial(compare_pass, mirror=mirror, node_sync=ReadOrdering()),
+            node_sync=ReadOrdering(),
         )
         listings = {
             "dir-1": [
@@ -710,7 +712,7 @@ class TestReadOnlyDryRun(DecoyTestCase):
 
         # when
         with patch.object(syno_paths, "list_children", side_effect=_list_children):
-            stats = await backfill._reconcile_subtree(NodeId("dir-1"), dry_run=True)
+            stats = await backfill(NodeId("dir-1"), dry_run=True)
 
         # then
         self.assertEqual((stats.checked, stats.added, stats.removed), (3, 2, 1))

@@ -33,13 +33,12 @@ from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
 from wcpan.drive.server._services.sync.reconcile import reconcile_session
-from wcpan.drive.server._services.sync.scan import compare_pass
+from wcpan.drive.server._services.sync.scan import ComparisonReport
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import (
     NodeObservation,
     ReadSeq,
 )
-from wcpan.drive.server.backend.synology._backfill import BackfillService
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService
@@ -68,6 +67,7 @@ from ...backend.synology._lib import (
     mount_id,
     mounts_of,
 )
+from ._lib import backfill as run_backfill
 
 
 logging.getLogger("wcpan.drive.server").setLevel(logging.CRITICAL + 1)
@@ -321,7 +321,9 @@ class TestStaleEnrichment(_RaceTestCase):
 
 
 class TestBackfillOrdering(_RaceTestCase):
-    def backfill(self) -> tuple[BackfillService, SynologyPathService]:
+    def backfill(
+        self,
+    ) -> tuple[Callable[..., Awaitable[ComparisonReport]], SynologyPathService]:
         syno_paths = SynologyPathService(
             ids=IdentityIds(),
             registry=MountRegistry(mounts=mounts_of(self.mounts), root_ids={}),
@@ -329,14 +331,15 @@ class TestBackfillOrdering(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
         )
-        backfill = BackfillService(
+        backfill = partial(
+            run_backfill,
             drive_api=object(),  # type: ignore[arg-type]
             mirror=self.mirror,
             store=SynologyStoreReader(
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            compare=partial(compare_pass, mirror=self.mirror, node_sync=self.node_sync),
+            node_sync=self.node_sync,
         )
         return backfill, syno_paths
 
@@ -367,7 +370,7 @@ class TestBackfillOrdering(_RaceTestCase):
             patch.object(syno_paths, "list_children", side_effect=list_children),
             patch.object(self.mirror, "get_children", side_effect=get_children),
         ):
-            await backfill._reconcile_subtree(a.id)
+            await backfill(a.id)
         await self.drain()
 
         # then
@@ -393,7 +396,7 @@ class TestBackfillOrdering(_RaceTestCase):
 
         # when
         with patch.object(syno_paths, "list_children", side_effect=list_children):
-            await backfill._reconcile_subtree(a.id)
+            await backfill(a.id)
         await self.drain()
 
         # then
@@ -549,14 +552,15 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         self.decoy.when(
             await drive_api.get_file(SynologyPermanentLink("x"))
         ).then_return(_syno_item("x", parent_id="b"))
-        backfill = BackfillService(
+        backfill = partial(
+            run_backfill,
             drive_api=drive_api,
             mirror=self.mirror,
             store=SynologyStoreReader(
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            compare=partial(compare_pass, mirror=self.mirror, node_sync=self.node_sync),
+            node_sync=self.node_sync,
         )
 
         async def list_children(_api: object, parent_id: str) -> list[object]:
@@ -566,7 +570,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
 
         # when
         with patch.object(syno_paths, "list_children", side_effect=list_children):
-            stats = await backfill._reconcile_subtree(_MOUNT)
+            stats = await backfill(_MOUNT)
         await self.drain()
 
         # then

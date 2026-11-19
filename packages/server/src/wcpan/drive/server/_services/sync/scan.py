@@ -7,7 +7,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
 from typing import Protocol
@@ -15,6 +15,7 @@ from typing import Protocol
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
 from ..._lib.bfs import parallel_bfs
+from ..._lib.records import same_public_metadata
 from ..._types import NodeObservation, ReadSeq
 from ..mirror.store import MirrorReader
 from .ordering import NodeOrdering
@@ -468,11 +469,10 @@ async def compare_pass[F](
 def _record_differs(existing: NodeRecord, listed: NodeRecord) -> bool:
     """Whether *listed* changes *existing*, or *existing* lacks its dimensions.
 
-    Listings do not report dimensions, which come from probing, so they are
-    compared only for being complete: an image or video published before it
-    could be probed is probed again.
+    Dimensions are compared only for being complete: an image or video
+    published before it could be probed is probed again.
     """
-    if replace(listed, width=existing.width, height=existing.height) != existing:
+    if not same_public_metadata(existing, listed):
         return True
     return (listed.is_image or listed.is_video) and (
         existing.width <= 0 or existing.height <= 0

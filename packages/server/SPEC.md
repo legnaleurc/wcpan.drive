@@ -432,7 +432,7 @@ A `Scanner` instance serves one pass or walk, and the caller creates it. Passes 
 a time, whether started by startup, a handler, a timer, a media retry, or
 an API operation. For each pass the core:
 
-1. Takes the pass lock, creates a Scanner, and calls `prepare()`. The filesystem swaps a
+1. Takes the pass lock and calls `prepare()`. The filesystem swaps a
    vanished or replaced dirty folder for its parent here. The core opens one reconcile
    session over `plan.scope`, before any listing, and preserves `plan.preserved`. Values
    read in `prepare` never become observations.
@@ -617,8 +617,8 @@ node fail with 404 or 500.
 
 ### Reconciliation sessions
 
-Startup scans, rescans, scoped repair, and backfill share one mechanism,
-`ReconcileSession`. A pass over a scope collects what
+Scan passes (startup scans, rescans, scoped repair) and comparison passes share
+one mechanism, `ReconcileSession`. A pass over a scope collects what
 listings saw and which folders they could not cover, and decides removals once,
 at the end.
 

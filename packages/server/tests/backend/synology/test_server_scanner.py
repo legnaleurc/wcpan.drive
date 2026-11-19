@@ -224,8 +224,7 @@ class TestMountPass(IsolatedAsyncioTestCase):
         item = {"type": "file", "sync_id": 200, "max_id": 150}
         observation = MagicMock()
         observation.record.id = NodeId("f")
-        self.paths.list_for_pass = AsyncMock(return_value=[item])
-        self.paths.convert = AsyncMock(return_value=[(item, observation)])
+        self.paths.list_for_pass = AsyncMock(return_value=[(item, observation)])
         root = _Folder(NodeId("_a"), "a", is_mount=True)
         # when
         await self.scan.list_folder(root)
@@ -247,8 +246,7 @@ class TestMountPass(IsolatedAsyncioTestCase):
                 MagicMock(id=NodeId("unchanged")),
             ]
         )
-        self.paths.list_for_pass = AsyncMock(return_value=[changed, unchanged])
-        self.paths.convert = AsyncMock(
+        self.paths.list_for_pass = AsyncMock(
             return_value=[(changed, changed_fact), (unchanged, unchanged_fact)]
         )
         # when
