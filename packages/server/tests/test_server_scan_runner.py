@@ -299,7 +299,7 @@ class _FlowTestCase(IsolatedAsyncioTestCase):
             writer=self.writer,
         ).for_backend("fake")
         self.enricher = _Enricher()
-        enricher_patch = patch.object(self.sync, "_enricher", self.enricher)
+        enricher_patch = patch.object(self.sync._prober, "_enricher", self.enricher)
         enricher_patch.start()
         self.addCleanup(enricher_patch.stop)
         self.worker = asyncio.create_task(

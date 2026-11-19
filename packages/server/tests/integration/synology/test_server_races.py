@@ -181,6 +181,8 @@ class _RaceTestCase(DecoyTestCase):
             write_queue=self.write_queue,
             probing=MediaProbing(runner=ProbeRunner()),
             metadata_queue=self.metadata_queue,
+            # Retries fire fast; none run unless a test registers them.
+            retries=MediaRetries(first_delay=0.01),
         ).for_backend("synology")
         self.tasks = [
             asyncio.create_task(write_worker(self.write_queue)),
@@ -206,7 +208,7 @@ class _RaceTestCase(DecoyTestCase):
 
     def gate(self, predicate: Callable[[NodeRecord], bool]) -> _Gate:
         gate = _Gate(predicate)
-        patcher = patch.object(self.node_sync._enricher, "enrich", gate.enrich)
+        patcher = patch.object(self.node_sync._prober._enricher, "enrich", gate.enrich)
         patcher.start()
         self.addCleanup(patcher.stop)
         return gate
@@ -612,7 +614,7 @@ class TestMediaFailures(_RaceTestCase):
                 raise MediaEnrichmentError(record, ProbeFailure.INVALID, "unreadable")
             return replace(record, width=20, height=20)
 
-        patcher = patch.object(self.node_sync._enricher, "enrich", enrich)
+        patcher = patch.object(self.node_sync._prober._enricher, "enrich", enrich)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -685,14 +687,13 @@ class TestMediaFailures(_RaceTestCase):
                 raise MediaEnrichmentError(record, ProbeFailure.TRANSIENT, "reset")
             return replace(record, width=20, height=20)
 
-        self.node_sync._retries = MediaRetries(first_delay=0.01)
         published = asyncio.Event()
 
         async def locate(_source_key: str) -> NodeObservation:
             published.set()
             return _obs(self.fresh)
 
-        with patch.object(self.node_sync._enricher, "enrich", enrich):
+        with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
             async with self.node_sync.retrying(locate):
                 # when
                 await self.observed(
@@ -836,7 +837,7 @@ class TestMediaFailures(_RaceTestCase):
             return replace(record, width=20, height=20)
 
         stall = asyncio.Event()
-        with patch.object(self.node_sync._enricher, "enrich", enrich):
+        with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
             await self.observed(
                 lambda r: self.node_sync.upsert_file_batch([_obs(older)], read=r)
             )
@@ -881,7 +882,7 @@ class TestMediaFailures(_RaceTestCase):
                 raise MediaEnrichmentError(record, ProbeFailure.INVALID, "garbage")
             return replace(record, width=20, height=20)
 
-        with patch.object(self.node_sync._enricher, "enrich", enrich):
+        with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
             async with asyncio.timeout(5):
                 await self.observed(
                     lambda r: self.node_sync.upsert_file_batch([_obs(older)], read=r)
@@ -918,7 +919,7 @@ class TestMediaFailures(_RaceTestCase):
             return replace(record, width=20, height=20)
 
         # when
-        with patch.object(self.node_sync._enricher, "enrich", enrich):
+        with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
             await self.run_gated(
                 gate,
                 self.observed(lambda r: self.node_sync.upsert(_obs(older), read=r)),
@@ -945,7 +946,7 @@ class TestMediaFailures(_RaceTestCase):
             return replace(record, width=20, height=20)
 
         # when
-        with patch.object(self.node_sync._enricher, "enrich", fail_after_gate):
+        with patch.object(self.node_sync._prober._enricher, "enrich", fail_after_gate):
             await self.run_gated(
                 gate,
                 self.observed(

@@ -84,7 +84,7 @@ class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
             item = await mq.get()
             mq.task_done()
             with patch.object(
-                cs._enricher,
+                cs._prober._enricher,
                 "enrich",
                 new=AsyncMock(return_value=record),
             ):

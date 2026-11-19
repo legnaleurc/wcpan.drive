@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from copy import copy
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from functools import partial
 from logging import getLogger
 from typing import Concatenate
@@ -21,7 +21,6 @@ from ..._types import (
     ProbeFailure,
     ReadSeq,
 )
-from ..media.enricher import MediaEnrichmentError, MediaEnrichService
 from ..media.probing import MediaProbing
 from ..media.retries import MediaRetries, RetryMedia
 from ..mirror.model import (
@@ -32,87 +31,21 @@ from ..mirror.store import (
     MirrorStore,
 )
 from ..operations import LocateUndecidedError
-from .metadata import (
-    METADATA_WORKER_COUNT,
-    MetadataQueue,
-    MetadataWorkItem,
-    metadata_worker,
-)
+from .metadata import MetadataQueue, MetadataWorkItem
 from .ordering import ObservationOrder
-
-
-def _has_complete_media_dims(record: NodeRecord) -> bool:
-    """True when *record* already has full media dimensions (no probing needed)."""
-    if not (record.is_image or record.is_video):
-        return True
-    return record.width > 0 and record.height > 0
-
-
-def _same_content(a: NodeRecord, b: NodeRecord) -> bool:
-    """True when *a* and *b* describe the same file content."""
-    return a.size == b.size and a.hash == b.hash
-
-
-def _with_dims_of(record: NodeRecord, source: NodeRecord) -> NodeRecord:
-    return replace(
-        record,
-        width=source.width,
-        height=source.height,
-    )
-
-
-def _is_media(record: NodeRecord) -> bool:
-    """Whether *record* is an image or video, the only files probed."""
-    return record.is_image or record.is_video
-
-
-def _needs_probe(existing: NodeRecord | None, record: NodeRecord) -> bool:
-    """Whether *record* must be probed: media whose stored dimensions do not apply."""
-    return _is_media(record) and not _reusable_dims(existing, record)
-
-
-def _reusable_dims(existing: NodeRecord | None, record: NodeRecord) -> bool:
-    """True when *existing*'s media dimensions still describe *record*.
-
-    The content must be the same, and the dimensions complete for *record*'s
-    media kind, which a rename can change.
-    """
-    return (
-        existing is not None
-        and _same_content(existing, record)
-        and _has_complete_media_dims(_with_dims_of(record, existing))
-    )
+from .prober import (
+    Outcome,
+    ProbeFailed,
+    Prober,
+    is_media,
+    needs_probe,
+    observation_of,
+    with_dims_of,
+)
 
 
 class WriterStoppedError(RuntimeError):
     """The write worker ended while writes were still waiting to land."""
-
-
-@dataclass(frozen=True, slots=True)
-class _ProbeFailed:
-    """A media probe that failed; its write decides whether to keep or withhold."""
-
-    observation: NodeObservation
-    kind: ProbeFailure
-    reason: str
-
-
-# What a write publishes: an observation, or a failed probe of one.
-type _Outcome = NodeObservation | _ProbeFailed
-
-
-def _observation_of(outcome: _Outcome) -> NodeObservation:
-    return outcome.observation if isinstance(outcome, _ProbeFailed) else outcome
-
-
-@dataclass
-class _Workers:
-    """Whether metadata workers must run, how many scopes run them, and the
-    write worker, if the core said which task it is."""
-
-    required: bool
-    active: int = 0
-    writer: "asyncio.Task[None] | None" = None
 
 
 type LocateSource = Callable[[str], Awaitable[NodeObservation | None]]
@@ -159,13 +92,19 @@ class NodeSyncService:
         for queued writes once it has ended."""
         self._mirror = mirror
         # Shared by every view, like the queues.
-        self._workers = _Workers(required=require_workers, writer=writer)
+        self._writer = writer
         self._write_queue = write_queue
         self._metadata_queue = metadata_queue
         self._order = ObservationOrder()
         self._backend: str | None = None
-        self._enricher = MediaEnrichService(probing=probing)
         self._retries = retries or MediaRetries()
+        self._prober = Prober(
+            mirror=mirror,
+            probing=probing,
+            retries=self._retries,
+            metadata_queue=metadata_queue,
+            require_workers=require_workers,
+        )
 
     def for_backend(self, name: str) -> "NodeSyncService":
         """A view whose observations are tagged as coming from backend *name*."""
@@ -209,7 +148,7 @@ class NodeSyncService:
             WriterStoppedError: The write worker ended before the writes landed.
         """
         landed = asyncio.ensure_future(run_queued(self._write_queue, _nothing))
-        writer = self._workers.writer
+        writer = self._writer
         if writer is None:
             await landed
             return
@@ -236,7 +175,7 @@ class NodeSyncService:
         Raises:
             WriterStoppedError: The write worker ended before the writes landed.
         """
-        writer = self._workers.writer
+        writer = self._writer
         if writer is None:
             await self._write_queue.join()
             return
@@ -255,7 +194,7 @@ class NodeSyncService:
         on any exit before that, cancellation included.
         """
         try:
-            outcome = await self._try_enrich(
+            outcome = await self._prober.outcome(
                 item.observation, force_refresh=item.force_refresh
             )
         except BaseException:
@@ -263,51 +202,15 @@ class NodeSyncService:
             raise
         await self._put_outcomes([(outcome, item.read)])
 
-    @asynccontextmanager
-    async def enrichment_scope(self) -> AsyncGenerator[None, None]:
-        """Run the metadata workers while entered.
+    def enrichment_scope(self) -> AbstractAsyncContextManager[None]:
+        """Run the metadata workers while entered; see ``Prober.scope``.
 
         Used by: offline commands that queue enrichment, entered inside the
-        connection their probes read through, so no probe outlives it. On a
-        normal exit, queued enrichment and the writes it produces finish first.
-        On an error, running probes are cancelled and the error is re-raised;
-        queued enrichment and writes are abandoned, for the command to redo
-        when run again.
+        connection their probes read through, so no probe outlives it.
         """
-        queue = self._metadata_queue
-        failed: BaseException | None = None
-        self._workers.active += 1
-        try:
-            async with asyncio.TaskGroup() as group:
-                workers = [
-                    group.create_task(
-                        metadata_worker(queue, self.process_metadata_item)
-                    )
-                    for _ in range(METADATA_WORKER_COUNT)
-                ]
-                try:
-                    yield
-                    await self.wait_enrichment_drained()
-                except BaseException as e:
-                    failed = e
-                    raise
-                finally:
-                    for worker in workers:
-                        worker.cancel()
-        except BaseExceptionGroup as group:
-            # The caller's own error alone comes out as itself, not in a group.
-            if failed is not None and list(group.exceptions) == [failed]:
-                raise failed from failed.__cause__
-            raise
-        finally:
-            self._workers.active -= 1
-
-    def _check_workers(self) -> None:
-        if self._workers.required and not self._workers.active:
-            raise RuntimeError(
-                "enrichment was queued with no metadata workers; a command that"
-                " queues enrichment must declare probes and run enrichment_scope"
-            )
+        return self._prober.scope(
+            self.process_metadata_item, drain=self.wait_enrichment_drained
+        )
 
     async def _hand_off[T](
         self, queue: asyncio.Queue[T], item: T, reads: Iterable[ReadSeq]
@@ -319,14 +222,14 @@ class NodeSyncService:
         """
         try:
             if queue is self._metadata_queue:
-                self._check_workers()
+                self._prober.check_workers()
             await queue.put(item)
         except BaseException:
             for read in reads:
                 self._order.release(read)
             raise
 
-    async def _put_outcomes(self, items: list[tuple[_Outcome, ReadSeq]]) -> None:
+    async def _put_outcomes(self, items: list[tuple[Outcome, ReadSeq]]) -> None:
         """Enqueue a write of *items*; each read must already be held.
 
         Outcomes from reads older than the node's latest applied one are dropped
@@ -340,10 +243,10 @@ class NodeSyncService:
             try:
                 publish: list[tuple[NodeObservation, ReadSeq]] = []
                 for outcome, read in items:
-                    observation = _observation_of(outcome)
+                    observation = observation_of(outcome)
                     if not self._order.admits(observation.record.id, read):
                         continue
-                    if not isinstance(outcome, _ProbeFailed):
+                    if not isinstance(outcome, ProbeFailed):
                         publish.append((outcome, read))
                         continue
                     kept = await self._keep_or_withhold(outcome, read)
@@ -364,7 +267,7 @@ class NodeSyncService:
         await self._hand_off(self._write_queue, write, [read for _, read in items])
 
     async def _keep_or_withhold(
-        self, failed: _ProbeFailed, read: ReadSeq
+        self, failed: ProbeFailed, read: ReadSeq
     ) -> NodeObservation | None:
         """From the write job: what an admitted failed probe publishes.
 
@@ -382,7 +285,7 @@ class NodeSyncService:
                 record.name,
                 failed.reason,
             )
-            return replace(observation, record=_with_dims_of(record, existing))
+            return replace(observation, record=with_dims_of(record, existing))
         _L.warning(
             "Withholding %s (%s); probing failed: %s",
             record.id,
@@ -423,14 +326,14 @@ class NodeSyncService:
         self._order.hold(read)
         observation = self._own(observation)
         try:
-            outcome = await self._try_enrich(
+            outcome = await self._prober.outcome(
                 observation, force_refresh=False, strict=strict
             )
         except BaseException:
             self._order.release(read)
             raise
         await self._put_outcomes([(outcome, read)])
-        return _observation_of(outcome).record
+        return observation_of(outcome).record
 
     async def delete(self, node_id: NodeId, *, read: ReadSeq) -> None:
         """Enqueue a subtree removal unless a later read already observed the node.
@@ -466,56 +369,16 @@ class NodeSyncService:
             return
         for _ in observations:
             self._order.hold(read)
-        outcomes: list[tuple[_Outcome, ReadSeq]] = []
+        outcomes: list[tuple[Outcome, ReadSeq]] = []
         try:
             for o in observations:
-                outcome = await self._try_enrich(self._own(o), force_refresh=False)
+                outcome = await self._prober.outcome(self._own(o), force_refresh=False)
                 outcomes.append((outcome, read))
         except BaseException:
             for _ in observations:
                 self._order.release(read)
             raise
         await self._put_outcomes(outcomes)
-
-    async def _try_enrich(
-        self,
-        observation: NodeObservation,
-        *,
-        force_refresh: bool,
-        strict: bool = False,
-    ) -> _Outcome:
-        """*observation* with its dimensions, or the failed probe of it.
-
-        Only media whose stored dimensions do not apply is probed. What a failed
-        probe publishes is decided by its write (``_keep_or_withhold``).
-
-        Raises:
-            MediaEnrichmentError: With *strict*, if the probe fails.
-        """
-        record = observation.record
-        if not _is_media(record):
-            # Directories and other files are never probed.
-            return observation
-        existing = await self._mirror.get_node_by_id(record.id)
-        if existing is not None and _reusable_dims(existing, record):
-            return replace(observation, record=_with_dims_of(record, existing))
-        if observation.backend is not None and observation.source_key is not None:
-            self._retries.attempting(observation.backend, observation.source_key)
-        try:
-            enriched = await self._enricher.enrich(
-                observation, force_refresh=force_refresh
-            )
-        except MediaEnrichmentError as e:
-            if strict:
-                raise
-            if observation.backend is None:
-                # Only backend views observe files; the core's own nodes are
-                # directories and never need enrichment.
-                raise ValueError(
-                    f"Untagged observation of {record.id} needs enrichment"
-                ) from e
-            return _ProbeFailed(observation=observation, kind=e.kind, reason=e.reason)
-        return replace(observation, record=enriched)
 
     async def upsert_file_batch(
         self, observations: list[NodeObservation], *, read: ReadSeq
@@ -543,16 +406,16 @@ class NodeSyncService:
         try:
             await self.barrier()
 
-            media_ids = [o.record.id for o in observations if _is_media(o.record)]
+            media_ids = [o.record.id for o in observations if is_media(o.record)]
             existing = (
                 await self._mirror.get_nodes_by_ids(media_ids) if media_ids else {}
             )
 
             for o in observations:
-                if not _needs_probe(existing.get(o.record.id), o.record):
+                if not needs_probe(existing.get(o.record.id), o.record):
                     skip_batch.append((o, read))
                 else:
-                    self._check_workers()
+                    self._prober.check_workers()
                     await mq.put(
                         MetadataWorkItem(observation=o, force_refresh=True, read=read)
                     )

@@ -1,4 +1,4 @@
-"""Tests for NodeSyncService methods and _has_complete_media_dims."""
+"""Tests for NodeSyncService methods and has_complete_media_dims."""
 
 import asyncio
 import contextlib
@@ -29,10 +29,10 @@ from wcpan.drive.server._services.mirror.model import (
 from wcpan.drive.server._services.sync.metadata import (
     METADATA_WORKER_COUNT,
 )
+from wcpan.drive.server._services.sync.prober import has_complete_media_dims
 from wcpan.drive.server._services.sync.service import (
     NodeSyncService,
     WriterStoppedError,
-    _has_complete_media_dims,
 )
 from wcpan.drive.server._types import NodeObservation
 
@@ -73,44 +73,44 @@ def _make_record(
 
 
 # ---------------------------------------------------------------------------
-# _has_complete_media_dims
+# has_complete_media_dims
 # ---------------------------------------------------------------------------
 
 
 class TestHasCompleteMediaDims(IsolatedAsyncioTestCase):
     def test_non_media_returns_true(self):
         # when / then
-        self.assertTrue(_has_complete_media_dims(_make_record()))
+        self.assertTrue(has_complete_media_dims(_make_record()))
 
     def test_image_with_dimensions_returns_true(self):
         # given
         r = _make_record(is_image=True, width=100, height=200)
         # when / then
-        self.assertTrue(_has_complete_media_dims(r))
+        self.assertTrue(has_complete_media_dims(r))
 
     def test_image_without_dimensions_returns_false(self):
         # given
         r = _make_record(is_image=True, width=0, height=0)
         # when / then
-        self.assertFalse(_has_complete_media_dims(r))
+        self.assertFalse(has_complete_media_dims(r))
 
     def test_video_with_dimensions_returns_true(self):
         # given
         r = _make_record(is_video=True, width=100, height=200)
         # when / then
-        self.assertTrue(_has_complete_media_dims(r))
+        self.assertTrue(has_complete_media_dims(r))
 
     def test_video_without_width_returns_false(self):
         # given
         r = _make_record(is_video=True, width=0, height=200)
         # when / then
-        self.assertFalse(_has_complete_media_dims(r))
+        self.assertFalse(has_complete_media_dims(r))
 
     def test_directory_returns_true(self):
         # given
         r = _make_record(is_directory=True)
         # when / then
-        self.assertTrue(_has_complete_media_dims(r))
+        self.assertTrue(has_complete_media_dims(r))
 
 
 # ---------------------------------------------------------------------------
