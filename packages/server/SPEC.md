@@ -803,7 +803,10 @@ The failure kind decides when a withheld file is probed again:
   or the backend leaving cancels it too. A timer that fires while its previous
   attempt still runs fires again once it ends. A retry only submits the file,
   so an observation submitted meanwhile can probe it once more; ordering keeps
-  the newer result.
+  the newer result. A retry that finds the file gone drops its record and timer,
+  but only a record marked before that lookup started: failure records are keyed
+  by source key, not node, so read order cannot judge them, and a failure
+  recorded since is newer than the answer.
 - Invalid media (no video or image track, or a zero width or height): no retry until the content changes, which brings a new observation,
   or the backend's startup pass.
 - Probe limit (the deadline passed while MediaInfo was parsing): inconclusive

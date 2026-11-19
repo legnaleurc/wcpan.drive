@@ -303,14 +303,19 @@ class MirrorStore:
             mark_media_failure, self._dsn, self._key(backend), source_key, kind
         )
 
-    async def clear_media_failure(self, backend: str, source_key: str) -> None:
+    async def clear_media_failure(
+        self, backend: str, source_key: str, *, before: int
+    ) -> bool:
         """Forget the failure record of *source_key*, whose file is gone.
+
+        Only a record last marked before *before* (ms) is removed, so a failure
+        recorded after the file was found gone is kept. Returns whether one was.
 
         Raises:
             ValueError: If *backend* is not registered.
         """
-        await self._off_main(
-            clear_media_failure, self._dsn, self._key(backend), source_key
+        return await self._off_main(
+            clear_media_failure, self._dsn, self._key(backend), source_key, before
         )
 
     async def prune_media_failures(self, backend: str, *, before: int) -> int:

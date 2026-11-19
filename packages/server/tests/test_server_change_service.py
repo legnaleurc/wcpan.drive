@@ -141,8 +141,12 @@ class _FakeMirror:
         self._pending.add(source_key)
         self._pending_backends.add(backend)
 
-    async def clear_media_failure(self, backend: str, source_key: str) -> None:
+    async def clear_media_failure(
+        self, backend: str, source_key: str, *, before: int
+    ) -> bool:
+        present = source_key in self._pending
         self._pending.discard(source_key)
+        return present
 
     async def get_node_by_id(self, node_id: str) -> NodeRecord | None:
         return self._nodes.get(node_id)

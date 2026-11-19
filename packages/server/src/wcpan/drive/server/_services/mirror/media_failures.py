@@ -27,12 +27,14 @@ def mark_media_failure(dsn: str, key: int, source_key: str, kind: str) -> None:
         )
 
 
-def clear_media_failure(dsn: str, key: int, source_key: str) -> None:
+def clear_media_failure(dsn: str, key: int, source_key: str, before: int) -> bool:
     with _read_write(dsn) as con:
-        con.execute(
-            "DELETE FROM media_failures WHERE instance = ? AND source_key = ?",
-            (key, source_key),
+        cur = con.execute(
+            "DELETE FROM media_failures"
+            " WHERE instance = ? AND source_key = ? AND marked_at < ?",
+            (key, source_key, before),
         )
+        return cur.rowcount > 0
 
 
 def prune_media_failures(dsn: str, key: int, before: int) -> int:

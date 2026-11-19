@@ -12,6 +12,7 @@ from logging import getLogger
 
 from ..._types import NodeObservation
 from ..media.retries import RetryMedia
+from ..mirror.model import now_ms
 from ..operations import LocateUndecidedError
 from .service import NodeSyncService
 
@@ -81,8 +82,9 @@ class Enrichment:
         """
         node_sync = self._node_sync
         async with node_sync.observe() as read:
+            asked = now_ms()
             current = await locate(source_key)
             if current is None:
-                await node_sync.drop_media_failure(source_key)
+                await node_sync.drop_media_failure(source_key, found_gone=asked)
                 return
             await node_sync.submit_probe(current, read=read)

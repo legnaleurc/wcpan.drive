@@ -749,6 +749,54 @@ class TestMediaFailures(_RaceTestCase):
         self.assertEqual(stored.width, 20)
         self.assertEqual(await self.failures(), [])
 
+    async def test_gone_file_does_not_clear_a_newer_failure(self) -> None:
+        # given: a retry asks whether the file still exists
+        await self.mirror.mark_media_failure(
+            "synology", self.fresh.id, ProbeFailure.INVALID
+        )
+        self.fail_enrichment()
+        asked = asyncio.Event()
+        answer = asyncio.Event()
+
+        async def locate(_source_key: str) -> NodeObservation | None:
+            asked.set()
+            await answer.wait()
+            return None
+
+        retry = asyncio.ensure_future(Enrichment(self.node_sync).retry_failures(locate))
+        async with asyncio.timeout(5):
+            await asked.wait()
+            await asyncio.sleep(0.01)
+            # when: a newer read records a failure, then the older answer
+            # arrives saying the file is gone
+            await self.observed(
+                lambda r: self.node_sync.upsert(_obs(self.fresh), read=r)
+            )
+            await self.drain()
+            answer.set()
+            await retry
+            await self.drain()
+
+        # then
+        self.assertEqual(await self.failures(), [self.fresh.id])
+
+    async def test_gone_file_clears_its_failure(self) -> None:
+        # given
+        await self.mirror.mark_media_failure(
+            "synology", self.fresh.id, ProbeFailure.INVALID
+        )
+        await asyncio.sleep(0.01)
+
+        async def locate(_source_key: str) -> NodeObservation | None:
+            return None
+
+        # when
+        await Enrichment(self.node_sync).retry_failures(locate)
+        await self.drain()
+
+        # then
+        self.assertEqual(await self.failures(), [])
+
     async def test_startup_retry_recovers_a_limit_failure(self) -> None:
         # given: a record left by the retired byte budget
         await self.mirror.mark_media_failure(

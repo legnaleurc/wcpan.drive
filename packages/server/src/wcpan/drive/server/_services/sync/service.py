@@ -6,7 +6,6 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from copy import copy
 from dataclasses import replace
-from functools import partial
 from logging import getLogger
 from typing import Concatenate
 
@@ -456,13 +455,22 @@ class NodeSyncService:
             [read],
         )
 
-    async def drop_media_failure(self, source_key: str) -> None:
-        """Forget the failure recorded under *source_key*; its file is gone."""
+    async def drop_media_failure(self, source_key: str, *, found_gone: int) -> None:
+        """Forget the failure recorded under *source_key*; its file is gone.
+
+        *found_gone* is when (ms) the lookup that found it gone started. A
+        failure recorded since then is newer than that answer, so it and its
+        retry are kept.
+        """
         backend = self._require_backend()
-        self._retries.forget(backend, source_key)
-        await self._write_queue.put(
-            partial(self._mirror.clear_media_failure, backend, source_key)
-        )
+
+        async def drop() -> None:
+            if await self._mirror.clear_media_failure(
+                backend, source_key, before=found_gone
+            ):
+                self._retries.forget(backend, source_key)
+
+        await self._write_queue.put(drop)
 
     def _require_backend(self) -> str:
         if self._backend is None:
