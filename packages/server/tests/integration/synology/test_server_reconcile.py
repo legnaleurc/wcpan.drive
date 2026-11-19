@@ -36,7 +36,7 @@ from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
 from wcpan.drive.server._services.sync.ordering import ReadOrdering
-from wcpan.drive.server._services.sync.reconcile import reconcile_pass
+from wcpan.drive.server._services.sync.scan import compare_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import NodeObservation, ReadSeq
 from wcpan.drive.server.backend.synology._backfill import BackfillService
@@ -96,7 +96,7 @@ async def _reconcile_with_worker(
             mirror=mirror,
             store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
             syno_paths=syno_paths,
-            reconcile=partial(reconcile_pass, mirror=mirror, node_sync=cs),
+            compare=partial(compare_pass, mirror=mirror, node_sync=cs),
         )
         write_task = asyncio.create_task(write_worker(q))
         meta_task = asyncio.create_task(metadata_worker(mq, cs.process_metadata_item))
@@ -275,9 +275,9 @@ class TestReconcileSubtree(DecoyTestCase):
                 )
 
                 # then
-                self.assertEqual(stats["checked"], 1)
-                self.assertEqual(stats["updated"], 1)
-                self.assertEqual(stats["added"], 0)
+                self.assertEqual(stats.checked, 1)
+                self.assertEqual(stats.updated, 1)
+                self.assertEqual(stats.added, 0)
                 updated = await mirror.get_node_by_id("f-1")
                 assert updated is not None
                 self.assertEqual(updated.size, 999)
@@ -358,7 +358,7 @@ class TestReconcileSubtree(DecoyTestCase):
             )
 
         # then
-        self.assertEqual(stats["updated"], 1)
+        self.assertEqual(stats.updated, 1)
         self.assertEqual(probed, ["zero"])
         zero = await mirror.get_node_by_id("zero")
         assert zero is not None
@@ -403,7 +403,7 @@ class TestReconcileSubtree(DecoyTestCase):
                 )
 
                 # then
-                self.assertEqual(stats["updated"], 1)
+                self.assertEqual(stats.updated, 1)
                 updated = await mirror.get_node_by_id("f-1")
                 assert updated is not None
                 self.assertEqual(updated.size, 0)
@@ -448,9 +448,9 @@ class TestReconcileSubtree(DecoyTestCase):
                 )
 
                 # then
-                self.assertEqual(stats["checked"], 1)
-                self.assertEqual(stats["added"], 1)
-                self.assertEqual(stats["updated"], 0)
+                self.assertEqual(stats.checked, 1)
+                self.assertEqual(stats.added, 1)
+                self.assertEqual(stats.updated, 0)
                 added = await mirror.get_node_by_id("f-new")
                 self.assertIsNotNone(added)
                 assert added is not None
@@ -499,8 +499,8 @@ class TestReconcileSubtree(DecoyTestCase):
 
                 # then
                 self.assertIn(mount_id("docs"), listed)
-                self.assertEqual(stats["checked"], 1)
-                self.assertEqual(stats["added"], 1)
+                self.assertEqual(stats.checked, 1)
+                self.assertEqual(stats.added, 1)
         finally:
             os.unlink(db_path)
 
@@ -542,7 +542,7 @@ class TestReconcileSubtree(DecoyTestCase):
                 )
 
                 # then
-                self.assertEqual(stats["added"], 1)
+                self.assertEqual(stats.added, 1)
                 self.assertIsNone(await mirror.get_node_by_id("f-new"))
         finally:
             os.unlink(db_path)
@@ -590,8 +590,8 @@ class TestReconcileSubtree(DecoyTestCase):
                 )
 
                 # then
-                self.assertEqual(stats["checked"], 1)
-                self.assertEqual(stats["removed"], 1)
+                self.assertEqual(stats.checked, 1)
+                self.assertEqual(stats.removed, 1)
                 self.assertIsNotNone(await mirror.get_node_by_id("f-1"))
                 self.assertIsNone(await mirror.get_node_by_id("f-2"))
         finally:
@@ -637,7 +637,7 @@ class TestReconcileSubtree(DecoyTestCase):
                 )
 
                 # then
-                self.assertEqual(stats["removed"], 1)
+                self.assertEqual(stats.removed, 1)
                 self.assertIsNotNone(await mirror.get_node_by_id("f-2"))
         finally:
             os.unlink(db_path)
@@ -694,7 +694,7 @@ class TestReadOnlyDryRun(DecoyTestCase):
             mirror=mirror,
             store=store,
             syno_paths=syno_paths,
-            reconcile=partial(reconcile_pass, mirror=mirror, node_sync=ReadOrdering()),
+            compare=partial(compare_pass, mirror=mirror, node_sync=ReadOrdering()),
         )
         listings = {
             "dir-1": [
@@ -713,40 +713,9 @@ class TestReadOnlyDryRun(DecoyTestCase):
             stats = await backfill._reconcile_subtree(NodeId("dir-1"), dry_run=True)
 
         # then
-        self.assertEqual(
-            (stats["checked"], stats["added"], stats["removed"]), (3, 2, 1)
-        )
+        self.assertEqual((stats.checked, stats.added, stats.removed), (3, 2, 1))
         after = {
             name: Path(directory, name).read_bytes()
             for name in sorted(os.listdir(directory))
         }
         self.assertEqual(after, before)
-
-    async def test_a_real_run_needs_a_writer(self) -> None:
-        # when / then
-        with self.assertRaisesRegex(RuntimeError, "only a dry run"):
-            async with reconcile_pass(
-                set(),
-                mirror=self.decoy.mock(cls=MirrorStore),
-                node_sync=ReadOrdering(),
-                locate=AsyncMock(),
-            ):
-                pass
-
-    async def test_a_dry_run_cannot_write_even_with_a_writer(self) -> None:
-        # given
-        node_sync = self.decoy.mock(cls=NodeSyncService)
-        self.decoy.when(node_sync.observe()).then_enter_with(ReadSeq(1))
-        # when
-        async with reconcile_pass(
-            set(),
-            mirror=self.decoy.mock(cls=MirrorStore),
-            node_sync=node_sync,
-            locate=AsyncMock(),
-            dry_run=True,
-        ) as session:
-            async with session.listing() as writes:
-                # then
-                self.assertIsNone(writes)
-            with self.assertRaisesRegex(RuntimeError, "dry run"):
-                await session.commit_removals()

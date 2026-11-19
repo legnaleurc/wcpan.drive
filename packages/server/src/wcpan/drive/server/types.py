@@ -38,9 +38,10 @@ from ._services.paths import VirtualPathService as VirtualPathService
 from ._services.sync.enrichment import Enrichment as Enrichment
 from ._services.sync.hints import ChangeHandler as ChangeHandler
 from ._services.sync.hints import HintStage as HintStage
-from ._services.sync.reconcile import ReconcilePass as ReconcilePass
-from ._services.sync.reconcile import ReconcileWrites as ReconcileWrites
 from ._services.sync.scan import Changes as Changes
+from ._services.sync.scan import Comparison as Comparison
+from ._services.sync.scan import ComparisonReport as ComparisonReport
+from ._services.sync.scan import Contents as Contents
 from ._services.sync.scan import FolderLister as FolderLister
 from ._services.sync.scan import Listing as Listing
 from ._services.sync.scan import Scanner as Scanner
@@ -67,6 +68,9 @@ __all__ = (
     "BackendSchema",
     "ChangeHandler",
     "Changes",
+    "Comparison",
+    "ComparisonReport",
+    "Contents",
     "CommandParser",
     "CoreServices",
     "Enrichment",
@@ -87,8 +91,6 @@ __all__ = (
     "OpenMediaSource",
     "ProbeFailure",
     "ReadCoreServices",
-    "ReconcilePass",
-    "ReconcileWrites",
     "ScanPlan",
     "ScanRunner",
     "Scanner",

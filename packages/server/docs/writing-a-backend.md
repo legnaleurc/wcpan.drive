@@ -48,6 +48,7 @@ The factory's keyword-only parameters are its settings. Annotate them with
 | `BackendSchema` | Your tables, kept in the core's transactions |
 | `Scanner` | How to list the source, for the startup scan and rescans |
 | `ChangeHandler` | Optional: turns notifications into changes |
+| `Comparison` | Optional: a full re-check of a subtree, for a repair command |
 | `NodeOperations` | Create, rename, move, delete, download |
 | `Uploader` and `FileOpener` | Uploads; `SpooledFiles` covers a source that takes whole files |
 | `startup_scan`, `change_handler`, `run` | What the core starts, in that order |
@@ -471,9 +472,12 @@ whose probe fails are withheld until a retry or later scan succeeds.
 
 Decorate the factory with `backend_commands(parser)` to add commands. The parser
 returns a `BackendCommand` declaring the access it needs, and `run_command` runs it
-with the server stopped. Read-only commands get `ReadCoreServices`. For a comparison
-that does not fit `Scanner`, or a dry run, use
-`core.reconcile(scope, locate=..., dry_run=...)`.
+with the server stopped. Read-only commands get `ReadCoreServices`. To repair a subtree
+without trusting checkpoints, implement `Comparison`: like a `Scanner`, but `list_folder`
+returns every child in `Contents` and the core decides what changed. Override `differs`
+if some of your state, such as a locator in your own table, can change while the record
+does not. Run it with `core.compare(comparison, dry_run=...)`, which returns a
+`ComparisonReport`; a read-only command can only run a dry run.
 
 ## Testing
 

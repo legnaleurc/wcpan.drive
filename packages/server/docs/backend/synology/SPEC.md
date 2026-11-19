@@ -49,9 +49,11 @@ public IDs.
   node moved during the scan is recorded as moved, not removed. Only a missing
   node (`SynologyNotFoundError`) or an unresolvable parent counts as absence;
   any other failure keeps the candidate.
-- `backfill` is an offline command that reconciles one virtual path in a
-  `ReconcileSession`, comparing every field rather than trusting checkpoints.
-  It also probes published images and videos without complete dimensions.
+- `backfill` is an offline command that runs a core comparison pass over this
+  instance's mounts under one virtual path, rather than trusting checkpoints.
+  Its `differs` reports children whose stored locator no longer matches the
+  listing. The core also probes published images and videos without complete
+  dimensions. `checked` counts listed items that have a permanent link.
 
 Failures are let to crash. A NAS call that fails while processing a webhook
 (fetching the file, listing a moved folder, a debounced update) stops the server

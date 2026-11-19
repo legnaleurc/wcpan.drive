@@ -7,10 +7,7 @@ server stopped.
 import argparse
 from collections.abc import Sequence
 
-from wcpan.drive.server.types import Access, BackendCommand
-
-
-_STATS = ("checked", "added", "updated", "removed", "list_errors")
+from wcpan.drive.server.types import Access, BackendCommand, ComparisonReport
 
 
 def command_parser(name: str) -> argparse.ArgumentParser:
@@ -52,11 +49,11 @@ def parse_command(name: str, argv: Sequence[str]) -> BackendCommand:
     return BackendCommand(access=Access.READ, args=args)
 
 
-def print_stats(stats: dict[str, int]) -> None:
+def print_stats(report: ComparisonReport) -> None:
     print(
-        f"Checked {stats['checked']} node(s), "
-        f"added {stats['added']}, "
-        f"updated {stats['updated']}, "
-        f"removed {stats['removed']}, "
-        f"list errors {stats['list_errors']}."
+        f"Checked {report.checked} node(s), "
+        f"added {report.added}, "
+        f"updated {report.updated}, "
+        f"removed {report.removed}, "
+        f"list errors {report.list_errors}."
     )

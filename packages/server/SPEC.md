@@ -203,7 +203,7 @@ This section is the target design for the backend API. Implemented so far:
 `CoreServices.observe` with `Changes`, `CoreServices.scans` with `Scanner`, `ScanPlan`, and
 `Listing`, `CoreServices.hints` with `ChangeHandler`, `CoreServices.enrichment`,
 `CoreServices.enqueue_write`, and the core-owned lifecycle (`BackendRuntime`,
-`BackendLifecycle`), and `CoreServices.reconcile` with `ReconcilePass`. Both built-in backends
+`BackendLifecycle`), and `CoreServices.compare` with `Comparison` and `Contents`. Both built-in backends
 use only these. `MirrorStore` and `NodeSyncService` are not public, and `CoreServices` does not
 expose its sync service.
 
@@ -367,15 +367,13 @@ async with core.observe(exclusive=True) as changes:    # read number taken here
 
 Read-only commands receive a core without `scans`, `hints`, `observe`, or `enqueue_write`, with
 provisional IDs and a schema check that does not write. To report what would change, they use
-`core.reconcile(..., dry_run=True)`. This differs from a backend's
+`core.compare(comparison, dry_run=True)`. This differs from a backend's
 own `read_only` setting: a read-only filesystem source still writes the mirror and probes
 while serving.
 
-A backend whose comparison does not fit `Scanner`, such as Synology's `backfill`, drives the
-pass itself with `core.reconcile(scope, locate=..., dry_run=...)`. Each `listing()` numbers one
-read and yields `ReconcileWrites` (`inserted`, `updated`), or `None` in a dry run, and the pass
-ends with `removal_roots()` or `commit_removals()`. Offline, the command runs enrichment
-workers in `core.enrichment.scope()`.
+A repair that must not trust checkpoints, such as Synology's `backfill`, runs a comparison
+pass (below) with `core.compare(comparison, dry_run=...)`. Offline, a real run executes inside
+`core.enrichment.scope()`.
 
 ### Hint stage
 
@@ -477,6 +475,46 @@ Filesystem create, update, delete, and final upload publication enter
 `core.observe(exclusive=True)` before their validation reads, so a scan cannot mint another
 ID for the new entry. Staging, transfer, upload probing, conflict scans, and partial-delete
 repair stay outside the block. Downloads need none.
+
+### Comparison pass
+
+A `Scanner` pass writes what the backend reports as changed. A `Comparison` pass lists every
+folder in scope and the core decides what changed, so it repairs what an incremental scan
+would skip. The traversal mode is chosen by the class a backend implements, not by a flag on
+one class: a comparison has no `skip` and no finish hooks, since it saves no progress.
+
+```python
+class Comparison[F](ABC):
+    async def prepare(self) -> ScanPlan[F]: ...
+    def folder_id(self, folder: F) -> NodeId: ...
+    async def list_folder(self, folder: F) -> Contents[F]: ...   # children, subfolders
+    async def locate(self, node_id: NodeId) -> NodeObservation | None: ...
+    async def differs(self, pairs) -> set[NodeId]: ...           # default: set()
+```
+
+`compare(comparison, dry_run=False)` returns a `ComparisonReport` (`checked`, `added`,
+`updated`, `removed`, `list_errors`).
+
+1. Takes the pass lock, so it never overlaps a scan or an exclusive `observe` block.
+2. Opens one reconcile session over `plan.scope`, as a scan does.
+3. Lists each folder in its own read. A failed listing preserves the subtree and counts as a
+   list error. Every child is `saw`.
+4. Compares each child with the mirrored children of that folder. A child the mirror lacks
+   there is added; that includes a node moved in from elsewhere. A mirrored child is updated if
+   its record differs (dimensions aside, which listings do not report), if it is an image or
+   video without complete dimensions, or if `differs` names it. `differs` receives one
+   folder's mirrored pairs at once and covers backend state the core cannot read, such as
+   Synology's locators.
+5. An added directory is written directly, in listing order. Anything else is probed again
+   with `force_refresh` unless its mirrored dimensions still apply.
+6. Confirms and commits removals, then drains enrichment and its writes before releasing the
+   lock, since removal confirmation queues writes after its own drain.
+
+A dry run writes nothing and needs no writer, so a read-only core runs it on the read
+ordering: inserts and updates are only logged and counted, and `removed` counts the
+unconfirmed `removal_roots`, so it can exceed what a real run would remove. A real run on a
+read-only core raises. A failed pass settles submitted work before releasing the lock, as a
+scan does.
 
 ### Lifecycle
 

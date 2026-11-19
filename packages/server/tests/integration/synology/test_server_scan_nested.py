@@ -28,8 +28,7 @@ from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.metadata import (
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.reconcile import reconcile_pass
-from wcpan.drive.server._services.sync.scan import ScanRunner
+from wcpan.drive.server._services.sync.scan import ScanRunner, compare_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.synology._backfill import BackfillService
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
@@ -202,9 +201,7 @@ class TestNewFolders(DecoyTestCase):
             mirror=self.mirror,
             store=self.store,
             syno_paths=self.syno_paths,
-            reconcile=partial(
-                reconcile_pass, mirror=self.mirror, node_sync=self.node_sync
-            ),
+            compare=partial(compare_pass, mirror=self.mirror, node_sync=self.node_sync),
         )
 
         # when
@@ -212,5 +209,5 @@ class TestNewFolders(DecoyTestCase):
         await self.node_sync.wait_enrichment_drained()
 
         # then
-        self.assertEqual(result["list_errors"], 0)
+        self.assertEqual(result.list_errors, 0)
         await self._assert_chain_mirrored()

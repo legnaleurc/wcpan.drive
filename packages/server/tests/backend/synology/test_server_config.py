@@ -24,6 +24,7 @@ from wcpan.drive.server.types import (
     Access,
     BackendContext,
     BackendRoutes,
+    ComparisonReport,
     CoreServices,
     MediaFailure,
     MediaProbing,
@@ -199,8 +200,8 @@ class TestFactory(DecoyTestCase):
 
     async def test_backfill_connects_and_reconciles_this_instance(self):
         # given
-        stats = dict.fromkeys(
-            ("checked", "added", "updated", "removed", "list_errors"), 0
+        stats = ComparisonReport(
+            checked=0, added=0, updated=0, removed=0, list_errors=0
         )
         for argv, dry_run in ((["/p", "--dry-run"], True), (["/p"], False)):
             context = _context(offline=True, decoy=self.decoy)

@@ -5,9 +5,10 @@ import logging
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import MagicMock, patch
@@ -24,11 +25,16 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
+from wcpan.drive.server._services.sync.ordering import ReadOrdering
+from wcpan.drive.server._services.sync.scan import compare_pass
 from wcpan.drive.server._services.sync.service import (
     NodeSyncService,
     WriterStoppedError,
 )
 from wcpan.drive.server.types import (
+    Comparison,
+    ComparisonReport,
+    Contents,
     CoreServices,
     Listing,
     NodeObservation,
@@ -213,6 +219,48 @@ class _Scanner(Scanner[NodeId]):
             await self.finished_gate.pass_through()
         if self.finish_error is not None:
             raise self.finish_error
+
+
+class _Comparison(Comparison[NodeId]):
+    def __init__(self, source: _Source, roots: Iterable[NodeId] = (_A,)) -> None:
+        self.source = source
+        self.roots = list(roots)
+        self.failing = set[NodeId]()
+        self.stale = set[NodeId]()
+        self.compared: list[list[NodeId]] = []
+
+    async def prepare(self) -> ScanPlan[NodeId]:
+        return ScanPlan(scope=set(self.roots), roots=self.roots, preserved=[])
+
+    def folder_id(self, folder: NodeId) -> NodeId:
+        return folder
+
+    async def list_folder(self, folder: NodeId) -> Contents[NodeId]:
+        if folder in self.failing:
+            raise OSError(f"cannot list {folder}")
+        children = self.source.children(folder)
+        return Contents(
+            children=[_obs(c) for c in children],
+            subfolders=[c.id for c in children if c.is_directory],
+        )
+
+    async def locate(self, node_id: NodeId) -> NodeObservation | None:
+        record = self.source.nodes.get(node_id)
+        return _obs(record) if record is not None else None
+
+    async def differs(
+        self, pairs: Sequence[tuple[NodeObservation, NodeRecord]]
+    ) -> set[NodeId]:
+        self.compared.append([o.record.id for o, _ in pairs])
+        return {o.record.id for o, _ in pairs} & self.stale
+
+
+def _report(
+    *, checked: int = 0, added: int = 0, updated: int = 0, removed: int = 0
+) -> ComparisonReport:
+    return ComparisonReport(
+        checked=checked, added=added, updated=updated, removed=removed, list_errors=0
+    )
 
 
 class _FlowTestCase(IsolatedAsyncioTestCase):
@@ -674,6 +722,131 @@ class WalkTest(_FlowTestCase):
         await self.sync.wait_enrichment_drained()
         # then
         self.assertTrue(await self.has("f"))
+
+
+class CompareTest(_FlowTestCase):
+    async def compare(
+        self, comparison: _Comparison, *, dry_run: bool = False
+    ) -> ComparisonReport:
+        async with asyncio.timeout(5):
+            return await self.core.compare(comparison, dry_run=dry_run)
+
+    async def seed(self, *nodes: NodeRecord) -> None:
+        await self.mirror.bulk_upsert_nodes(list(nodes))
+
+    async def test_writes_what_differs_and_removes_what_is_gone(self) -> None:
+        # given
+        same = _node("same", _A)
+        changed = _node("changed", _A)
+        await self.seed(same, changed, _node("gone", _A))
+        source = _Source(
+            [same, replace(changed, modified_time=_TS + 1), _node("new", _A)]
+        )
+        # when
+        report = await self.compare(_Comparison(source))
+        # then
+        self.assertEqual(report, _report(checked=3, added=1, updated=1, removed=1))
+        record = await self.mirror.get_node_by_id(_id("changed"))
+        assert record is not None
+        self.assertEqual(record.modified_time, _TS + 1)
+        self.assertTrue(await self.has("new"))
+        self.assertFalse(await self.has("gone"))
+
+    async def test_descends_into_every_listed_folder(self) -> None:
+        # given
+        source = _Source([_folder("d", _A), _node("f", _id("d"))])
+        # when
+        report = await self.compare(_Comparison(source))
+        # then
+        self.assertEqual(report, _report(checked=2, added=2))
+        self.assertTrue(await self.has("f"))
+
+    async def test_dry_run_reports_without_writing(self) -> None:
+        # given
+        changed = _node("changed", _A)
+        await self.seed(changed, _node("gone", _A))
+        source = _Source([replace(changed, name="renamed"), _node("new", _A)])
+        # when
+        report = await self.compare(_Comparison(source), dry_run=True)
+        await self.sync.wait_enrichment_drained()
+        # then
+        self.assertEqual(report, _report(checked=2, added=1, updated=1, removed=1))
+        self.assertFalse(await self.has("new"))
+        self.assertTrue(await self.has("gone"))
+        record = await self.mirror.get_node_by_id(_id("changed"))
+        assert record is not None
+        self.assertEqual(record.name, "changed")
+
+    async def test_backend_state_the_record_does_not_show_is_updated(self) -> None:
+        # given
+        node = _node("f", _A)
+        await self.seed(node)
+        comparison = _Comparison(_Source([node, _node("new", _A)]))
+        comparison.stale.add(_id("f"))
+        # when
+        report = await self.compare(comparison)
+        # then: only mirrored children are offered to the hook
+        self.assertEqual(report, _report(checked=2, added=1, updated=1))
+        self.assertEqual(comparison.compared, [[_id("f")]])
+
+    async def test_media_without_dimensions_is_updated(self) -> None:
+        # given
+        image = replace(_node("img", _A), is_image=True, mime_type="image/png")
+        await self.seed(image)
+        # when
+        report = await self.compare(_Comparison(_Source([image])))
+        # then
+        self.assertEqual(report.updated, 1)
+
+    async def test_failed_listing_keeps_its_subtree(self) -> None:
+        # given
+        await self.seed(_folder("d", _A), _node("f", _id("d")))
+        comparison = _Comparison(_Source([_folder("d", _A)]))
+        comparison.failing.add(_id("d"))
+        # when
+        report = await self.compare(comparison)
+        # then
+        self.assertEqual(report.list_errors, 1)
+        self.assertEqual(report.removed, 0)
+        self.assertTrue(await self.has("f"))
+
+    async def test_returns_after_its_writes_land(self) -> None:
+        # given
+        await self.seed(_node("gone", _A))
+        # when
+        await self.compare(_Comparison(_Source([_node("new", _A)])))
+        # then: no drain needed to see the result
+        self.assertTrue(await self.has("new"))
+        self.assertFalse(await self.has("gone"))
+
+    async def test_waits_for_a_running_pass(self) -> None:
+        # given
+        scanner = _Scanner(_Source())
+        scanner.finished_gate = _Gate()
+        scan = asyncio.create_task(self.scan(scanner))
+        await scanner.finished_gate.entered.wait()
+        # when
+        compare = asyncio.create_task(self.compare(_Comparison(_Source())))
+        await self.settle()
+        # then
+        self.assertFalse(compare.done())
+        scanner.finished_gate.release.set()
+        await scan
+        await compare
+
+    async def test_only_a_dry_run_can_run_without_a_writer(self) -> None:
+        # given
+        comparison = _Comparison(_Source())
+        # when
+        report = await compare_pass(
+            comparison, mirror=self.mirror, node_sync=ReadOrdering(), dry_run=True
+        )
+        # then
+        self.assertEqual(report, _report())
+        with self.assertRaisesRegex(RuntimeError, "only a dry run"):
+            await compare_pass(
+                comparison, mirror=self.mirror, node_sync=ReadOrdering(), dry_run=False
+            )
 
 
 class ObserveTest(_FlowTestCase):

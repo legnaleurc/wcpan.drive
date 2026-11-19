@@ -32,10 +32,8 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.reconcile import (
-    reconcile_pass,
-    reconcile_session,
-)
+from wcpan.drive.server._services.sync.reconcile import reconcile_session
+from wcpan.drive.server._services.sync.scan import compare_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import (
     NodeObservation,
@@ -338,9 +336,7 @@ class TestBackfillOrdering(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            reconcile=partial(
-                reconcile_pass, mirror=self.mirror, node_sync=self.node_sync
-            ),
+            compare=partial(compare_pass, mirror=self.mirror, node_sync=self.node_sync),
         )
         return backfill, syno_paths
 
@@ -560,9 +556,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            reconcile=partial(
-                reconcile_pass, mirror=self.mirror, node_sync=self.node_sync
-            ),
+            compare=partial(compare_pass, mirror=self.mirror, node_sync=self.node_sync),
         )
 
         async def list_children(_api: object, parent_id: str) -> list[object]:
@@ -576,7 +570,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
         await self.drain()
 
         # then
-        self.assertEqual(stats["removed"], 0)
+        self.assertEqual(stats.removed, 0)
         stored = await self.mirror.get_node_by_id(x.id)
         assert stored is not None
         self.assertEqual(stored.parent_id, b.id)

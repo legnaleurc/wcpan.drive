@@ -20,6 +20,7 @@ from wcpan.drive.server.types import (
     BackendCommand,
     BackendContext,
     BackendNamespace,
+    ComparisonReport,
     CoreServices,
     MediaFailure,
     Mounts,
@@ -193,13 +194,13 @@ class SynologyBackend:
         path: str,
         *,
         dry_run: bool,
-    ) -> dict[str, int]:
+    ) -> ComparisonReport:
         service = BackfillService(
             drive_api=c.drive_api,
             mirror=core.mirror,
             store=c.store,
             syno_paths=c.syno_paths,
-            reconcile=core.reconcile,
+            compare=core.compare,
         )
         return await service.run_virtual_path(path, dry_run=dry_run)
 
