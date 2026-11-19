@@ -108,11 +108,13 @@ class _Enricher:
     def __init__(self) -> None:
         self.gates: dict[NodeId, _Gate] = {}
         self.failing = set[NodeId]()
+        self.probed: list[NodeId] = []
 
     async def enrich(
         self, observation: NodeObservation, *, force_refresh: bool = False
     ) -> NodeRecord:
         record = observation.record
+        self.probed.append(record.id)
         gate = self.gates.get(record.id)
         if gate is not None:
             await gate.pass_through()
@@ -812,14 +814,20 @@ class CompareTest(_FlowTestCase):
         self.assertEqual(report, _report(checked=2, added=1, updated=1))
         self.assertEqual(comparison.compared, [[_id("f")]])
 
-    async def test_media_without_dimensions_is_updated(self) -> None:
-        # given
-        image = replace(_node("img", _A), is_image=True, mime_type="image/png")
-        await self.seed(image)
+    async def test_only_media_without_dimensions_is_probed_again(self) -> None:
+        # given: one image published without dimensions, one with them
+        image = replace(_node("zero", _A), is_image=True, mime_type="image/png")
+        done = replace(image, id=_id("done"), name="done", width=8, height=6)
+        await self.seed(image, done)
+        listed = [replace(r, width=0, height=0) for r in (image, done)]
         # when
-        report = await self.compare(_Comparison(_Source([image])))
+        report = await self.compare(_Comparison(_Source(listed)))
         # then
         self.assertEqual(report.updated, 1)
+        self.assertEqual(self.enricher.probed, [_id("zero")])
+        record = await self.mirror.get_node_by_id(_id("done"))
+        assert record is not None
+        self.assertEqual((record.width, record.height), (8, 6))
 
     async def test_failed_listing_keeps_its_subtree(self) -> None:
         # given

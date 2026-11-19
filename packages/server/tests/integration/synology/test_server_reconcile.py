@@ -35,7 +35,7 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.scan import compare_pass
+from wcpan.drive.server._services.sync.scan import ComparisonReport, compare_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import NodeObservation, ReadSeq
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
@@ -72,50 +72,47 @@ async def _reconcile_with_worker(
     drive_api: SynologyClient,
     root_id: str,
     *,
-    dry_run: bool,
     list_children_side_effect: object,
-) -> dict[str, int]:
+) -> ComparisonReport:
     q = create_write_queue()
     mq = create_metadata_queue()
-    with ThreadPoolExecutor(2) as pool:
-        off_main = OffMainService(pool=pool)
-        cs = NodeSyncService(
-            mirror=mirror,
-            write_queue=q,
-            probing=MediaProbing(runner=ProbeRunner()),
-            metadata_queue=mq,
-        ).for_backend("synology")
-        syno_paths = SynologyPathService(
-            ids=IdentityIds(),
-            registry=MountRegistry(mounts=make_mounts(mounts), root_ids={}),
-            store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
-        )
-        bf = partial(
-            run_backfill,
-            drive_api=drive_api,
-            mirror=mirror,
-            store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
-            syno_paths=syno_paths,
-        )
-        write_task = asyncio.create_task(write_worker(q))
-        meta_task = asyncio.create_task(metadata_worker(mq, cs.process_metadata_item))
-        try:
-            with patch.object(
-                syno_paths,
-                "list_children",
-                side_effect=list_children_side_effect,
-            ):
-                stats = await bf(root_id, writer=None if dry_run else cs)
-            await mq.join()
-            await q.join()
-            return stats
-        finally:
-            meta_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await meta_task
-            write_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await write_task
+    cs = NodeSyncService(
+        mirror=mirror,
+        write_queue=q,
+        probing=MediaProbing(runner=ProbeRunner()),
+        metadata_queue=mq,
+    ).for_backend("synology")
+    syno_paths = SynologyPathService(
+        ids=IdentityIds(),
+        registry=MountRegistry(mounts=make_mounts(mounts), root_ids={}),
+        store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
+    )
+    bf = partial(
+        run_backfill,
+        drive_api=drive_api,
+        mirror=mirror,
+        store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
+        syno_paths=syno_paths,
+    )
+    write_task = asyncio.create_task(write_worker(q))
+    meta_task = asyncio.create_task(metadata_worker(mq, cs.process_metadata_item))
+    try:
+        with patch.object(
+            syno_paths,
+            "list_children",
+            side_effect=list_children_side_effect,
+        ):
+            stats = await bf(root_id, writer=cs)
+        await mq.join()
+        await q.join()
+        return stats
+    finally:
+        meta_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await meta_task
+        write_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await write_task
 
 
 def _node(
@@ -234,58 +231,12 @@ class TestVirtualPathToDirectoryNodeId(IsolatedAsyncioTestCase):
             await self.svc.resolve_to_directory_node_id("/docs/Nope")
 
 
-class TestReconcileSubtree(DecoyTestCase):
-    async def test_updates_mismatch_and_preserves_width(self) -> None:
-        # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
-                        _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
-                        _node("f-1", "x.txt", "dir-1", size=0, width=42),
-                    ]
-                )
-                mounts = {"docs": "/volume1/docs"}
-                drive_api = self.decoy.mock(cls=SynologyClient)
+class TestBackfillComparison(DecoyTestCase):
+    """What Synology adds to the core comparison; the rest is in the core tests."""
 
-                async def _list_children(_nw: object, parent_id: str) -> list[dict]:
-                    if parent_id == "dir-1":
-                        return [_syno_item("f-1", "x.txt", size=999)]
-                    return []
-
-                # when
-                stats = await _reconcile_with_worker(
-                    mirror,
-                    mounts,
-                    drive_api,
-                    "dir-1",
-                    dry_run=False,
-                    list_children_side_effect=_list_children,
-                )
-
-                # then
-                self.assertEqual(stats.checked, 1)
-                self.assertEqual(stats.updated, 1)
-                self.assertEqual(stats.added, 0)
-                updated = await mirror.get_node_by_id("f-1")
-                assert updated is not None
-                self.assertEqual(updated.size, 999)
-                self.assertEqual(updated.width, 42)
-        finally:
-            os.unlink(db_path)
-
-    async def test_probes_published_media_without_dimensions(self) -> None:
-        # given: an image published without dimensions, and one with them
+    async def test_changed_locator_is_updated(self) -> None:
+        # given: two mirrored files equal to their listing, one bound to an
+        # old file_id
         fd, db_path = tempfile.mkstemp(suffix=".sqlite")
         os.close(fd)
         self.addCleanup(os.unlink, db_path)
@@ -296,167 +247,52 @@ class TestReconcileSubtree(DecoyTestCase):
             schemas={"synology": SYNOLOGY_SCHEMA},
         )
         await mirror.ensure_schema()
-
-        def image(node_id: str, width: int, height: int) -> NodeRecord:
-            return replace(
-                _node(node_id, f"{node_id}.jpg", "dir-1"),
-                mime_type="image/jpeg",
-                is_image=True,
-                width=width,
-                height=height,
-            )
-
         await mirror.bulk_upsert_nodes(
             [
                 _node(ROOT_ID, "", None, is_directory=True),
                 _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
                 _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
-                image("zero", 0, 0),
-                image("done", 8, 6),
+                _node("same", "same.txt", "dir-1"),
+                _node("moved", "moved.txt", "dir-1"),
             ]
         )
+        ns = mirror.namespace("synology")
         await mirror.write(
             lambda con: [
-                SYNOLOGY_SCHEMA.bind_locator(
-                    con, mirror.namespace("synology"), NodeId(i), SynologyLocator(i)
-                )
-                for i in ("zero", "done")
+                SYNOLOGY_SCHEMA.bind_locator(con, ns, NodeId(i), SynologyLocator(f))
+                for i, f in (("same", "same"), ("moved", "old-file-id"))
             ]
         )
 
         async def _list_children(_nw: object, parent_id: str) -> list[dict]:
             if parent_id == "dir-1":
                 return [
-                    {
-                        **_syno_item(i, f"{i}.jpg"),
-                        "content_type": "image",
-                        "change_time": _TS,
-                    }
-                    for i in ("zero", "done")
+                    {**_syno_item(i, f"{i}.txt"), "change_time": _TS}
+                    for i in ("same", "moved")
                 ]
             return []
 
-        probed: list[str] = []
-
-        async def enrich(observation: NodeObservation, **_: object) -> NodeRecord:
-            probed.append(observation.record.id)
-            return replace(observation.record, width=640, height=480)
-
         # when
-        with patch(
-            "wcpan.drive.server._services.media.enricher.MediaEnrichService.enrich",
-            side_effect=enrich,
-        ):
-            stats = await _reconcile_with_worker(
-                mirror,
-                {"docs": "/volume1/docs"},
-                self.decoy.mock(cls=SynologyClient),
-                "dir-1",
-                dry_run=False,
-                list_children_side_effect=_list_children,
-            )
+        stats = await _reconcile_with_worker(
+            mirror,
+            {"docs": "/volume1/docs"},
+            self.decoy.mock(cls=SynologyClient),
+            "dir-1",
+            list_children_side_effect=_list_children,
+        )
 
         # then
-        self.assertEqual(stats.updated, 1)
-        self.assertEqual(probed, ["zero"])
-        zero = await mirror.get_node_by_id("zero")
-        assert zero is not None
-        self.assertEqual((zero.width, zero.height), (640, 480))
-
-    async def test_dry_run_no_write(self) -> None:
-        # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
-                        _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
-                        _node("f-1", "x.txt", "dir-1", size=0),
-                    ]
-                )
-                mounts = {"docs": "/volume1/docs"}
-                drive_api = self.decoy.mock(cls=SynologyClient)
-
-                async def _list_children(_nw: object, parent_id: str) -> list[dict]:
-                    if parent_id == "dir-1":
-                        return [_syno_item("f-1", "x.txt", size=500)]
-                    return []
-
-                # when
-                stats = await _reconcile_with_worker(
-                    mirror,
-                    mounts,
-                    drive_api,
-                    "dir-1",
-                    dry_run=True,
-                    list_children_side_effect=_list_children,
-                )
-
-                # then
-                self.assertEqual(stats.updated, 1)
-                updated = await mirror.get_node_by_id("f-1")
-                assert updated is not None
-                self.assertEqual(updated.size, 0)
-        finally:
-            os.unlink(db_path)
-
-    async def test_adds_missing_node(self) -> None:
-        # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
-                        _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
-                    ]
-                )
-                mounts = {"docs": "/volume1/docs"}
-                drive_api = self.decoy.mock(cls=SynologyClient)
-
-                async def _list_children(_nw: object, parent_id: str) -> list[dict]:
-                    if parent_id == "dir-1":
-                        return [_syno_item("f-new", "new.txt", size=100)]
-                    return []
-
-                # when
-                stats = await _reconcile_with_worker(
-                    mirror,
-                    mounts,
-                    drive_api,
-                    "dir-1",
-                    dry_run=False,
-                    list_children_side_effect=_list_children,
-                )
-
-                # then
-                self.assertEqual(stats.checked, 1)
-                self.assertEqual(stats.added, 1)
-                self.assertEqual(stats.updated, 0)
-                added = await mirror.get_node_by_id("f-new")
-                self.assertIsNotNone(added)
-                assert added is not None
-                self.assertEqual(added.name, "new.txt")
-                self.assertEqual(added.parent_id, "dir-1")
-        finally:
-            os.unlink(db_path)
+        self.assertEqual((stats.checked, stats.updated), (2, 1))
+        locators = await SynologyStoreReader(mirror=mirror, ns=ns).get_locators(
+            [NodeId("same"), NodeId("moved")]
+        )
+        self.assertEqual(
+            locators,
+            {
+                NodeId("same"): SynologyLocator("same"),
+                NodeId("moved"): SynologyLocator("moved"),
+            },
+        )
 
     async def test_server_root_queues_mounts(self) -> None:
         # given
@@ -492,7 +328,6 @@ class TestReconcileSubtree(DecoyTestCase):
                     mounts,
                     drive_api,
                     ROOT_ID,
-                    dry_run=False,
                     list_children_side_effect=_list_children,
                 )
 
@@ -500,144 +335,6 @@ class TestReconcileSubtree(DecoyTestCase):
                 self.assertIn(mount_id("docs"), listed)
                 self.assertEqual(stats.checked, 1)
                 self.assertEqual(stats.added, 1)
-        finally:
-            os.unlink(db_path)
-
-    async def test_adds_missing_node_dry_run(self) -> None:
-        # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
-                        _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
-                    ]
-                )
-                mounts = {"docs": "/volume1/docs"}
-                drive_api = self.decoy.mock(cls=SynologyClient)
-
-                async def _list_children(_nw: object, parent_id: str) -> list[dict]:
-                    if parent_id == "dir-1":
-                        return [_syno_item("f-new", "new.txt")]
-                    return []
-
-                # when
-                stats = await _reconcile_with_worker(
-                    mirror,
-                    mounts,
-                    drive_api,
-                    "dir-1",
-                    dry_run=True,
-                    list_children_side_effect=_list_children,
-                )
-
-                # then
-                self.assertEqual(stats.added, 1)
-                self.assertIsNone(await mirror.get_node_by_id("f-new"))
-        finally:
-            os.unlink(db_path)
-
-    async def test_removes_node_absent_from_api(self) -> None:
-        # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
-                        _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
-                        _node("f-1", "keep.txt", "dir-1"),
-                        _node("f-2", "deleted.txt", "dir-1"),
-                    ]
-                )
-                mounts = {"docs": "/volume1/docs"}
-                drive_api = self.decoy.mock(cls=SynologyClient)
-                self.decoy.when(
-                    await drive_api.get_file(matchers.Anything())
-                ).then_raise(SynologyNotFoundError("gone", error_code=1003))
-
-                async def _list_children(_nw: object, parent_id: str) -> list[dict]:
-                    if parent_id == "dir-1":
-                        return [_syno_item("f-1", "keep.txt")]
-                    return []
-
-                # when
-                stats = await _reconcile_with_worker(
-                    mirror,
-                    mounts,
-                    drive_api,
-                    "dir-1",
-                    dry_run=False,
-                    list_children_side_effect=_list_children,
-                )
-
-                # then
-                self.assertEqual(stats.checked, 1)
-                self.assertEqual(stats.removed, 1)
-                self.assertIsNotNone(await mirror.get_node_by_id("f-1"))
-                self.assertIsNone(await mirror.get_node_by_id("f-2"))
-        finally:
-            os.unlink(db_path)
-
-    async def test_removes_node_absent_from_api_dry_run(self) -> None:
-        # given
-        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
-        os.close(fd)
-        try:
-            with ThreadPoolExecutor() as pool:
-                mirror = MirrorStore(
-                    db_path,
-                    off_main=OffMainService(pool=pool),
-                    schemas={"synology": SYNOLOGY_SCHEMA},
-                )
-                await mirror.ensure_schema()
-                await mirror.bulk_upsert_nodes(
-                    [
-                        _node(ROOT_ID, "", None, is_directory=True),
-                        _node(mount_id("docs"), "docs", ROOT_ID, is_directory=True),
-                        _node("dir-1", "Projects", mount_id("docs"), is_directory=True),
-                        _node("f-1", "keep.txt", "dir-1"),
-                        _node("f-2", "deleted.txt", "dir-1"),
-                    ]
-                )
-                mounts = {"docs": "/volume1/docs"}
-                drive_api = self.decoy.mock(cls=SynologyClient)
-
-                async def _list_children(_nw: object, parent_id: str) -> list[dict]:
-                    if parent_id == "dir-1":
-                        return [_syno_item("f-1", "keep.txt")]
-                    return []
-
-                # when
-                stats = await _reconcile_with_worker(
-                    mirror,
-                    mounts,
-                    drive_api,
-                    "dir-1",
-                    dry_run=True,
-                    list_children_side_effect=_list_children,
-                )
-
-                # then
-                self.assertEqual(stats.removed, 1)
-                self.assertIsNotNone(await mirror.get_node_by_id("f-2"))
         finally:
             os.unlink(db_path)
 
