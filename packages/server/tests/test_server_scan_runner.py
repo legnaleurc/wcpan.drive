@@ -31,6 +31,7 @@ from wcpan.drive.server._services.sync.service import (
     NodeSyncService,
     WriterStoppedError,
 )
+from wcpan.drive.server.exceptions import ListingUnavailableError
 from wcpan.drive.server.types import (
     Comparison,
     ComparisonReport,
@@ -552,23 +553,45 @@ class ScanLoggingTest(_FlowTestCase):
         self.assertIsNone(record.exc_info)
         self.assertIn("cannot list", record.getMessage())
 
-    async def test_unexpected_error_keeps_its_traceback(self) -> None:
+    async def test_unavailable_listing_keeps_the_subtree(self) -> None:
         # given
-        scanner = _Scanner(_Source())
+        source = _Source([_folder("d", _A), _node("f", _id("d"))])
+        await self.scan(_Scanner(source))
+        source.remove(_id("f"))
+        scanner = _Scanner(source)
 
         async def list_folder(folder: NodeId) -> Listing[NodeId]:
-            raise ValueError("bug")
+            raise ListingUnavailableError("NAS busy")
 
         # when
         with (
             patch.object(scanner, "list_folder", list_folder),
-            self.assertLogs(self._LOGGER, "ERROR") as logs,
+            self.assertLogs(self._LOGGER, "WARNING") as logs,
         ):
             await self.scan(scanner)
         # then
         (record,) = logs.records
-        self.assertIsNotNone(record.exc_info)
+        self.assertIsNone(record.exc_info)
         self.assertEqual(scanner.root_results, {_A: False})
+        self.assertTrue(await self.has("f"))
+
+    async def test_unexpected_error_fails_the_pass(self) -> None:
+        # given
+        source = _Source([_node("f", _A)])
+        await self.scan(_Scanner(source))
+        source.remove(_id("f"))
+        scanner = _Scanner(source)
+
+        async def list_folder(folder: NodeId) -> Listing[NodeId]:
+            raise KeyError("type")
+
+        # when
+        with patch.object(scanner, "list_folder", list_folder):
+            with self.assertRaises(KeyError):
+                await self.scan(scanner)
+        # then: nothing was removed, and no finish hook ran
+        self.assertTrue(await self.has("f"))
+        self.assertIsNone(scanner.pass_result)
 
 
 class ScanFailureTest(_FlowTestCase):
@@ -808,6 +831,21 @@ class CompareTest(_FlowTestCase):
         # then
         self.assertEqual(report.list_errors, 1)
         self.assertEqual(report.removed, 0)
+        self.assertTrue(await self.has("f"))
+
+    async def test_unexpected_listing_error_fails_the_pass(self) -> None:
+        # given
+        await self.seed(_node("f", _A))
+        comparison = _Comparison(_Source())
+
+        async def list_folder(folder: NodeId) -> Contents[NodeId]:
+            raise KeyError("type")
+
+        # when
+        with patch.object(comparison, "list_folder", list_folder):
+            with self.assertRaises(KeyError):
+                await self.compare(comparison)
+        # then
         self.assertTrue(await self.has("f"))
 
     async def test_returns_after_its_writes_land(self) -> None:

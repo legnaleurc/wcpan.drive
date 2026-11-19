@@ -22,13 +22,15 @@ from wcpan.drive.server.backend.synology._store import (
     SynologyStore,
     SynologyStoreReader,
 )
+from wcpan.drive.server.exceptions import ListingUnavailableError
 from wcpan.drive.server.testing import BackendInstance, backend_harness
+from wcpan.synology.exceptions import SynologyNetworkError
 from wcpan.synology.types import (
     SynologyClient,
     SynologyPath,
 )
 
-from ._lib import DecoyTestCase, IdentityIds, mounts_of
+from ._lib import DecoyTestCase, IdentityIds, make_mounts, mounts_of
 
 
 class TestScannerWriteBack(DecoyTestCase):
@@ -199,9 +201,16 @@ class TestMountPass(IsolatedAsyncioTestCase):
 
     async def test_failed_count_check_still_skips(self) -> None:
         # given
-        self.drive_api.list_folder.side_effect = OSError("NAS unavailable")
+        self.drive_api.list_folder.side_effect = SynologyNetworkError("NAS unavailable")
         # when, then
         self.assertTrue(await self.scan.skip(self.old_folder()))
+
+    async def test_failed_count_check_from_a_bug_fails(self) -> None:
+        # given
+        self.drive_api.list_folder.side_effect = KeyError("total")
+        # when, then
+        with self.assertRaises(KeyError):
+            await self.scan.skip(self.old_folder())
 
     async def test_new_folder_is_entered_whatever_its_max_id(self) -> None:
         # when
@@ -215,7 +224,7 @@ class TestMountPass(IsolatedAsyncioTestCase):
         item = {"type": "file", "sync_id": 200, "max_id": 150}
         observation = MagicMock()
         observation.record.id = NodeId("f")
-        self.paths.list_children = AsyncMock(return_value=[item])
+        self.paths.list_for_pass = AsyncMock(return_value=[item])
         self.paths.convert = AsyncMock(return_value=[(item, observation)])
         root = _Folder(NodeId("_a"), "a", is_mount=True)
         # when
@@ -238,7 +247,7 @@ class TestMountPass(IsolatedAsyncioTestCase):
                 MagicMock(id=NodeId("unchanged")),
             ]
         )
-        self.paths.list_children = AsyncMock(return_value=[changed, unchanged])
+        self.paths.list_for_pass = AsyncMock(return_value=[changed, unchanged])
         self.paths.convert = AsyncMock(
             return_value=[(changed, changed_fact), (unchanged, unchanged_fact)]
         )
@@ -251,6 +260,32 @@ class TestMountPass(IsolatedAsyncioTestCase):
     def test_mounts_are_scanned_one_at_a_time(self) -> None:
         # when, then
         self.assertFalse(self.scan.concurrent_roots)
+
+
+class TestListForPass(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.paths = SynologyPathService(
+            ids=IdentityIds(),
+            registry=MountRegistry(mounts=make_mounts({"a": "/a"}), root_ids={}),
+            store=MagicMock(),
+        )
+        self.drive_api: Any = MagicMock()
+
+    async def test_nas_failure_is_an_unavailable_listing(self) -> None:
+        # given
+        self.drive_api.list_folder = AsyncMock(
+            side_effect=SynologyNetworkError("NAS unavailable")
+        )
+        # when, then
+        with self.assertRaisesRegex(ListingUnavailableError, "NAS unavailable"):
+            await self.paths.list_for_pass(self.drive_api, NodeId("_a"))
+
+    async def test_other_failures_pass_through(self) -> None:
+        # given
+        self.drive_api.list_folder = AsyncMock(side_effect=KeyError("total"))
+        # when, then
+        with self.assertRaises(KeyError):
+            await self.paths.list_for_pass(self.drive_api, NodeId("_a"))
 
 
 class TestStartupOrder(IsolatedAsyncioTestCase):

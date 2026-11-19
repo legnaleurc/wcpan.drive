@@ -383,8 +383,10 @@ async def create_backend(context: BackendContext) -> AsyncGenerator[MemoryBacken
 
 - `prepare` decides the scope and roots. Put a root you cannot use safely, such as
   an unmounted disk, in `preserved`, so its mirror is kept.
-- `list_folder` returns every child in `seen` and those to write in `changed`. If it
-  raises, the subtree is kept and its root is incomplete.
+- `list_folder` returns every child in `seen` and those to write in `changed`. When the
+  source cannot list a folder now, raise `OSError` or `ListingUnavailableError`: the
+  subtree is kept and its root is incomplete. Any other exception fails the pass, so
+  translate only your source's own failures and let bugs propagate.
 - `skip` may return true for a folder known to be unchanged. `keep` lists children
   you deliberately do not visit.
 - `locate` confirms each removal candidate. Raise `LocateUndecidedError` if the

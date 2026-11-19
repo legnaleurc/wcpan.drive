@@ -57,7 +57,7 @@ class _SubtreeComparison(Comparison[NodeId]):
         return folder
 
     async def list_folder(self, folder: NodeId) -> Contents[NodeId]:
-        items = await self._syno_paths.list_children(self._drive_api, folder)
+        items = await self._syno_paths.list_for_pass(self._drive_api, folder)
         listed = await self._syno_paths.convert(items, folder)
         return Contents(
             children=[o for _, o in listed],

@@ -441,9 +441,12 @@ an API operation. For each pass the core:
    covers `skip` and `list_folder` and is held until resulting writes are applied.
 3. Records `seen` and `keep`, submits directories, then files. File enrichment waits for
    directory writes when there are files. Descending does not wait: `F` must carry what is
-   needed to list the folder. If `list_folder` raises, its subtree is preserved and its root
-   is incomplete. `skip` returning true preserves the subtree without making the root
-   incomplete. A `skip` that raises counts as a failed listing.
+   needed to list the folder. If `list_folder` raises `OSError` or `ListingUnavailableError`,
+   the source cannot list it now: its subtree is preserved and its root is incomplete. Any
+   other exception is a bug, such as a payload the backend misreads, and fails the pass, so a
+   bug in the startup scan stops the server rather than leaving a subtree silently stale.
+   `skip` returning true preserves the subtree without making the root incomplete. A `skip`
+   that raises follows the same rule as a listing.
 4. Confirms and commits removals through `locate`. Computing candidates drains enrichment,
    so files found by this pass are published or withheld before the lock is released;
    otherwise a later pass could mint a second ID for the same new file.
@@ -497,8 +500,9 @@ class Comparison[F](ABC):
 
 1. Takes the pass lock, so it never overlaps a scan or an exclusive `observe` block.
 2. Opens one reconcile session over `plan.scope`, as a scan does.
-3. Lists each folder in its own read. A failed listing preserves the subtree and counts as a
-   list error. Every child is `saw`.
+3. Lists each folder in its own read. A listing failure the scan runner tolerates preserves
+   the subtree and counts as a list error; any other exception fails the pass. Every child is
+   `saw`.
 4. Compares each child with the mirrored children of that folder. A child the mirror lacks
    there is added; that includes a node moved in from elsewhere. A mirrored child is updated if
    its record differs (dimensions aside, which listings do not report), if it is an image or

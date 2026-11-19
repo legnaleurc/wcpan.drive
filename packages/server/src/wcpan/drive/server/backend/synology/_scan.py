@@ -13,6 +13,7 @@ from wcpan.drive.server.types import (
     ScanPlan,
     ScanRunner,
 )
+from wcpan.synology.exceptions import SynologyError
 from wcpan.synology.types import (
     SynologyClient,
     SynologyPermanentLink,
@@ -98,9 +99,11 @@ class _MountPass(Scanner[_Folder]):
                 offset=0,
                 limit=1,
             )
-        except Exception:
+        except SynologyError as e:
             _L.warning(
-                "Count-check failed for folder %s, preserving subtree", folder.node_id
+                "Count-check failed for folder %s, preserving subtree: %s",
+                folder.node_id,
+                e,
             )
             return True
         if api_count != len(children):
@@ -123,7 +126,7 @@ class _MountPass(Scanner[_Folder]):
         mount = folder.mount
         last = self._last(mount)
         _L.debug("Entering folder %s (max_id=%d)", folder.node_id, folder.max_id)
-        items = await self._syno_paths.list_children(self._drive_api, folder.node_id)
+        items = await self._syno_paths.list_for_pass(self._drive_api, folder.node_id)
         listed = await self._syno_paths.convert(items, folder.node_id)
         existing = {n.id for n in await self._mirror.get_children(folder.node_id)}
 

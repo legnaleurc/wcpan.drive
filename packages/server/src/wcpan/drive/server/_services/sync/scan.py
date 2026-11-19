@@ -25,6 +25,18 @@ from .service import NodeSyncService
 _L = getLogger(__name__)
 
 
+class ListingUnavailableError(Exception):
+    """The source could not list a folder now, such as while it is unreachable.
+
+    A pass keeps that folder's subtree as mirrored, as for an ``OSError``. Any
+    other exception from listing is a bug and fails the pass.
+    """
+
+
+# What a listing may raise without failing its pass.
+_LISTING_FAILURES = (OSError, ListingUnavailableError)
+
+
 @dataclass(frozen=True, kw_only=True)
 class ScanPlan[F]:
     """What one pass covers, decided before any listing."""
@@ -70,14 +82,22 @@ class Scanner[F](ABC):
 
     @abstractmethod
     async def list_folder(self, folder: F) -> Listing[F]:
-        """List *folder*; a failure keeps its subtree as mirrored."""
+        """List *folder*.
+
+        Raises:
+            OSError, ListingUnavailableError: The source cannot list it now;
+                its subtree is kept as mirrored. Anything else fails the pass.
+        """
 
     @abstractmethod
     async def locate(self, node_id: NodeId) -> NodeObservation | None:
         """Fetch one removal candidate directly (see ``Locate``)."""
 
     async def skip(self, folder: F) -> bool:
-        """Whether *folder* is known unchanged, keeping its subtree."""
+        """Whether *folder* is known unchanged, keeping its subtree.
+
+        Failures are as for ``list_folder``.
+        """
         return False
 
     async def root_finished(self, root: F, complete: bool) -> None:
@@ -120,7 +140,7 @@ class Comparison[F](ABC):
 
     @abstractmethod
     async def list_folder(self, folder: F) -> Contents[F]:
-        """List *folder*; a failure keeps its subtree as mirrored."""
+        """List *folder*; failures are as for ``Scanner.list_folder``."""
 
     @abstractmethod
     async def locate(self, node_id: NodeId) -> NodeObservation | None:
@@ -252,7 +272,7 @@ class ScanRunner:
         A real run returns once its writes, enrichment included, have landed.
 
         Raises:
-            Exception: What failed in ``prepare`` or in a removal.
+            Exception: What failed in ``prepare``, traversal, or a removal.
         """
         async with self._pass_lock:
             try:
@@ -327,16 +347,11 @@ class ScanRunner:
                     session.preserve(folder_id)
                     return []
                 listing = await scanner.list_folder(folder)
-            except OSError as e:
+            except _LISTING_FAILURES as e:
                 # An expected condition that can repeat on every pass.
                 _L.warning(
                     "Cannot list folder %s; keeping its mirror: %s", folder_id, e
                 )
-                session.preserve(folder_id)
-                progress.complete = False
-                return []
-            except Exception:
-                _L.exception("Cannot list folder %s; keeping its mirror", folder_id)
                 session.preserve(folder_id)
                 progress.complete = False
                 return []
@@ -386,8 +401,10 @@ async def compare_pass[F](
         async with node_sync.observe() as read:
             try:
                 contents = await comparison.list_folder(folder)
-            except Exception:
-                _L.exception("Cannot list folder %s; keeping its mirror", folder_id)
+            except _LISTING_FAILURES as e:
+                _L.warning(
+                    "Cannot list folder %s; keeping its mirror: %s", folder_id, e
+                )
                 list_errors += 1
                 session.preserve(folder_id)
                 return []

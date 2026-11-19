@@ -64,6 +64,12 @@ registration failures likewise stop startup. Events the NAS never delivers
 cannot be detected, since there is no webhook health check; the next start's
 scan, or a manual `backfill`, picks those changes up.
 
+Scan and backfill passes tolerate only NAS failures: `list_for_pass` turns a
+`SynologyError` from listing into `ListingUnavailableError`, and the count check
+keeps a folder only on a `SynologyError`. Anything else, such as a `KeyError`
+from a reply missing a key the library promises, is a bug here and fails the
+pass.
+
 ## Errors
 
 Drive API errors are translated from `wcpan-synology`'s

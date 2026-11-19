@@ -9,7 +9,11 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server.exceptions import LocateUndecidedError, UnknownNodeError
+from wcpan.drive.server.exceptions import (
+    ListingUnavailableError,
+    LocateUndecidedError,
+    UnknownNodeError,
+)
 from wcpan.drive.server.lib import normalize_name
 from wcpan.drive.server.types import Mounts, NodeIdMap, NodeObservation
 from wcpan.synology.exceptions import (
@@ -189,6 +193,22 @@ class SynologyPathService:
             offset += len(items)
             if offset >= total or not items:
                 return all_items
+
+    async def list_for_pass(
+        self,
+        drive_api: SynologyClient,
+        parent_node_id: NodeId,
+    ) -> list[SynologyFileInfo]:
+        """``list_children`` for a scan or comparison pass.
+
+        Raises:
+            ListingUnavailableError: The NAS could not list the folder; the
+                pass keeps its subtree. Anything else is a bug and fails it.
+        """
+        try:
+            return await self.list_children(drive_api, parent_node_id)
+        except SynologyError as e:
+            raise ListingUnavailableError(str(e)) from e
 
     async def find_child_by_name(
         self,

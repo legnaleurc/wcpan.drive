@@ -21,6 +21,7 @@ from ._services.operations import (
     OperationStorageFullError as OperationStorageFullError,
 )
 from ._services.operations import OperationUnavailableError as OperationUnavailableError
+from ._services.sync.scan import ListingUnavailableError as ListingUnavailableError
 from ._services.sync.service import WriterStoppedError as WriterStoppedError
 from ._services.upload.service import UploadConflictError as UploadConflictError
 from ._services.upload.service import UploadInvalidMediaError as UploadInvalidMediaError
@@ -35,6 +36,7 @@ __all__ = (
     "ProbeUnavailableError",
     "ProbesNotDeclaredError",
     "WriterStoppedError",
+    "ListingUnavailableError",
     "LocateUndecidedError",
     "MediaEnrichmentError",
     "MediaSourceError",
