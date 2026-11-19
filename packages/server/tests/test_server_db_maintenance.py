@@ -16,7 +16,6 @@ from wcpan.drive.server._lib.write_queue import (
     write_worker,
 )
 from wcpan.drive.server._services.ids import NodeIds
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
 from wcpan.drive.server._services.mirror.instances import (
     registered_instances,
 )
@@ -35,6 +34,7 @@ from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
 from wcpan.drive.server._services.off_main import OffMainService
+from wcpan.drive.server._types import ProbeFailure
 from wcpan.drive.sqlite import has_pending_wal, read_only_dsn
 from wcpan.drive.sqlite import read_only as _read_only
 

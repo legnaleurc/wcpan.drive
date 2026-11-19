@@ -20,7 +20,6 @@ from wcpan.drive.server._lib.write_queue import (
 )
 from wcpan.drive.server._services.media.enricher import MediaEnrichmentError
 from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
 from wcpan.drive.server._services.media.probing import MediaProbing
 from wcpan.drive.server._services.media.retries import MediaRetries
 from wcpan.drive.server._services.mirror.store import (
@@ -37,6 +36,7 @@ from wcpan.drive.server._services.sync.scan import ComparisonReport
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import (
     NodeObservation,
+    ProbeFailure,
     ReadSeq,
 )
 from wcpan.drive.server.backend.synology._convert import SynologyLocator

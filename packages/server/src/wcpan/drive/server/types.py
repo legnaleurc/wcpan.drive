@@ -15,7 +15,6 @@ from ._backend import CoreServices as CoreServices
 from ._backend import ReadCoreServices as ReadCoreServices
 from ._services.ids import NodeIdMap as NodeIdMap
 from ._services.media.probe.source import MediaSource as MediaSource
-from ._services.media.probe.source import ProbeFailure as ProbeFailure
 from ._services.media.probing import MediaProbing as MediaProbing
 from ._services.media.probing import OpenMediaSource as OpenMediaSource
 from ._services.mirror.model import (
@@ -53,6 +52,7 @@ from ._services.upload.service import WritableFile as WritableFile
 from ._services.upload.spool import SpoolArea as SpoolArea
 from ._types import BackendLocator as BackendLocator
 from ._types import NodeObservation as NodeObservation
+from ._types import ProbeFailure as ProbeFailure
 from ._types import VirtualPath as VirtualPath
 
 

@@ -21,12 +21,12 @@ from dataclasses import dataclass
 from logging import getLogger
 from typing import cast
 
+from ...._types import ProbeFailure
 from .service import ProbeSourceService
 from .source import (
     MediaProbeError,
     MediaSource,
     MediaSourceError,
-    ProbeFailure,
     ProbeUnavailableError,
 )
 

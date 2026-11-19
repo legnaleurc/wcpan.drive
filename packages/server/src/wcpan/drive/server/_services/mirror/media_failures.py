@@ -9,7 +9,7 @@ from wcpan.drive.sqlite import (
     read_write as _read_write,
 )
 
-from ..media.probe.source import ProbeFailure
+from ..._types import ProbeFailure
 from .model import MediaFailure, now_ms
 
 

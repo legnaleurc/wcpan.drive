@@ -14,10 +14,11 @@ from ._lib.records import same_public_metadata as same_public_metadata
 from ._services.media.probe.source import CHUNK_SIZE as CHUNK_SIZE
 from ._services.media.probe.source import LocalFileSource as LocalFileSource
 from ._services.media.probe.source import pread_stream as pread_stream
-from ._services.media.probing import upload_probe_kind as upload_probe_kind
 from ._services.mirror.reads import (
     row_to_record as row_to_record,
 )
+from ._services.upload.probing import probe_upload as probe_upload
+from ._services.upload.probing import upload_probe_kind as upload_probe_kind
 from ._services.upload.service import UPLOAD_SESSION_TTL as UPLOAD_SESSION_TTL
 from ._services.upload.spool import SpooledFiles as SpooledFiles
 from ._services.upload.spool import SpoolingUploader as SpoolingUploader
@@ -36,6 +37,7 @@ __all__ = (
     "normalize_name",
     "parallel_bfs",
     "pread_stream",
+    "probe_upload",
     "row_to_record",
     "run_to_completion",
     "same_public_metadata",

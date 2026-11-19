@@ -12,12 +12,7 @@ from dataclasses import dataclass
 from wcpan.drive.protocol.lib import FOLDER_MIME_TYPE, utc_now
 from wcpan.drive.protocol.types import NodeId, NodeRecord
 
-from .._types import NodeObservation
-from .mirror.store import (
-    MirrorReader,
-    MirrorStore,
-)
-from .sync.service import NodeSyncService
+from .mirror.store import MirrorReader
 
 
 def _new_structural_id() -> NodeId:
@@ -168,24 +163,8 @@ async def load_mounts(sources: Mapping[str, str], *, mirror: MirrorReader) -> Mo
     )
 
 
-async def ensure_mount_nodes(
-    mounts: Mounts, *, mirror: MirrorStore, node_sync: NodeSyncService
-) -> None:
-    """Create the root and any missing mount nodes, publishing each new one.
-
-    Existing nodes are left alone, so restarts add no feed rows; a mount added
-    to the config appears in the feed. Waits until they are written, since
-    backends add children under them.
-    """
-    records = [_virtual_directory(mounts.root_id, None, "")] + [
+def mount_node_records(mounts: Mounts) -> list[NodeRecord]:
+    """Records of the root and every mount node, as the core publishes them."""
+    return [_virtual_directory(mounts.root_id, None, "")] + [
         _virtual_directory(m.id, mounts.root_id, m.name) for m in mounts.values()
     ]
-    existing = await mirror.get_nodes_by_ids([r.id for r in records])
-    missing = [r for r in records if r.id not in existing]
-    if not missing:
-        return
-    async with node_sync.observe() as read:
-        await node_sync.upsert_batch(
-            [NodeObservation(record=r, locator=None) for r in missing], read=read
-        )
-    await node_sync.flush()

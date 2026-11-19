@@ -5,8 +5,8 @@ from dataclasses import replace
 
 from wcpan.drive.protocol.types import NodeRecord
 
-from ..._types import NodeObservation
-from .probe.source import MediaProbeError, ProbeFailure
+from ..._types import NodeObservation, ProbeFailure
+from .probe.source import MediaProbeError
 from .probing import MediaProbing
 
 

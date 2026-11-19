@@ -29,7 +29,8 @@ from wcpan.drive.protocol.types import MediaInfo, NodeId, NodeRecord
 
 from ..._lib.executor import allocate, run_to_completion
 from ..media.probe.source import LocalFileSource
-from ..media.probing import MediaProbing, upload_probe_kind
+from ..media.probing import MediaProbing
+from .probing import probe_upload, upload_probe_kind
 from .service import FILE_CHUNK_SIZE, Uploader, UploadPermanentError
 
 
@@ -233,7 +234,7 @@ class SpooledFile:
             if kind is not None:
                 source = LocalFileSource(reader, size, executor=self._area.executor)
                 # Kept, so finishing again after a failed upload does not probe.
-                self._media_info = await self._media.probe_upload(source, kind)
+                self._media_info = await probe_upload(self._media, source, kind)
             record = await self._uploader.upload(
                 self._parent_id,
                 self._name,

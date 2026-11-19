@@ -32,17 +32,18 @@ from ._services.media.probe.runner import ProbeRunner
 from ._services.media.probe.source import (
     MediaProbeError,
     MediaSource,
-    ProbeFailure,
     read_exactly,
 )
 from ._services.media.probing import MediaProbing
 from ._services.media.retries import FIRST_DELAY, MediaRetries
 from ._services.mirror.model import BackendNamespace, BackendSchema
 from ._services.mirror.store import MirrorStore
-from ._services.mounts import Mount, Mounts, ensure_mount_nodes
+from ._services.mounts import Mount, Mounts
 from ._services.off_main import OffMainService
 from ._services.sync.metadata import create_metadata_queue, metadata_worker
+from ._services.sync.mounts import ensure_mount_nodes
 from ._services.sync.service import NodeSyncService
+from ._types import ProbeFailure
 
 
 __all__ = (

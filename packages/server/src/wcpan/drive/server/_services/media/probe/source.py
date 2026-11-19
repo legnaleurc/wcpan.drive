@@ -4,10 +4,10 @@ import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import Executor
 from contextlib import aclosing
-from enum import StrEnum
 from typing import BinaryIO, Protocol
 
 from ...._lib.executor import run_to_completion
+from ...._types import ProbeFailure
 
 
 # Bytes of a positional read at a time.
@@ -50,20 +50,6 @@ class MediaSource(Protocol):
 
 class MediaSourceError(Exception):
     """A source could not be opened or read."""
-
-
-class ProbeFailure(StrEnum):
-    """Why a probe did not produce dimensions; decides when to retry."""
-
-    # Read errors and timeouts, a file changing mid-probe, MediaInfo failing or
-    # crashing, the deadline passing while waiting for the source: retry with
-    # backoff.
-    TRANSIENT = "transient"
-    # The parser rejects the bytes, or reports a zero width or height: wait for
-    # a content change.
-    INVALID = "invalid"
-    # The deadline passed while MediaInfo was parsing: inconclusive, not invalid.
-    LIMIT = "limit"
 
 
 class MediaProbeError(Exception):

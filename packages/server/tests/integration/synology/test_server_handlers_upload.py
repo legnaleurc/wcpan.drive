@@ -29,7 +29,6 @@ from wcpan.drive.server._keys import (
 )
 from wcpan.drive.server._services.media.enricher import MediaEnrichmentError
 from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
 from wcpan.drive.server._services.media.probing import MediaProbing
 from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
@@ -49,6 +48,7 @@ from wcpan.drive.server._services.upload.spool import (
     SpooledFiles,
     create_spool_area,
 )
+from wcpan.drive.server._types import ProbeFailure
 from wcpan.drive.server.backend.synology._convert import SynologyLocator
 from wcpan.drive.server.backend.synology._mounts import MountRegistry
 from wcpan.drive.server.backend.synology._paths import SynologyPathService

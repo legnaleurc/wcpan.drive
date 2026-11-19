@@ -17,7 +17,6 @@ from wcpan.drive.protocol.types import NodeId, NodeRecord
 from wcpan.drive.server._lib.write_queue import create_write_queue, write_worker
 from wcpan.drive.server._services.ids import NodeIds
 from wcpan.drive.server._services.media.enricher import MediaEnrichmentError
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
 from wcpan.drive.server._services.media.probing import MediaProbing
 from wcpan.drive.server._services.mirror.store import MirrorStore
 from wcpan.drive.server._services.off_main import OffMainService
@@ -30,6 +29,7 @@ from wcpan.drive.server._services.sync.service import (
     NodeSyncService,
     WriterStoppedError,
 )
+from wcpan.drive.server._types import ProbeFailure
 from wcpan.drive.server.exceptions import ListingUnavailableError
 from wcpan.drive.server.types import (
     Comparison,

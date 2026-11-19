@@ -321,11 +321,12 @@ class BackendRuntime(Protocol):
 core.mirror       # read-only node access, plus read(fn) for backend tables
 core.ids          # NodeIdMap: public() persists its row at once; mint() is provisional
                   # until the node's first applied observation
-core.media        # register, probe_upload
+core.media        # register, probe_source (lib.probe_upload wraps it for uploads)
 core.enrichment   # drain, scope, retry_failures(locate), retrying(locate),
                   # retrying_with(callback), prune_failures(before)
 core.hints        # publish(raw_event), later(key, delay, fn)
 core.scans        # await run(scanner), await walk(lister, root)
+await core.compare(comparison, dry_run=False)   # a comparison pass, see below
 core.observe(exclusive=False)   # the one way a backend produces facts
 await core.enqueue_write(fn, *args)   # fn(con, *args) as one ordered transaction
 await core.writes_landed()      # every write queued so far has landed

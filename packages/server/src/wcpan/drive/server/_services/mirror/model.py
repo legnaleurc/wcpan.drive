@@ -9,8 +9,7 @@ from typing import Protocol
 
 from wcpan.drive.protocol.types import NodeId
 
-from ..._types import BackendLocator
-from ..media.probe.source import ProbeFailure
+from ..._types import BackendLocator, ProbeFailure
 
 
 @dataclass(frozen=True, slots=True)

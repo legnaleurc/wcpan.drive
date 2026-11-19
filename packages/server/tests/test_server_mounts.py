@@ -24,7 +24,6 @@ from wcpan.drive.server._services.mirror.store import (
 )
 from wcpan.drive.server._services.mounts import (
     Mounts,
-    ensure_mount_nodes,
     load_mounts,
 )
 from wcpan.drive.server._services.off_main import OffMainService
@@ -38,6 +37,7 @@ from wcpan.drive.server._services.routing import BackendRouter
 from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
 )
+from wcpan.drive.server._services.sync.mounts import ensure_mount_nodes
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._services.upload.service import (
     FileOpener,

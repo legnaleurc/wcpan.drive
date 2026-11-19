@@ -14,8 +14,7 @@ from wcpan.drive.sqlite import (
     read_write as _read_write,
 )
 
-from ..._types import NodeObservation
-from ..media.probe.source import ProbeFailure
+from ..._types import NodeObservation, ProbeFailure
 from ..off_main import OffMainService
 from .instances import (
     check_backend_schema,

@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, NewType
 
@@ -82,3 +83,17 @@ class ServerConfig:
             for name, mount in self.mounts.items()
             if mount.backend == backend
         }
+
+
+class ProbeFailure(StrEnum):
+    """Why a probe did not produce dimensions; decides when to retry."""
+
+    # Read errors and timeouts, a file changing mid-probe, MediaInfo failing or
+    # crashing, the deadline passing while waiting for the source: retry with
+    # backoff.
+    TRANSIENT = "transient"
+    # The parser rejects the bytes, or reports a zero width or height: wait for
+    # a content change.
+    INVALID = "invalid"
+    # The deadline passed while MediaInfo was parsing: inconclusive, not invalid.
+    LIMIT = "limit"

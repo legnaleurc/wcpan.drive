@@ -74,7 +74,7 @@ from ._services.mirror.store import (
     MirrorStore,
     create_mirror_store,
 )
-from ._services.mounts import Mounts, ensure_mount_nodes, load_mounts
+from ._services.mounts import Mounts, load_mounts
 from ._services.off_main import OffMainService, exit_with_server
 from ._services.operations import (
     OperationInvalidError,
@@ -89,6 +89,7 @@ from ._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
+from ._services.sync.mounts import ensure_mount_nodes
 from ._services.sync.service import NodeSyncService
 from ._services.upload.service import UploadService, UploadSessionStore
 from ._types import (

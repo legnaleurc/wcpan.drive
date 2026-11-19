@@ -31,8 +31,9 @@ from wcpan.drive.server._app import entered_backends, managed_core, managed_off_
 from wcpan.drive.server._backend import Access, load_command_parser
 from wcpan.drive.server._config import parse_config
 from wcpan.drive.server._main import main
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
-from wcpan.drive.server._services.mounts import Mounts, ensure_mount_nodes
+from wcpan.drive.server._services.mounts import Mounts
+from wcpan.drive.server._services.sync.mounts import ensure_mount_nodes
+from wcpan.drive.server._types import ProbeFailure
 from wcpan.drive.server.backend.filesystem import create_backend as create_filesystem
 from wcpan.drive.server.backend.synology import create_backend as create_synology
 from wcpan.drive.server.backend.synology._mounts import MountRegistry

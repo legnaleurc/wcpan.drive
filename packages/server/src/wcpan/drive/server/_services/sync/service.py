@@ -18,10 +18,10 @@ from ..._lib.write_queue import (
 )
 from ..._types import (
     NodeObservation,
+    ProbeFailure,
     ReadSeq,
 )
 from ..media.enricher import MediaEnrichmentError, MediaEnrichService
-from ..media.probe.source import ProbeFailure
 from ..media.probing import MediaProbing
 from ..media.retries import MediaRetries, RetryMedia
 from ..mirror.model import (

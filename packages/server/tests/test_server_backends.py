@@ -17,7 +17,6 @@ from wcpan.drive.server._lib.write_queue import (
     write_worker,
 )
 from wcpan.drive.server._services.media.probe.runner import ProbeRunner
-from wcpan.drive.server._services.media.probe.source import ProbeFailure
 from wcpan.drive.server._services.media.probing import MediaProbing
 from wcpan.drive.server._services.mirror.model import (
     BackendNamespace,
@@ -26,14 +25,15 @@ from wcpan.drive.server._services.mirror.model import (
 from wcpan.drive.server._services.mirror.store import (
     MirrorStore,
 )
-from wcpan.drive.server._services.mounts import Mounts, ensure_mount_nodes
+from wcpan.drive.server._services.mounts import Mounts
 from wcpan.drive.server._services.off_main import OffMainService
 from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
+from wcpan.drive.server._services.sync.mounts import ensure_mount_nodes
 from wcpan.drive.server._services.sync.service import NodeSyncService
-from wcpan.drive.server._types import BackendLocator, NodeObservation
+from wcpan.drive.server._types import BackendLocator, NodeObservation, ProbeFailure
 
 from ._mounts import ROOT_ID, make_mounts, mount_id
 

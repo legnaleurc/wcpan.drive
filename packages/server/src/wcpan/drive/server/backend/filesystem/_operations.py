@@ -30,7 +30,7 @@ from wcpan.drive.server.exceptions import (
     UploadPermanentError,
     UploadTransientError,
 )
-from wcpan.drive.server.lib import LocalFileSource, upload_probe_kind
+from wcpan.drive.server.lib import LocalFileSource, probe_upload, upload_probe_kind
 from wcpan.drive.server.types import (
     Changes,
     MediaProbing,
@@ -504,7 +504,7 @@ class FilesystemUploader(_Writes):
         except OSError as e:
             raise _upload_error(e, file.name) from e
         source = LocalFileSource(staged, size, executor=self._blocking.executor)
-        file.media_info = await self._media.probe_upload(source, kind)
+        file.media_info = await probe_upload(self._media, source, kind)
 
     async def _place(self, file: "FilesystemFile", folder: str) -> bool:
         """Rename *file* to its name in *folder*; ``False`` if the name is taken."""
