@@ -626,37 +626,6 @@ class NodeSyncService:
 
         return await run_queued(self._write_queue, prune)
 
-    # --- Comparison pass writes ---
-
-    async def reconcile_insert(
-        self, from_api: NodeObservation, *, read: ReadSeq
-    ) -> None:
-        self._order.hold(read)
-        from_api = self._own(from_api)
-        if from_api.record.is_directory:
-            # Write in listing order so children never arrive before their parent.
-            await self._put_upserts([(from_api, read)])
-            return
-        await self._hand_off(
-            self._metadata_queue,
-            MetadataWorkItem(observation=from_api, force_refresh=True, read=read),
-            [read],
-        )
-
-    async def reconcile_update(
-        self, from_api: NodeObservation, existing: NodeRecord, *, read: ReadSeq
-    ) -> None:
-        self._order.hold(read)
-        from_api = self._own(from_api)
-        if _reusable_dims(existing, from_api.record):
-            await self._put_upserts([(from_api, read)])
-            return
-        await self._hand_off(
-            self._metadata_queue,
-            MetadataWorkItem(observation=from_api, force_refresh=True, read=read),
-            [read],
-        )
-
     async def register_schema(self, schema: BackendSchema) -> BackendNamespace:
         """Register this view's backend with *schema*, in order with queued writes.
 

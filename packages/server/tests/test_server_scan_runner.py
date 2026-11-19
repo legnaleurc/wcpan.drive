@@ -25,7 +25,7 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.scan import compare_pass
+from wcpan.drive.server._services.sync.scan import compare_pass, run_pass
 from wcpan.drive.server._services.sync.service import (
     NodeSyncService,
     WriterStoppedError,
@@ -855,6 +855,32 @@ class CompareTest(_FlowTestCase):
                 await self.compare(comparison)
         # then
         self.assertTrue(await self.has("f"))
+
+    async def test_failure_after_the_listing_fails_the_pass(self) -> None:
+        # given
+        node = _node("f", _A)
+        await self.seed(node)
+        comparison = _Comparison(_Source([node]))
+
+        async def differs(
+            pairs: Sequence[tuple[NodeObservation, NodeRecord]],
+        ) -> set[NodeId]:
+            raise OSError("store unreadable")
+
+        # when, then
+        with patch.object(comparison, "differs", differs):
+            with self.assertRaisesRegex(RuntimeError, "comparing folder"):
+                await self.compare(comparison)
+
+    async def test_dry_run_calls_no_finish_hooks(self) -> None:
+        # given
+        scanner = _Scanner(_Source([_node("f", _A)]))
+        plan = await scanner.prepare()
+        # when
+        await run_pass(scanner, plan, mirror=self.mirror, writer=None)
+        # then
+        self.assertEqual(scanner.root_results, {})
+        self.assertIsNone(scanner.pass_result)
 
     async def test_returns_after_its_writes_land(self) -> None:
         # given

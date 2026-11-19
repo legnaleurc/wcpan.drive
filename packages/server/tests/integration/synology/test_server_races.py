@@ -231,11 +231,15 @@ class TestStaleEnrichment(_RaceTestCase):
         f = _node("f", _MOUNT)
         await self.mirror.bulk_upsert_nodes([f])
         gate = self.gate(lambda r: r.id == "f")
+        # Changed content, so the file is probed again.
+        listed = replace(f, size=f.size + 1)
 
         # when
         await self.run_gated(
             gate,
-            self.observed(lambda r: self.node_sync.reconcile_insert(_obs(f), read=r)),
+            self.observed(
+                lambda r: self.node_sync.upsert_file_batch([_obs(listed)], read=r)
+            ),
             lambda: self.observed(lambda r: self.node_sync.delete(f.id, read=r)),
         )
 
@@ -311,7 +315,9 @@ class TestStaleEnrichment(_RaceTestCase):
         # when
         await self.run_gated(
             gate,
-            self.observed(lambda r: self.node_sync.reconcile_insert(_obs(f), read=r)),
+            self.observed(
+                lambda r: self.node_sync.upsert_file_batch([_obs(f)], read=r)
+            ),
             lambda: self.observed(lambda r: self.node_sync.delete(g.id, read=r)),
         )
 

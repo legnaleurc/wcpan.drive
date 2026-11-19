@@ -42,7 +42,7 @@ def _convert(info, parent_id):
 
 
 class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
-    async def test_process_metadata_reconcile_insert_enqueues_write(self) -> None:
+    async def test_process_metadata_of_a_new_file_enqueues_write(self) -> None:
         # given
         wq = create_write_queue()
         mq = create_metadata_queue()
@@ -71,13 +71,14 @@ class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
             observation = convert_file_info(info, parent_id="par")
             assert observation is not None
             record = observation.record
+            self.decoy.when(await mirror.get_nodes_by_ids([record.id])).then_return({})
             applied = matchers.Captor()
             self.decoy.when(await mirror.apply_observations(applied)).then_return(
                 {record.id}
             )
             # when
             async with cs.observe() as read:
-                await cs.reconcile_insert(observation, read=read)
+                await cs.upsert_file_batch([observation], read=read)
             item = await mq.get()
             mq.task_done()
             with patch.object(

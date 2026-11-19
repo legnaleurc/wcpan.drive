@@ -481,10 +481,12 @@ repair stay outside the block. Downloads need none.
 
 ### Comparison pass
 
-A `Scanner` pass writes what the backend reports as changed. A `Comparison` pass lists every
-folder in scope and the core decides what changed, so it repairs what an incremental scan
-would skip. The traversal mode is chosen by the class a backend implements, not by a flag on
-one class: a comparison has no `skip` and no finish hooks, since it saves no progress.
+A scan and a comparison are the same pass with different policies. A `Scanner` decides which
+children changed and may skip folders it knows are unchanged and save progress afterwards. A
+`Comparison` lists every folder in scope and leaves the decision to the core, so it repairs
+what an incremental scan would skip. The backend side needs two listings because an
+incremental one can avoid costly work, such as hashing a file whose stat is unchanged, and so
+cannot report every child.
 
 ```python
 class Comparison[F](ABC):
@@ -495,30 +497,23 @@ class Comparison[F](ABC):
     async def differs(self, pairs) -> set[NodeId]: ...           # default: set()
 ```
 
-`compare(comparison, dry_run=False)` returns a `ComparisonReport` (`checked`, `added`,
-`updated`, `removed`, `list_errors`).
+`compare(comparison, dry_run=False)` wraps the comparison in a `Scanner` and runs it through
+the scan runner above, under the same pass lock, with the same failure rule, removals, and
+writes. The wrapper never skips and has no finish hooks. Its `list_folder` lists the folder,
+reads the mirrored children, and reports every child as `seen` and these as `changed`:
 
-1. Takes the pass lock, so it never overlaps a scan or an exclusive `observe` block.
-2. Opens one reconcile session over `plan.scope`, as a scan does.
-3. Lists each folder in its own read. A listing failure the scan runner tolerates preserves
-   the subtree and counts as a list error; any other exception fails the pass. Every child is
-   `saw`.
-4. Compares each child with the mirrored children of that folder. A child the mirror lacks
-   there is added; that includes a node moved in from elsewhere. A mirrored child is updated if
-   its record differs (dimensions aside, which listings do not report), if it is an image or
-   video without complete dimensions, or if `differs` names it. `differs` receives one
-   folder's mirrored pairs at once and covers backend state the core cannot read, such as
-   Synology's locators.
-5. An added directory is written directly, in listing order. Anything else is probed again
-   with `force_refresh` unless its mirrored dimensions still apply.
-6. Confirms and commits removals, then drains enrichment and its writes before releasing the
-   lock, since removal confirmation queues writes after its own drain.
+- a child the mirror lacks there, including a node moved in from elsewhere (counted as added);
+- a mirrored child whose record differs (dimensions aside, which listings do not report),
+  that is an image or video without complete dimensions, or that `differs` names (counted as
+  updated). `differs` receives one folder's mirrored pairs at once and covers backend state
+  the core cannot read, such as Synology's locators.
 
-A dry run has no writer and numbers no reads, so a read-only core can run it: inserts and
-updates are only logged and counted, and `removed` counts the unconfirmed candidates of its
-`Coverage`, so it can exceed what a real run would remove. A real run on a read-only core
-raises. A failed pass settles submitted work before releasing the lock, as a
-scan does.
+Only the source listing may be unavailable: a tolerated error from the mirror read or
+`differs` fails the pass instead of keeping the subtree. It returns a `ComparisonReport` (`checked`, `added`, `updated`, `removed`, `list_errors`).
+
+A dry run runs the same pass without a writer: it numbers no reads, submits nothing, calls
+no finish hooks, and reports the unconfirmed candidates of its `Coverage` instead of committing removals, so
+`removed` can exceed what a real run would remove. A read-only core can run only a dry run.
 
 ### Lifecycle
 

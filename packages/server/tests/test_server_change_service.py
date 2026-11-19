@@ -517,57 +517,32 @@ class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
         self.assertEqual(mq.qsize(), 0)
         self.assertGreaterEqual(wq.qsize(), 1)
 
-
-class TestNodeSyncServiceReconcile(IsolatedAsyncioTestCase):
-    async def test_reconcile_insert(self):
+    async def test_unchanged_other_file_writes_directly(self):
         # given
         mq: asyncio.Queue = asyncio.Queue()
-        cs, _, _ = _make_service(metadata_queue=mq)
-        record = _make_record("new")
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_record("n1")
+        cs, mirror, wq = _make_service(mirror, metadata_queue=mq)
         # when
         async with cs.observe() as read:
-            await cs.reconcile_insert(_obs(record), read=read)
+            await cs.upsert_file_batch([_obs(_make_record("n1"))], read=read)
         # then
-        self.assertEqual(mq.qsize(), 1)
+        self.assertEqual((mq.qsize(), wq.qsize()), (0, 1))
 
-    async def test_reconcile_update_of_other_file_writes_directly(self):
-        # given
-        cs, mirror, wq = _make_service()
-        existing = _make_record("n1")
-        from_api = _make_record("n1")
-        # when
-        async with cs.observe() as read:
-            await cs.reconcile_update(_obs(from_api), existing, read=read)
-        # then
-        self.assertEqual(wq.qsize(), 1)
-
-    async def test_reconcile_update_with_complete_dims(self):
+    async def test_published_media_without_dims_routes_to_metadata_queue(self):
         # given
         mq: asyncio.Queue = asyncio.Queue()
-        cs, mirror, wq = _make_service(metadata_queue=mq)
-        existing = _make_record("n1", is_image=True, width=100, height=200)
-        from_api = _make_record("n1", is_image=True)
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_record("n1", is_image=True, width=0, height=0)
+        cs, mirror, wq = _make_service(mirror, metadata_queue=mq)
         # when
         async with cs.observe() as read:
-            await cs.reconcile_update(_obs(from_api), existing, read=read)
+            await cs.upsert_file_batch(
+                [_obs(_make_record("n1", is_image=True))], read=read
+            )
         # then
-        # Complete dims → write queue, not metadata queue
-        self.assertEqual(wq.qsize(), 1)
-        self.assertEqual(mq.qsize(), 0)
-
-    async def test_reconcile_update_without_complete_dims(self):
-        # given
-        mq: asyncio.Queue = asyncio.Queue()
-        cs, mirror, wq = _make_service(metadata_queue=mq)
-        existing = _make_record("n1", is_image=True, width=0, height=0)
-        from_api = _make_record("n1", is_image=True)
-        # when
-        async with cs.observe() as read:
-            await cs.reconcile_update(_obs(from_api), existing, read=read)
-        # then
-        # Incomplete dims → metadata queue
-        self.assertEqual(mq.qsize(), 1)
-        self.assertEqual(wq.qsize(), 0)
+        self.assertEqual((mq.qsize(), wq.qsize()), (1, 0))
+        self.assertTrue(mq.get_nowait().force_refresh)
 
 
 class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
@@ -604,7 +579,7 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
         cs, mirror, wq = _make_service(metadata_queue=mq)
         record = _make_record()
         async with cs.observe() as read:
-            await cs.reconcile_insert(_obs(record), read=read)
+            await cs.upsert_file_batch([_obs(record)], read=read)
         item = mq.get_nowait()
         with patch(
             "wcpan.drive.server._services.media.enricher.MediaEnrichService.enrich",
@@ -627,7 +602,7 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
         cs, mirror, wq = _make_service(metadata_queue=mq)
         record = _make_record(is_image=True)
         async with cs.observe() as read:
-            await cs.reconcile_insert(_obs(record), read=read)
+            await cs.upsert_file_batch([_obs(record)], read=read)
         item = mq.get_nowait()
         with patch(
             "wcpan.drive.server._services.media.enricher.MediaEnrichService.enrich",
@@ -675,7 +650,7 @@ class TestHeldReadOwnership(IsolatedAsyncioTestCase):
         cs, _, wq = _make_service(metadata_queue=mq)
         record = _make_record(is_image=True)
         async with cs.observe() as read:
-            await cs.reconcile_insert(_obs(record), read=read)
+            await cs.upsert_file_batch([_obs(record)], read=read)
         item = mq.get_nowait()
         probing = asyncio.Event()
 
@@ -701,7 +676,7 @@ class TestHeldReadOwnership(IsolatedAsyncioTestCase):
         cs, _, wq = _make_service(metadata_queue=mq)
         record = _make_record()
         async with cs.observe() as read:
-            await cs.reconcile_insert(_obs(record), read=read)
+            await cs.upsert_file_batch([_obs(record)], read=read)
         item = mq.get_nowait()
         # when
         await cs.process_metadata_item(item)
@@ -712,20 +687,6 @@ class TestHeldReadOwnership(IsolatedAsyncioTestCase):
         # then
         self.assertEqual(_held(cs), {})
 
-    async def test_reconcile_insert_cancelled_on_full_metadata_queue_releases(self):
-        # given
-        mq: asyncio.Queue = asyncio.Queue(maxsize=1)
-        mq.put_nowait(object())
-        cs, _, _ = _make_service(metadata_queue=mq)
-        async with cs.observe() as read:
-            task = await _blocked(
-                cs.reconcile_insert(_obs(_make_record(is_image=True)), read=read)
-            )
-            # when
-            await _cancel(task)
-        # then
-        self.assertEqual(_held(cs), {})
-
     async def test_media_failure_cancelled_on_full_write_queue_releases(self):
         # given
         mq: asyncio.Queue = asyncio.Queue()
@@ -733,7 +694,7 @@ class TestHeldReadOwnership(IsolatedAsyncioTestCase):
         cs, _, _ = _make_service(metadata_queue=mq, write_queue=wq)
         record = _make_record(is_image=True)
         async with cs.observe() as read:
-            await cs.reconcile_insert(_obs(record), read=read)
+            await cs.upsert_file_batch([_obs(record)], read=read)
         item = mq.get_nowait()
         wq.put_nowait(AsyncMock())
         with patch(
@@ -799,7 +760,7 @@ class TestEnrichmentScope(IsolatedAsyncioTestCase):
             with self.assertRaises(BaseExceptionGroup) as raised:
                 async with cs.enrichment_scope():
                     async with cs.observe() as read:
-                        await cs.reconcile_insert(_obs(record), read=read)
+                        await cs.upsert_file_batch([_obs(record)], read=read)
         self.assertTrue(raised.exception.subgroup(ProbeUnavailableError))
         self.assertEqual(_held(cs), {})
         await _cancel(writer)
@@ -824,7 +785,7 @@ class TestEnrichmentScope(IsolatedAsyncioTestCase):
         async def command() -> None:
             async with cs.enrichment_scope():
                 async with cs.observe() as read:
-                    await cs.reconcile_insert(_obs(record), read=read)
+                    await cs.upsert_file_batch([_obs(record)], read=read)
                 entered.set()
                 await asyncio.Event().wait()
 
@@ -905,7 +866,7 @@ class TestEnrichmentScope(IsolatedAsyncioTestCase):
             # when
             async with cs.enrichment_scope():
                 async with cs.observe() as read:
-                    await cs.reconcile_insert(_obs(record), read=read)
+                    await cs.upsert_file_batch([_obs(record)], read=read)
         # then
         self.assertIn(record.id, mirror._nodes)
         self.assertEqual(_held(cs), {})
@@ -930,7 +891,6 @@ class TestEnrichmentScope(IsolatedAsyncioTestCase):
                 cancelled += 1
                 raise
 
-        directory = _make_record("d", is_directory=True)
         files = [
             _make_record(f"n{i}", is_image=True)
             for i in range(METADATA_WORKER_COUNT + 1)
@@ -943,9 +903,8 @@ class TestEnrichmentScope(IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "traversal failed"):
                 async with cs.enrichment_scope():
                     async with cs.observe() as read:
-                        await cs.reconcile_insert(_obs(directory), read=read)
                         for f in files:
-                            await cs.reconcile_insert(_obs(f), read=read)
+                            await cs.upsert_file_batch([_obs(f)], read=read)
                         await started.wait()
                         raise RuntimeError("traversal failed")
         # then
@@ -979,7 +938,7 @@ class TestUndeclaredProbing(IsolatedAsyncioTestCase):
         mq: asyncio.Queue = asyncio.Queue()
         cs = self._service(mq)
         async with cs.observe() as read:
-            await cs.reconcile_insert(_obs(_make_record(is_image=True)), read=read)
+            await cs.upsert_file_batch([_obs(_make_record(is_image=True))], read=read)
         # when / then
         with self.assertRaises(ProbesNotDeclaredError):
             await cs.process_metadata_item(mq.get_nowait())
@@ -1015,7 +974,9 @@ class TestOfflineWorkersRequired(IsolatedAsyncioTestCase):
         # when / then
         async with cs.observe() as read:
             with self.assertRaisesRegex(RuntimeError, "no metadata workers"):
-                await cs.reconcile_insert(_obs(_make_record(is_image=True)), read=read)
+                await cs.upsert_file_batch(
+                    [_obs(_make_record(is_image=True))], read=read
+                )
         self.assertEqual(mq.qsize(), 0)
         self.assertEqual(_held(cs), {})
 
@@ -1024,8 +985,8 @@ class TestOfflineWorkersRequired(IsolatedAsyncioTestCase):
         cs, mq = self._service()
         # when
         async with cs.observe() as read:
-            await cs.reconcile_insert(
-                _obs(_make_record("d", is_directory=True)), read=read
+            await cs.upsert_batch(
+                [_obs(_make_record("d", is_directory=True))], read=read
             )
         # then
         self.assertEqual(mq.qsize(), 0)

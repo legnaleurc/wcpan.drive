@@ -18,7 +18,7 @@ from ..._lib.bfs import parallel_bfs
 from ..._lib.records import same_public_metadata
 from ..._types import NodeObservation, ReadSeq
 from ..mirror.store import MirrorReader
-from .reconcile import Coverage, ReconcileSession, reconcile_session
+from .reconcile import Coverage, reconcile_session
 from .service import NodeSyncService
 
 
@@ -258,11 +258,9 @@ class ScanRunner:
         """
         async with self._pass_lock:
             plan = await scanner.prepare()
-            try:
-                await self._run_pass(scanner, plan)
-            except Exception as failed:
-                await _settle_after(failed, self._node_sync.wait_enrichment_drained)
-                raise
+            await self._settled(
+                run_pass(scanner, plan, mirror=self._mirror, writer=self._node_sync)
+            )
 
     async def compare[F](
         self, comparison: Comparison[F], *, dry_run: bool = False
@@ -275,19 +273,13 @@ class ScanRunner:
             Exception: What failed in ``prepare``, traversal, or a removal.
         """
         async with self._pass_lock:
-            try:
-                report = await compare_pass(
+            return await self._settled(
+                compare_pass(
                     comparison,
                     mirror=self._mirror,
                     writer=None if dry_run else self._node_sync,
                 )
-            except Exception as failed:
-                await _settle_after(failed, self._node_sync.wait_enrichment_drained)
-                raise
-            if not dry_run:
-                # Removal confirmation queues writes after its own drain.
-                await self._node_sync.wait_enrichment_drained()
-            return report
+            )
 
     async def walk[F](self, lister: FolderLister[F], root: F) -> None:
         """Write everything *lister* lists under *root*, removing nothing.
@@ -299,76 +291,132 @@ class ScanRunner:
         Raises:
             Exception: What failed in a listing.
         """
+        writer = self._node_sync
 
         async def visit(folder: F) -> list[F]:
-            async with self._node_sync.observe() as read:
+            async with writer.observe() as read:
                 listing = await lister.list_folder(folder)
-                await self._submit(listing, read, land_directories=True)
+                await _submit(writer, listing, read, land_directories=True)
             return listing.subfolders
 
         await _traverse([root], visit)
 
-    async def _run_pass[F](self, scanner: Scanner[F], plan: ScanPlan[F]) -> None:
-        work = [(root, _RootProgress()) for root in plan.roots]
+    async def _settled[R](self, work: Awaitable[R]) -> R:
+        """*work*'s result; if it fails, what it submitted settles first."""
+        try:
+            return await work
+        except Exception as failed:
+            await _settle_after(failed, self._node_sync.wait_enrichment_drained)
+            raise
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PassResult:
+    # Removed subtree roots; without a writer, the unconfirmed candidates.
+    removed: list[NodeId]
+    # Folders whose listing failed, whose subtrees were kept.
+    list_errors: int
+
+
+async def run_pass[F](
+    scanner: Scanner[F],
+    plan: ScanPlan[F],
+    *,
+    mirror: MirrorReader,
+    writer: NodeSyncService | None,
+) -> _PassResult:
+    """Traverse *plan*, write what *scanner* reports changed, and decide removals.
+
+    With a *writer*, returns once removals, enrichment, and the finish hooks are
+    done. Without one it writes nothing, numbers no reads, calls no finish
+    hooks, and reports the removal candidates.
+    """
+    work = [(root, _RootProgress()) for root in plan.roots]
+    list_errors = 0
+
+    async def visit(
+        coverage: Coverage, item: tuple[F, _RootProgress]
+    ) -> list[tuple[F, _RootProgress]]:
+        if writer is None:
+            return await list_one(coverage, item, None)
+        async with writer.observe() as read:
+            return await list_one(
+                coverage,
+                item,
+                partial(_submit, writer, read=read, land_directories=False),
+            )
+
+    async def list_one(
+        coverage: Coverage,
+        item: tuple[F, _RootProgress],
+        submit: Callable[[Listing[F]], Awaitable[None]] | None,
+    ) -> list[tuple[F, _RootProgress]]:
+        nonlocal list_errors
+        folder, progress = item
+        folder_id = scanner.folder_id(folder)
+        try:
+            if await scanner.skip(folder):
+                coverage.preserve(folder_id)
+                return []
+            listing = await scanner.list_folder(folder)
+        except _LISTING_FAILURES as e:
+            # An expected condition that can repeat on every pass.
+            _L.warning("Cannot list folder %s; keeping its mirror: %s", folder_id, e)
+            coverage.preserve(folder_id)
+            progress.complete = False
+            list_errors += 1
+            return []
+        coverage.saw(listing.seen)
+        for node_id in listing.keep:
+            coverage.preserve(node_id)
+        if submit is not None:
+            await submit(listing)
+        return [(child, progress) for child in listing.subfolders]
+
+    async def traverse(coverage: Coverage) -> None:
+        for node_id in plan.preserved:
+            coverage.preserve(node_id)
+        step = partial(visit, coverage)
+        if scanner.concurrent_roots:
+            await _traverse(work, step)
+        else:
+            for item in work:
+                await _traverse([item], step)
+
+    if writer is None:
+        coverage = Coverage(plan.scope, mirror=mirror)
+        await traverse(coverage)
+        removed = await coverage.removal_roots()
+    else:
         async with reconcile_session(
-            plan.scope,
-            mirror=self._mirror,
-            writer=self._node_sync,
-            locate=scanner.locate,
+            plan.scope, mirror=mirror, writer=writer, locate=scanner.locate
         ) as session:
-            for node_id in plan.preserved:
-                session.preserve(node_id)
-            visit = partial(self._visit, scanner, session)
-            if scanner.concurrent_roots:
-                await _traverse(work, visit)
-            else:
-                for item in work:
-                    await _traverse([item], visit)
-            await session.commit_removals()
-        await self._node_sync.wait_enrichment_drained()
+            await traverse(session)
+            removed = await session.commit_removals()
+        # Removal confirmation queues writes after its own drain.
+        await writer.wait_enrichment_drained()
+        # Progress is saved only for what was written.
         for root, progress in work:
             await scanner.root_finished(root, progress.complete)
         await scanner.pass_finished(
             not plan.preserved and all(p.complete for _, p in work)
         )
+    return _PassResult(removed=removed, list_errors=list_errors)
 
-    async def _visit[F](
-        self,
-        scanner: Scanner[F],
-        session: ReconcileSession,
-        item: tuple[F, _RootProgress],
-    ) -> list[tuple[F, _RootProgress]]:
-        folder, progress = item
-        folder_id = scanner.folder_id(folder)
-        async with self._node_sync.observe() as read:
-            try:
-                if await scanner.skip(folder):
-                    session.preserve(folder_id)
-                    return []
-                listing = await scanner.list_folder(folder)
-            except _LISTING_FAILURES as e:
-                # An expected condition that can repeat on every pass.
-                _L.warning(
-                    "Cannot list folder %s; keeping its mirror: %s", folder_id, e
-                )
-                session.preserve(folder_id)
-                progress.complete = False
-                return []
-            session.saw(listing.seen)
-            for node_id in listing.keep:
-                session.preserve(node_id)
-            await self._submit(listing, read, land_directories=False)
-        return [(child, progress) for child in listing.subfolders]
 
-    async def _submit[F](
-        self, listing: Listing[F], read: ReadSeq, *, land_directories: bool
-    ) -> None:
-        directories = [o for o in listing.changed if o.record.is_directory]
-        files = [o for o in listing.changed if not o.record.is_directory]
-        await self._node_sync.upsert_batch(directories, read=read)
-        if land_directories and directories:
-            await self._node_sync.barrier()
-        await self._node_sync.upsert_file_batch(files, read=read)
+async def _submit[F](
+    writer: NodeSyncService,
+    listing: Listing[F],
+    read: ReadSeq,
+    *,
+    land_directories: bool,
+) -> None:
+    directories = [o for o in listing.changed if o.record.is_directory]
+    files = [o for o in listing.changed if not o.record.is_directory]
+    await writer.upsert_batch(directories, read=read)
+    if land_directories and directories:
+        await writer.barrier()
+    await writer.upsert_file_batch(files, read=read)
 
 
 async def compare_pass[F](
@@ -377,120 +425,92 @@ async def compare_pass[F](
     mirror: MirrorReader,
     writer: NodeSyncService | None,
 ) -> ComparisonReport:
-    """Compare everything *comparison* lists with the mirror, and apply it.
+    """Run *comparison* as a scan pass that compares every child with the mirror.
 
     Without a *writer* it is a dry run: it writes nothing, numbers no reads,
-    and reports the unconfirmed removal candidates. A real run returns once its
-    writes are queued.
+    and reports the unconfirmed removal candidates.
     """
     plan = await comparison.prepare()
     if not plan.scope:
         return ComparisonReport(checked=0, added=0, updated=0, removed=0, list_errors=0)
-    if writer is None:
-        coverage = Coverage(plan.scope, mirror=mirror)
-        counts = await _compare_folders(comparison, plan, coverage, mirror, writer)
-        roots = await coverage.removal_roots()
-        for node_id in roots:
+    scanner = _Comparing(comparison, mirror=mirror, dry_run=writer is None)
+    result = await run_pass(scanner, plan, mirror=mirror, writer=writer)
+    for node_id in result.removed:
+        if writer is None:
             _L.info("dry-run: would remove %s, absent from the source", node_id)
-    else:
-        async with reconcile_session(
-            plan.scope, mirror=mirror, writer=writer, locate=comparison.locate
-        ) as session:
-            counts = await _compare_folders(comparison, plan, session, mirror, writer)
-            roots = await session.commit_removals()
-        for node_id in roots:
+        else:
             _L.info("Removed node %s, absent from the source", node_id)
     return ComparisonReport(
-        checked=counts.checked,
-        added=counts.added,
-        updated=counts.updated,
-        removed=len(roots),
-        list_errors=counts.list_errors,
+        checked=scanner.checked,
+        added=scanner.added,
+        updated=scanner.updated,
+        removed=len(result.removed),
+        list_errors=result.list_errors,
     )
 
 
-@dataclass(kw_only=True)
-class _Counts:
-    checked: int = 0
-    added: int = 0
-    updated: int = 0
-    list_errors: int = 0
+class _Comparing[F](Scanner[F]):
+    """A ``Comparison`` as a scan pass: every listed child that differs changed."""
 
+    def __init__(
+        self, comparison: Comparison[F], *, mirror: MirrorReader, dry_run: bool
+    ) -> None:
+        self._comparison = comparison
+        self._mirror = mirror
+        self._dry_run = dry_run
+        self.checked = 0
+        self.added = 0
+        self.updated = 0
 
-@dataclass(frozen=True)
-class _Writes:
-    """Writes from one listing, numbered by its read."""
+    async def prepare(self) -> ScanPlan[F]:
+        return await self._comparison.prepare()
 
-    writer: NodeSyncService
-    read: ReadSeq
+    def folder_id(self, folder: F) -> NodeId:
+        return self._comparison.folder_id(folder)
 
-    async def inserted(self, observation: NodeObservation) -> None:
-        await self.writer.reconcile_insert(observation, read=self.read)
+    async def locate(self, node_id: NodeId) -> NodeObservation | None:
+        return await self._comparison.locate(node_id)
 
-    async def updated(self, observation: NodeObservation, existing: NodeRecord) -> None:
-        await self.writer.reconcile_update(observation, existing, read=self.read)
-
-
-async def _compare_folders[F](
-    comparison: Comparison[F],
-    plan: ScanPlan[F],
-    coverage: Coverage,
-    mirror: MirrorReader,
-    writer: NodeSyncService | None,
-) -> _Counts:
-    """List every folder under *plan*, and write or log what differs."""
-    counts = _Counts()
-    for node_id in plan.preserved:
-        coverage.preserve(node_id)
-
-    async def visit(folder: F) -> list[F]:
-        if writer is None:
-            return await compare(folder, None)
-        async with writer.observe() as read:
-            return await compare(folder, _Writes(writer, read))
-
-    async def compare(folder: F, writes: _Writes | None) -> list[F]:
-        folder_id = comparison.folder_id(folder)
-        try:
-            contents = await comparison.list_folder(folder)
-        except _LISTING_FAILURES as e:
-            _L.warning("Cannot list folder %s; keeping its mirror: %s", folder_id, e)
-            counts.list_errors += 1
-            coverage.preserve(folder_id)
-            return []
+    async def list_folder(self, folder: F) -> Listing[F]:
+        folder_id = self.folder_id(folder)
+        contents = await self._comparison.list_folder(folder)
         children = contents.children
-        counts.checked += len(children)
-        coverage.saw(o.record.id for o in children)
-        mirrored = {r.id: r for r in await mirror.get_children(folder_id)}
-        pairs = [
-            (o, existing)
-            for o in children
-            if (existing := mirrored.get(o.record.id)) is not None
-        ]
-        other = await comparison.differs(pairs) if pairs else set[NodeId]()
+        self.checked += len(children)
+        try:
+            mirrored = {r.id: r for r in await self._mirror.get_children(folder_id)}
+            pairs = [
+                (o, existing)
+                for o in children
+                if (existing := mirrored.get(o.record.id)) is not None
+            ]
+            other = await self._comparison.differs(pairs) if pairs else set[NodeId]()
+        except _LISTING_FAILURES as e:
+            # Only the source listing may be unavailable; this is not one.
+            raise RuntimeError(f"comparing folder {folder_id} failed") from e
+        changed: list[NodeObservation] = []
         for o in children:
             existing = mirrored.get(o.record.id)
             if existing is None:
-                counts.added += 1
+                self.added += 1
                 _L.info(
                     "%s missing node %s (%s) under %s",
-                    "dry-run: would add" if writes is None else "Adding",
+                    "dry-run: would add" if self._dry_run else "Adding",
                     o.record.id,
                     o.record.name,
                     folder_id,
                 )
-                if writes is not None:
-                    await writes.inserted(o)
+                changed.append(o)
             elif o.record.id in other or _record_differs(existing, o.record):
-                counts.updated += 1
-                if writes is None:
+                self.updated += 1
+                if self._dry_run:
                     _L.info("dry-run: would update %s (%s)", o.record.id, o.record.name)
-                else:
-                    await writes.updated(o, existing)
-        return contents.subfolders
-
-    await _traverse(plan.roots, visit)
-    return counts
+                changed.append(o)
+        return Listing(
+            seen=[o.record.id for o in children],
+            changed=changed,
+            subfolders=contents.subfolders,
+            keep=[],
+        )
 
 
 def _record_differs(existing: NodeRecord, listed: NodeRecord) -> bool:
