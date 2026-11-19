@@ -440,8 +440,11 @@ an API operation. For each pass the core:
 2. Traverses the roots, concurrently unless `concurrent_roots` is false. Each work item
    carries its root, and completeness is tracked per root. For each folder, one read number
    covers `skip` and `list_folder` and is held until resulting writes are applied.
-3. Records `seen` and `keep`, submits directories, then files. File enrichment waits for
-   directory writes when there are files. Descending does not wait: `F` must carry what is
+3. Records `seen` and `keep`, submits directories, then files. Files first wait for the
+   writes queued before them (a barrier, not later writes), so the stored records their
+   enrichment reads include every earlier publication; otherwise a file published by an
+   older read but not yet written would look unpublished, and a failed probe would
+   withhold it instead of keeping its dimensions. Descending does not wait: `F` must carry what is
    needed to list the folder. If `list_folder` raises `OSError` or `ListingUnavailableError`,
    the source cannot list it now: its subtree is preserved and its root is incomplete. Any
    other exception is a bug, such as a payload the backend misreads, and fails the pass, so a

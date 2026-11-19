@@ -55,6 +55,8 @@ class TestNodeSyncServiceMetadataQueue(DecoyTestCase):
                 probing=MediaProbing(runner=ProbeRunner()),
                 metadata_queue=mq,
             )
+            # No write worker runs; the test takes the queued write by hand.
+            setattr(cs, "barrier", AsyncMock())
             info = {
                 "file_id": "n1",
                 "permanent_link": "n1",

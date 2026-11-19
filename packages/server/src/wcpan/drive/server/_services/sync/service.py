@@ -507,13 +507,13 @@ class NodeSyncService:
     async def upsert_file_batch(
         self, observations: list[NodeObservation], *, read: ReadSeq
     ) -> None:
-        """After directory rows are committed, enqueue per-file media enrichment.
+        """Write files whose stored dimensions still apply; queue the rest for probing.
 
-        Waits for prior write-queue work so ``get_ancestors`` in the metadata worker
-        sees parent rows from the preceding ``upsert_batch`` for this BFS level.
-
-        Records whose existing DB row already has complete media dimensions for
-        the same content are written directly, skipping the metadata queue.
+        First waits for the writes queued before this call, not later ones, so
+        the stored records it reads, here and in the metadata worker, include
+        every publication queued before it. Otherwise a file published by an
+        older read but not yet written would look unpublished, and a failed
+        probe would withhold it instead of keeping its dimensions.
         """
         if not observations:
             return
@@ -525,7 +525,7 @@ class NodeSyncService:
         mq = self._metadata_queue
         skip_batch: list[tuple[NodeObservation, ReadSeq]] = []
         try:
-            await self._join_writes()
+            await self.barrier()
 
             node_ids = [o.record.id for o in observations]
             existing = await self._mirror.get_nodes_by_ids(node_ids)

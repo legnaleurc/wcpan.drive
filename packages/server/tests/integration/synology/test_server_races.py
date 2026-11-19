@@ -813,6 +813,48 @@ class TestMediaFailures(_RaceTestCase):
         # then
         self.assertEqual(await self.failures(), [])
 
+    async def test_newer_batch_sees_a_publication_queued_before_it(self) -> None:
+        # given: an older read's successful probe is queued behind a stalled write
+        older = replace(self.fresh, size=1)
+        newer = replace(self.fresh, size=2)
+
+        probing = _Gate(lambda r: r.size == 1)
+
+        async def enrich(observation: NodeObservation, **_: object) -> NodeRecord:
+            record = await probing.enrich(observation)
+            if record.size == 2:
+                raise MediaEnrichmentError(record, ProbeFailure.INVALID, "garbage")
+            return replace(record, width=20, height=20)
+
+        stall = asyncio.Event()
+        with patch.object(self.node_sync._enricher, "enrich", enrich):
+            await self.observed(
+                lambda r: self.node_sync.upsert_file_batch([_obs(older)], read=r)
+            )
+            await probing.entered.wait()
+            await self.node_sync.enqueue(stall.wait)
+            probing.release.set()
+            await self.metadata_queue.join()
+
+            # when: a newer read of changed content fails to probe
+            newer_batch = asyncio.ensure_future(
+                self.observed(
+                    lambda r: self.node_sync.upsert_file_batch([_obs(newer)], read=r)
+                )
+            )
+            await asyncio.sleep(0.05)
+            stall.set()
+            async with asyncio.timeout(5):
+                await newer_batch
+                await self.drain()
+
+        # then: it saw the published file, so it keeps the file and its
+        # dimensions instead of withholding it
+        stored = await self.mirror.get_node_by_id(self.fresh.id)
+        assert stored is not None
+        self.assertEqual((stored.size, stored.width, stored.height), (2, 20, 20))
+        self.assertEqual(await self.failures(), [])
+
     async def test_older_success_does_not_apply_over_newer_failure(self) -> None:
         # given: an older read probes successfully but stalls; the content
         # changes, and a newer read finds it invalid

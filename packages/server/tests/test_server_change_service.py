@@ -186,6 +186,16 @@ def _make_service(
     return cs.for_backend("b"), mirror, wq
 
 
+def _without_writer(cs: NodeSyncService) -> NodeSyncService:
+    """*cs* for a write queue no worker consumes.
+
+    These tests run queued jobs by hand, so a barrier job would never land;
+    the barrier is tested where a write worker runs.
+    """
+    setattr(cs, "barrier", AsyncMock())
+    return cs
+
+
 def _make_core_service(
     mirror: _FakeMirror | None = None,
     *,
@@ -202,7 +212,7 @@ def _make_core_service(
         probing=MediaProbing(runner=ProbeRunner()),
         metadata_queue=metadata_queue or asyncio.Queue(),
     )
-    return cs, mirror, wq
+    return _without_writer(cs), mirror, wq
 
 
 # ---------------------------------------------------------------------------
@@ -922,7 +932,7 @@ class TestUndeclaredProbing(IsolatedAsyncioTestCase):
             metadata_queue=mq or asyncio.Queue(),
             probing=MediaProbing(runner=None),
         )
-        return cs.for_backend("b")
+        return _without_writer(cs).for_backend("b")
 
     async def test_inline_upsert_raises(self):
         # given
@@ -966,7 +976,7 @@ class TestOfflineWorkersRequired(IsolatedAsyncioTestCase):
             probing=MediaProbing(runner=None),
             require_workers=True,
         )
-        return cs.for_backend("b"), mq
+        return _without_writer(cs).for_backend("b"), mq
 
     async def test_queuing_without_a_scope_raises(self):
         # given
