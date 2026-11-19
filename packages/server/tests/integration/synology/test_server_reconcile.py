@@ -35,7 +35,6 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.ordering import ReadOrdering
 from wcpan.drive.server._services.sync.scan import compare_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server._types import NodeObservation, ReadSeq
@@ -97,7 +96,6 @@ async def _reconcile_with_worker(
             mirror=mirror,
             store=SynologyStoreReader(mirror=mirror, ns=mirror.namespace("synology")),
             syno_paths=syno_paths,
-            node_sync=cs,
         )
         write_task = asyncio.create_task(write_worker(q))
         meta_task = asyncio.create_task(metadata_worker(mq, cs.process_metadata_item))
@@ -107,7 +105,7 @@ async def _reconcile_with_worker(
                 "list_children",
                 side_effect=list_children_side_effect,
             ):
-                stats = await bf(root_id, dry_run=dry_run)
+                stats = await bf(root_id, writer=None if dry_run else cs)
             await mq.join()
             await q.join()
             return stats
@@ -647,7 +645,7 @@ class TestReconcileSubtree(DecoyTestCase):
 class TestReadOnlyDryRun(DecoyTestCase):
     """A dry run on the read side alone reports the same and writes nothing."""
 
-    async def test_dry_run_with_read_ordering_and_provisional_ids(self) -> None:
+    async def test_dry_run_without_a_writer_with_provisional_ids(self) -> None:
         # given
         directory = self.enterContext(tempfile.TemporaryDirectory())
         db_path = os.path.join(directory, "mirror.sqlite")
@@ -696,7 +694,7 @@ class TestReadOnlyDryRun(DecoyTestCase):
             mirror=mirror,
             store=store,
             syno_paths=syno_paths,
-            node_sync=ReadOrdering(),
+            writer=None,
         )
         listings = {
             "dir-1": [
@@ -712,7 +710,7 @@ class TestReadOnlyDryRun(DecoyTestCase):
 
         # when
         with patch.object(syno_paths, "list_children", side_effect=_list_children):
-            stats = await backfill(NodeId("dir-1"), dry_run=True)
+            stats = await backfill(NodeId("dir-1"))
 
         # then
         self.assertEqual((stats.checked, stats.added, stats.removed), (3, 2, 1))

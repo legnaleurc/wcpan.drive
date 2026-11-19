@@ -6,10 +6,6 @@ Each write therefore carries the sequence number of its read, and is admitted on
 if no observation from a later-started read was already applied to the node.
 """
 
-from collections.abc import AsyncGenerator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Protocol
-
 from wcpan.drive.protocol.types import NodeId
 
 from ..._types import ReadSeq
@@ -73,37 +69,3 @@ class ObservationOrder:
         floor = min(self._outstanding, default=self._next)
         self._applied = {k: v for k, v in self._applied.items() if v >= floor}
         self._prune_at = max(_MIN_PRUNE_SIZE, 2 * len(self._applied))
-
-
-class NodeOrdering(Protocol):
-    """The read-ordering half of ``NodeSyncService``.
-
-    What read-only maintenance commands get: they number their reads and ask
-    which nodes newer reads touched, but write nothing.
-    """
-
-    def observe(self) -> AbstractAsyncContextManager[ReadSeq]: ...
-
-    async def touched_after(self, read: ReadSeq) -> set[NodeId]: ...
-
-
-class ReadOrdering:
-    """``NodeOrdering`` for read-only commands.
-
-    Reads are numbered as usual; nothing is written, so no read touched a
-    node.
-    """
-
-    def __init__(self) -> None:
-        self._order = ObservationOrder()
-
-    @asynccontextmanager
-    async def observe(self) -> AsyncGenerator[ReadSeq, None]:
-        read = self._order.begin()
-        try:
-            yield read
-        finally:
-            self._order.release(read)
-
-    async def touched_after(self, read: ReadSeq) -> set[NodeId]:
-        return set()

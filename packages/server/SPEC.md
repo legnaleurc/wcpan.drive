@@ -514,10 +514,10 @@ class Comparison[F](ABC):
 6. Confirms and commits removals, then drains enrichment and its writes before releasing the
    lock, since removal confirmation queues writes after its own drain.
 
-A dry run writes nothing and needs no writer, so a read-only core runs it on the read
-ordering: inserts and updates are only logged and counted, and `removed` counts the
-unconfirmed `removal_roots`, so it can exceed what a real run would remove. A real run on a
-read-only core raises. A failed pass settles submitted work before releasing the lock, as a
+A dry run has no writer and numbers no reads, so a read-only core can run it: inserts and
+updates are only logged and counted, and `removed` counts the unconfirmed candidates of its
+`Coverage`, so it can exceed what a real run would remove. A real run on a read-only core
+raises. A failed pass settles submitted work before releasing the lock, as a
 scan does.
 
 ### Lifecycle
@@ -618,7 +618,7 @@ node fail with 404 or 500.
 ### Reconciliation sessions
 
 Scan passes (startup scans, rescans, scoped repair) and comparison passes share
-one mechanism, `ReconcileSession`. A pass over a scope collects what
+one mechanism. A pass over a scope collects what
 listings saw and which folders they could not cover, and decides removals once,
 at the end.
 
@@ -634,9 +634,13 @@ at the end.
    backend-specific absence and error rules are in the backend specs.
 5. A backend confirms its source is present before declaring its root covered,
    so an unmounted source exposing an empty directory cannot erase the mirror.
-6. A pass can run without a writer: listing, coverage, and `removal_roots` need
-   none, so a dry run (Synology `backfill --dry-run`) reports candidates without
-   writing. `commit_removals` fails in a dry run.
+6. Rules 1 and 5 need only `Coverage`: what listings saw and which folders they
+   could not cover. Rules 3 and 4 need the writer: `ReconcileSession` extends
+   `Coverage` with the pass's read number and confirms removals through it. A dry
+   run (Synology `backfill --dry-run`) uses `Coverage` alone, so rule 3 does not
+   narrow its candidates. Offline nothing else writes, so that changes nothing; a
+   dry run while serving may report a node a newer read already moved, but it
+   removes nothing either way.
 
 Database check-then-write races are handled by the single writer and checks
 inside each transaction; stale external reads are handled by targeted validation
@@ -907,7 +911,7 @@ A backend is an async context manager factory named by its import path
 - A `READ` command gets `ReadCoreServices` built by `managed_read_core`: the
   mirror opened through `read_only_dsn`, the core schema and the instance
   checked without changes (`check_schema`, `lookup_instance`,
-  `check_backend_schema`), `ReadOrdering`, `ProvisionalNodeIds` (IDs for
+  `check_backend_schema`), `ProvisionalNodeIds` (IDs for
   unmapped native IDs live only for the command), and media probing without
   a runner; no queues, workers, or probe runner. It refuses a missing
   database, a non-empty WAL, a database not in WAL mode, or pending core

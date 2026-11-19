@@ -25,7 +25,6 @@ from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from wcpan.drive.server._services.sync.ordering import ReadOrdering
 from wcpan.drive.server._services.sync.scan import compare_pass
 from wcpan.drive.server._services.sync.service import (
     NodeSyncService,
@@ -39,6 +38,7 @@ from wcpan.drive.server.types import (
     CoreServices,
     Listing,
     NodeObservation,
+    ReadCoreServices,
     Scanner,
     ScanPlan,
 )
@@ -872,19 +872,32 @@ class CompareTest(_FlowTestCase):
         await scan
         await compare
 
-    async def test_only_a_dry_run_can_run_without_a_writer(self) -> None:
+    async def test_dry_run_needs_no_writer(self) -> None:
         # given
-        comparison = _Comparison(_Source())
+        await self.seed(_node("gone", _A))
+        comparison = _Comparison(_Source([_node("new", _A)]))
         # when
-        report = await compare_pass(
-            comparison, mirror=self.mirror, node_sync=ReadOrdering(), dry_run=True
-        )
+        report = await compare_pass(comparison, mirror=self.mirror, writer=None)
         # then
-        self.assertEqual(report, _report())
-        with self.assertRaisesRegex(RuntimeError, "only a dry run"):
-            await compare_pass(
-                comparison, mirror=self.mirror, node_sync=ReadOrdering(), dry_run=False
-            )
+        self.assertEqual(report, _report(checked=1, added=1, removed=1))
+        self.assertFalse(await self.has("new"))
+        self.assertTrue(await self.has("gone"))
+
+    async def test_read_only_core_refuses_a_real_run(self) -> None:
+        # given
+        core = ReadCoreServices(
+            mirror=self.mirror,
+            ids=MagicMock(),
+            media=MediaProbing(runner=None),
+            schemas=MagicMock(),
+        )
+        comparison = _Comparison(_Source([_node("new", _A)]))
+        # when
+        report = await core.compare(comparison)
+        # then
+        self.assertEqual(report, _report(checked=1, added=1))
+        with self.assertRaisesRegex(RuntimeError, "dry run"):
+            await core.compare(comparison, dry_run=False)
 
 
 class ObserveTest(_FlowTestCase):

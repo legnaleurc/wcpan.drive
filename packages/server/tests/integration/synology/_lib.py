@@ -1,7 +1,6 @@
 """Helpers for Synology tests that reach into the core."""
 
 from wcpan.drive.protocol.types import NodeId
-from wcpan.drive.server._services.sync.ordering import NodeOrdering
 from wcpan.drive.server._services.sync.scan import ComparisonReport, compare_pass
 from wcpan.drive.server._services.sync.service import NodeSyncService
 from wcpan.drive.server.backend.synology._backfill import SubtreeComparison
@@ -18,10 +17,12 @@ async def backfill(
     mirror: MirrorReader,
     store: SynologyStoreReader,
     syno_paths: SynologyPathService,
-    node_sync: NodeSyncService | NodeOrdering,
-    dry_run: bool = False,
+    writer: NodeSyncService | None,
 ) -> ComparisonReport:
-    """Run the ``backfill`` comparison of *root_id*, as the command would."""
+    """Run the ``backfill`` comparison of *root_id*, as the command would.
+
+    Without a *writer* it is a dry run.
+    """
     comparison = SubtreeComparison(
         root_id,
         drive_api=drive_api,
@@ -29,6 +30,4 @@ async def backfill(
         store=store,
         syno_paths=syno_paths,
     )
-    return await compare_pass(
-        comparison, mirror=mirror, node_sync=node_sync, dry_run=dry_run
-    )
+    return await compare_pass(comparison, mirror=mirror, writer=writer)

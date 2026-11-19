@@ -339,7 +339,7 @@ class TestBackfillOrdering(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            node_sync=self.node_sync,
+            writer=self.node_sync,
         )
         return backfill, syno_paths
 
@@ -431,7 +431,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         async with reconcile_session(
             {_MOUNT},
             mirror=self.mirror,
-            node_sync=self.node_sync,
+            writer=self.node_sync,
             locate=partial(self.syno_paths.locate, self.drive_api),
         ) as session:
             session.saw([self.a.id, self.b.id])
@@ -518,7 +518,7 @@ class TestReconcileRemovalConfirmation(_RaceTestCase):
         async with reconcile_session(
             {_MOUNT},
             mirror=self.mirror,
-            node_sync=self.node_sync,
+            writer=self.node_sync,
             locate=partial(self.syno_paths.locate, self.drive_api),
         ) as session:
             # when
@@ -560,7 +560,7 @@ class TestBackfillRemovalConfirmation(_RaceTestCase):
                 mirror=self.mirror, ns=self.mirror.namespace("synology")
             ),
             syno_paths=syno_paths,
-            node_sync=self.node_sync,
+            writer=self.node_sync,
         )
 
         async def list_children(_api: object, parent_id: str) -> list[object]:

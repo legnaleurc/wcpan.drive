@@ -202,7 +202,7 @@ class TestNewFolders(DecoyTestCase):
             mirror=self.mirror,
             store=self.store,
             syno_paths=self.syno_paths,
-            node_sync=self.node_sync,
+            writer=self.node_sync,
         )
 
         # when

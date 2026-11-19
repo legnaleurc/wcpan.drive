@@ -18,8 +18,7 @@ from ..._lib.bfs import parallel_bfs
 from ..._lib.records import same_public_metadata
 from ..._types import NodeObservation, ReadSeq
 from ..mirror.store import MirrorReader
-from .ordering import NodeOrdering
-from .reconcile import ReconcileSession, reconcile_session
+from .reconcile import Coverage, ReconcileSession, reconcile_session
 from .service import NodeSyncService
 
 
@@ -280,8 +279,7 @@ class ScanRunner:
                 report = await compare_pass(
                     comparison,
                     mirror=self._mirror,
-                    node_sync=self._node_sync,
-                    dry_run=dry_run,
+                    writer=None if dry_run else self._node_sync,
                 )
             except Exception as failed:
                 await _settle_after(failed, self._node_sync.wait_enrichment_drained)
@@ -315,7 +313,7 @@ class ScanRunner:
         async with reconcile_session(
             plan.scope,
             mirror=self._mirror,
-            node_sync=self._node_sync,
+            writer=self._node_sync,
             locate=scanner.locate,
         ) as session:
             for node_id in plan.preserved:
@@ -377,93 +375,122 @@ async def compare_pass[F](
     comparison: Comparison[F],
     *,
     mirror: MirrorReader,
-    node_sync: NodeSyncService | NodeOrdering,
-    dry_run: bool,
+    writer: NodeSyncService | None,
 ) -> ComparisonReport:
     """Compare everything *comparison* lists with the mirror, and apply it.
 
-    A dry run writes nothing, so it can run on the read ordering alone. A real
-    run returns once its writes are queued.
-
-    Raises:
-        RuntimeError: If it is not a dry run and *node_sync* cannot write.
+    Without a *writer* it is a dry run: it writes nothing, numbers no reads,
+    and reports the unconfirmed removal candidates. A real run returns once its
+    writes are queued.
     """
-    writer = None if dry_run else node_sync
-    if writer is not None and not isinstance(writer, NodeSyncService):
-        raise RuntimeError("only a dry run can compare without a writer")
     plan = await comparison.prepare()
     if not plan.scope:
         return ComparisonReport(checked=0, added=0, updated=0, removed=0, list_errors=0)
-    checked = added = updated = list_errors = 0
+    if writer is None:
+        coverage = Coverage(plan.scope, mirror=mirror)
+        counts = await _compare_folders(comparison, plan, coverage, mirror, writer)
+        roots = await coverage.removal_roots()
+        for node_id in roots:
+            _L.info("dry-run: would remove %s, absent from the source", node_id)
+    else:
+        async with reconcile_session(
+            plan.scope, mirror=mirror, writer=writer, locate=comparison.locate
+        ) as session:
+            counts = await _compare_folders(comparison, plan, session, mirror, writer)
+            roots = await session.commit_removals()
+        for node_id in roots:
+            _L.info("Removed node %s, absent from the source", node_id)
+    return ComparisonReport(
+        checked=counts.checked,
+        added=counts.added,
+        updated=counts.updated,
+        removed=len(roots),
+        list_errors=counts.list_errors,
+    )
+
+
+@dataclass(kw_only=True)
+class _Counts:
+    checked: int = 0
+    added: int = 0
+    updated: int = 0
+    list_errors: int = 0
+
+
+@dataclass(frozen=True)
+class _Writes:
+    """Writes from one listing, numbered by its read."""
+
+    writer: NodeSyncService
+    read: ReadSeq
+
+    async def inserted(self, observation: NodeObservation) -> None:
+        await self.writer.reconcile_insert(observation, read=self.read)
+
+    async def updated(self, observation: NodeObservation, existing: NodeRecord) -> None:
+        await self.writer.reconcile_update(observation, existing, read=self.read)
+
+
+async def _compare_folders[F](
+    comparison: Comparison[F],
+    plan: ScanPlan[F],
+    coverage: Coverage,
+    mirror: MirrorReader,
+    writer: NodeSyncService | None,
+) -> _Counts:
+    """List every folder under *plan*, and write or log what differs."""
+    counts = _Counts()
+    for node_id in plan.preserved:
+        coverage.preserve(node_id)
 
     async def visit(folder: F) -> list[F]:
-        nonlocal checked, added, updated, list_errors
+        if writer is None:
+            return await compare(folder, None)
+        async with writer.observe() as read:
+            return await compare(folder, _Writes(writer, read))
+
+    async def compare(folder: F, writes: _Writes | None) -> list[F]:
         folder_id = comparison.folder_id(folder)
-        async with node_sync.observe() as read:
-            try:
-                contents = await comparison.list_folder(folder)
-            except _LISTING_FAILURES as e:
-                _L.warning(
-                    "Cannot list folder %s; keeping its mirror: %s", folder_id, e
+        try:
+            contents = await comparison.list_folder(folder)
+        except _LISTING_FAILURES as e:
+            _L.warning("Cannot list folder %s; keeping its mirror: %s", folder_id, e)
+            counts.list_errors += 1
+            coverage.preserve(folder_id)
+            return []
+        children = contents.children
+        counts.checked += len(children)
+        coverage.saw(o.record.id for o in children)
+        mirrored = {r.id: r for r in await mirror.get_children(folder_id)}
+        pairs = [
+            (o, existing)
+            for o in children
+            if (existing := mirrored.get(o.record.id)) is not None
+        ]
+        other = await comparison.differs(pairs) if pairs else set[NodeId]()
+        for o in children:
+            existing = mirrored.get(o.record.id)
+            if existing is None:
+                counts.added += 1
+                _L.info(
+                    "%s missing node %s (%s) under %s",
+                    "dry-run: would add" if writes is None else "Adding",
+                    o.record.id,
+                    o.record.name,
+                    folder_id,
                 )
-                list_errors += 1
-                session.preserve(folder_id)
-                return []
-            children = contents.children
-            checked += len(children)
-            session.saw(o.record.id for o in children)
-            mirrored = {r.id: r for r in await mirror.get_children(folder_id)}
-            pairs = [
-                (o, existing)
-                for o in children
-                if (existing := mirrored.get(o.record.id)) is not None
-            ]
-            other = await comparison.differs(pairs) if pairs else set[NodeId]()
-            for o in children:
-                existing = mirrored.get(o.record.id)
-                if existing is None:
-                    added += 1
-                    _L.info(
-                        "%s missing node %s (%s) under %s",
-                        "dry-run: would add" if writer is None else "Adding",
-                        o.record.id,
-                        o.record.name,
-                        folder_id,
-                    )
-                    if writer is not None:
-                        await writer.reconcile_insert(o, read=read)
-                elif o.record.id in other or _record_differs(existing, o.record):
-                    updated += 1
-                    if writer is None:
-                        _L.info(
-                            "dry-run: would update %s (%s)", o.record.id, o.record.name
-                        )
-                    else:
-                        await writer.reconcile_update(o, existing, read=read)
+                if writes is not None:
+                    await writes.inserted(o)
+            elif o.record.id in other or _record_differs(existing, o.record):
+                counts.updated += 1
+                if writes is None:
+                    _L.info("dry-run: would update %s (%s)", o.record.id, o.record.name)
+                else:
+                    await writes.updated(o, existing)
         return contents.subfolders
 
-    async with reconcile_session(
-        plan.scope, mirror=mirror, node_sync=node_sync, locate=comparison.locate
-    ) as session:
-        for node_id in plan.preserved:
-            session.preserve(node_id)
-        await _traverse(plan.roots, visit)
-        if writer is None:
-            roots = await session.removal_roots()
-            for node_id in roots:
-                _L.info("dry-run: would remove %s, absent from the source", node_id)
-        else:
-            roots = await session.commit_removals()
-            for node_id in roots:
-                _L.info("Removed node %s, absent from the source", node_id)
-
-    return ComparisonReport(
-        checked=checked,
-        added=added,
-        updated=updated,
-        removed=len(roots),
-        list_errors=list_errors,
-    )
+    await _traverse(plan.roots, visit)
+    return counts
 
 
 def _record_differs(existing: NodeRecord, listed: NodeRecord) -> bool:

@@ -26,7 +26,6 @@ from wcpan.drive.server._services.mirror.store import (
     MirrorReader,
     MirrorStore,
 )
-from wcpan.drive.server._services.sync.ordering import NodeOrdering
 from wcpan.drive.server._services.sync.service import NodeSyncService
 
 
@@ -90,22 +89,19 @@ class TestCommandParser(TestCase):
 
 
 def _read_core(schemas) -> ReadCoreServices:
-    # The real services satisfy the read-only protocols (checked by pyright).
+    # The real store satisfies the read-only protocol (checked by pyright).
     mirror: MirrorReader = MagicMock(spec=MirrorStore)
-    ordering: NodeOrdering = MagicMock(spec=NodeSyncService)
     return ReadCoreServices(
         mirror=mirror,
-        node_sync=ordering,
         ids=MagicMock(),
         media=MediaProbing(runner=None),
         schemas=schemas,
     )
 
 
-def _conforms(mirror: MirrorStore, node_sync: NodeSyncService) -> None:
-    """Never called; pyright checks the assignments."""
+def _conforms(mirror: MirrorStore) -> None:
+    """Never called; pyright checks the assignment."""
     _mirror: MirrorReader = mirror
-    _ordering: NodeOrdering = node_sync
 
 
 class TestCoreAccess(IsolatedAsyncioTestCase):

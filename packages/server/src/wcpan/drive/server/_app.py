@@ -89,7 +89,6 @@ from ._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
 )
-from ._services.sync.ordering import ReadOrdering
 from ._services.sync.service import NodeSyncService
 from ._services.upload.service import UploadService, UploadSessionStore
 from ._types import (
@@ -259,7 +258,6 @@ async def entered_read_backend(
         mounts=core.mounts.subset(config.mounts_of(name)),
         core=ReadCoreServices(
             mirror=mirror,
-            node_sync=ReadOrdering(),
             ids=ProvisionalNodeIds(mirror=mirror, key=key),
             media=MediaProbing(runner=None),
             schemas=partial(mirror.check_backend_schema, name),

@@ -16,7 +16,6 @@ from ..mirror.store import (
     MirrorReader,
 )
 from ..operations import Locate, LocateUndecidedError
-from .ordering import NodeOrdering
 from .service import NodeSyncService
 
 
@@ -26,32 +25,17 @@ _L = getLogger(__name__)
 _CONFIRM_CONCURRENCY = 8
 
 
-class ReconcileSession:
-    """Coverage and removals for one pass over the subtrees under *scope*.
+class Coverage:
+    """What one pass's listings covered under *scope*; it needs no writer.
 
-    A mirrored node is a removal candidate only if no listing in the pass saw it,
-    no uncovered folder contains it, and no read that started after the pass
-    began touched it. A listing is not an atomic snapshot of the tree: a node can
-    move into a folder already listed and out of one not yet listed. Each
-    candidate subtree root is therefore fetched directly before it is removed.
+    A mirrored node is a removal candidate only if no listing in the pass saw
+    it and no uncovered folder contains it. A dry run stops here and reports
+    the candidates.
     """
 
-    def __init__(
-        self,
-        scope: set[NodeId],
-        read: ReadSeq,
-        *,
-        mirror: MirrorReader,
-        node_sync: NodeSyncService | NodeOrdering,
-        locate: Locate,
-    ) -> None:
-        """Only ``commit_removals`` writes, and needs a ``NodeSyncService``;
-        a dry run can pass the read ordering alone."""
+    def __init__(self, scope: set[NodeId], *, mirror: MirrorReader) -> None:
         self._scope = scope
-        self._read = read
         self._mirror = mirror
-        self._node_sync = node_sync
-        self._locate = locate
         self._seen = set[NodeId]()
         self._preserve_roots = set[NodeId]()
 
@@ -64,32 +48,57 @@ class ReconcileSession:
         self._preserve_roots.add(root)
 
     async def removal_roots(self) -> list[NodeId]:
+        """Roots of the mirrored subtrees no listing in this pass accounted for."""
+        return await self._uncovered(set())
+
+    async def _uncovered(self, touched: set[NodeId]) -> list[NodeId]:
+        preserved = await self._mirror.build_deferred_preserved_set(
+            self._seen, self._preserve_roots
+        )
+        return await self._mirror.deferred_removal_roots(
+            preserved | touched, self._scope
+        )
+
+
+class ReconcileSession(Coverage):
+    """Coverage of a pass that writes, which also confirms and applies removals.
+
+    A node a read that started after the pass began touched is no candidate
+    either. A listing is not an atomic snapshot of the tree: a node can move
+    into a folder already listed and out of one not yet listed. Each candidate
+    subtree root is therefore fetched directly before it is removed.
+    """
+
+    def __init__(
+        self,
+        scope: set[NodeId],
+        read: ReadSeq,
+        *,
+        mirror: MirrorReader,
+        writer: NodeSyncService,
+        locate: Locate,
+    ) -> None:
+        super().__init__(scope, mirror=mirror)
+        self._read = read
+        self._writer = writer
+        self._locate = locate
+
+    async def removal_roots(self) -> list[NodeId]:
         """Roots of the mirrored subtrees no listing in this pass accounted for.
 
         Waits for queued writes, so nodes observed by newer reads are excluded.
         """
-        preserved = await self._mirror.build_deferred_preserved_set(
-            self._seen, self._preserve_roots
-        )
-        preserved |= await self._node_sync.touched_after(self._read)
-        return await self._mirror.deferred_removal_roots(preserved, self._scope)
+        return await self._uncovered(await self._writer.touched_after(self._read))
 
     async def commit_removals(self) -> list[NodeId]:
-        """Confirm and apply removals; returns the subtree roots removed.
-
-        Raises:
-            RuntimeError: If the session was opened without a writer.
-        """
-        writer = self._node_sync
-        if not isinstance(writer, NodeSyncService):
-            raise RuntimeError("a read-only reconcile pass cannot remove nodes")
+        """Confirm and apply removals; returns the subtree roots removed."""
         roots = await self.removal_roots()
         semaphore = asyncio.Semaphore(_CONFIRM_CONCURRENCY)
         removed: list[NodeId] = []
 
         async def confirm(root: NodeId) -> None:
             async with semaphore:
-                if await self._remove_unless_moved(root, writer):
+                if await self._remove_unless_moved(root):
                     removed.append(root)
 
         async with asyncio.TaskGroup() as group:
@@ -97,14 +106,13 @@ class ReconcileSession:
                 group.create_task(confirm(root))
         return sorted(removed)
 
-    async def _remove_unless_moved(
-        self, node_id: NodeId, writer: NodeSyncService
-    ) -> bool:
+    async def _remove_unless_moved(self, node_id: NodeId) -> bool:
         """Remove *node_id* unless it still exists under a mirrored parent.
 
         Only an undecided lookup preserves the node; a node found elsewhere is
         recorded under its new parent instead.
         """
+        writer = self._writer
         async with writer.observe() as read:
             try:
                 current = await self._locate(node_id)
@@ -128,11 +136,9 @@ async def reconcile_session(
     scope: set[NodeId],
     *,
     mirror: MirrorReader,
-    node_sync: NodeSyncService | NodeOrdering,
+    writer: NodeSyncService,
     locate: Locate,
 ) -> AsyncGenerator[ReconcileSession, None]:
     """Open a pass over *scope*; enter before the first listing starts."""
-    async with node_sync.observe() as read:
-        yield ReconcileSession(
-            scope, read, mirror=mirror, node_sync=node_sync, locate=locate
-        )
+    async with writer.observe() as read:
+        yield ReconcileSession(scope, read, mirror=mirror, writer=writer, locate=locate)

@@ -45,7 +45,6 @@ from ._services.mounts import Mounts
 from ._services.operations import NodeOperations
 from ._services.sync.enrichment import Enrichment
 from ._services.sync.hints import ChangeHandler, HintStage
-from ._services.sync.ordering import NodeOrdering
 from ._services.sync.scan import (
     Changes,
     Comparison,
@@ -145,14 +144,9 @@ class ReadCoreServices:
     """
 
     mirror: MirrorReader
-    node_sync: InitVar[NodeOrdering]
     ids: NodeIdMap
     media: MediaProbing
     schemas: Callable[[BackendSchema], Awaitable[BackendNamespace]]
-    _ordering: NodeOrdering = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self, node_sync: NodeOrdering) -> None:
-        object.__setattr__(self, "_ordering", node_sync)
 
     async def compare[F](
         self, comparison: Comparison[F], *, dry_run: bool = True
@@ -162,12 +156,9 @@ class ReadCoreServices:
         Raises:
             RuntimeError: If *dry_run* is false.
         """
-        return await compare_pass(
-            comparison,
-            mirror=self.mirror,
-            node_sync=self._ordering,
-            dry_run=dry_run,
-        )
+        if not dry_run:
+            raise RuntimeError("a read-only command can only compare in a dry run")
+        return await compare_pass(comparison, mirror=self.mirror, writer=None)
 
     async def bind_schema(self, schema: BackendSchema) -> BackendNamespace:
         """Check the instance's tables against *schema*, changing nothing."""
