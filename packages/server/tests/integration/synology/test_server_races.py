@@ -28,6 +28,7 @@ from wcpan.drive.server._services.mirror.store import (
 from wcpan.drive.server._services.off_main import OffMainService
 from wcpan.drive.server._services.operations import LocateUndecidedError
 from wcpan.drive.server._services.sync.coverage import reconcile_session
+from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
@@ -694,7 +695,7 @@ class TestMediaFailures(_RaceTestCase):
             return _obs(self.fresh)
 
         with patch.object(self.node_sync._prober._enricher, "enrich", enrich):
-            async with self.node_sync.retrying(locate):
+            async with Enrichment(self.node_sync).retrying(locate):
                 # when
                 await self.observed(
                     lambda r: self.node_sync.upsert(_obs(self.fresh), read=r)
@@ -718,7 +719,7 @@ class TestMediaFailures(_RaceTestCase):
         async def locate(_source_key: str) -> NodeObservation:
             raise AssertionError("must not retry")
 
-        async with self.node_sync.retrying(locate):
+        async with Enrichment(self.node_sync).retrying(locate):
             # when
             await self.observed(
                 lambda r: self.node_sync.upsert(_obs(self.fresh), read=r)
@@ -739,7 +740,7 @@ class TestMediaFailures(_RaceTestCase):
             return _obs(self.fresh)
 
         # when
-        await self.node_sync.retry_media_failures(locate=locate)
+        await Enrichment(self.node_sync).retry_failures(locate)
         await self.drain()
 
         # then
@@ -759,7 +760,7 @@ class TestMediaFailures(_RaceTestCase):
             return _obs(self.fresh)
 
         # when
-        await self.node_sync.retry_media_failures(locate=locate)
+        await Enrichment(self.node_sync).retry_failures(locate)
         await self.drain()
 
         # then
@@ -778,7 +779,7 @@ class TestMediaFailures(_RaceTestCase):
             return None
 
         # when
-        await self.node_sync.retry_media_failures(locate=locate)
+        await Enrichment(self.node_sync).retry_failures(locate)
         await self.drain()
 
         # then
@@ -794,7 +795,7 @@ class TestMediaFailures(_RaceTestCase):
             raise LocateUndecidedError("down")
 
         # when
-        await self.node_sync.retry_media_failures(locate=locate)
+        await Enrichment(self.node_sync).retry_failures(locate)
         await self.drain()
 
         # then

@@ -22,15 +22,15 @@ from ..._types import (
     ReadSeq,
 )
 from ..media.probing import MediaProbing
-from ..media.retries import MediaRetries, RetryMedia
+from ..media.retries import MediaRetries
 from ..mirror.model import (
     BackendNamespace,
     BackendSchema,
+    MediaFailure,
 )
 from ..mirror.store import (
     MirrorStore,
 )
-from ..operations import LocateUndecidedError
 from .metadata import MetadataQueue, MetadataWorkItem
 from .ordering import ObservationOrder
 from .prober import (
@@ -46,12 +46,6 @@ from .prober import (
 
 class WriterStoppedError(RuntimeError):
     """The write worker ended while writes were still waiting to land."""
-
-
-type LocateSource = Callable[[str], Awaitable[NodeObservation | None]]
-"""Observe the item with a source key now; ``None`` if the backend no longer has
-it under a mirrored parent. Raises ``LocateUndecidedError`` when that cannot be
-decided."""
 
 
 _L = getLogger(__name__)
@@ -428,62 +422,47 @@ class NodeSyncService:
         if skip_batch:
             await self._put_outcomes(list(skip_batch))
 
-    async def retry_media_failures(self, *, locate: LocateSource) -> None:
-        """Observe the files whose media probe failed again, and probe them.
+    @property
+    def retries(self) -> MediaRetries:
+        """Retry timers of media probes, shared by every view."""
+        return self._retries
 
-        Only this view's backend records are retried, whatever their kind, and
-        not those a backoff retry already covers. A record whose file the
-        backend no longer has is dropped.
-        Used by: backends whose discovery would not see an unchanged file again,
-        once at startup.
-        """
-        backend = self._require_backend()
-        pending = self._retries.pending(backend)
-        for failure in await self._mirror.get_media_failures(backend):
-            if failure.source_key in pending:
-                continue
-            try:
-                await self._reprobe(failure.source_key, locate=locate)
-            except LocateUndecidedError:
-                _L.warning(
-                    "Could not re-observe %s; retrying later", failure.source_key
-                )
-
-    def retrying(self, locate: LocateSource) -> AbstractAsyncContextManager[None]:
-        """Retry this view's transient media failures with backoff while entered.
-
-        Each attempt re-observes the file with *locate* under a fresh read.
-        Used by: backends while serving.
-        """
-        return self.retrying_with(partial(self._reprobe, locate=locate))
-
-    def retrying_with(self, retry: RetryMedia) -> AbstractAsyncContextManager[None]:
-        """Like ``retrying``, for a backend that re-observes files its own way."""
-        return self._retries.register(self._require_backend(), retry)
-
-    async def _reprobe(self, source_key: str, *, locate: LocateSource) -> None:
-        """Observe the file with *source_key* again and submit it for probing.
+    @property
+    def backend(self) -> str:
+        """The backend this view writes for.
 
         Raises:
-            LocateUndecidedError: When the backend cannot tell now.
+            ValueError: For the core's own view, which has none.
         """
+        return self._require_backend()
+
+    async def media_failures(self) -> list[MediaFailure]:
+        """This view's recorded media failures."""
+        return await self._mirror.get_media_failures(self._require_backend())
+
+    async def submit_probe(
+        self, observation: NodeObservation, *, read: ReadSeq
+    ) -> None:
+        """Queue *observation* for probing again, as observed by *read*.
+
+        Used by: media retries, after re-observing a file whose probe failed.
+        """
+        self._order.hold(read)
+        await self._hand_off(
+            self._metadata_queue,
+            MetadataWorkItem(
+                observation=self._own(observation), force_refresh=True, read=read
+            ),
+            [read],
+        )
+
+    async def drop_media_failure(self, source_key: str) -> None:
+        """Forget the failure recorded under *source_key*; its file is gone."""
         backend = self._require_backend()
-        async with self.observe() as read:
-            current = await locate(source_key)
-            if current is None:
-                self._retries.forget(backend, source_key)
-                await self._write_queue.put(
-                    partial(self._mirror.clear_media_failure, backend, source_key)
-                )
-                return
-            self._order.hold(read)
-            await self._hand_off(
-                self._metadata_queue,
-                MetadataWorkItem(
-                    observation=self._own(current), force_refresh=True, read=read
-                ),
-                [read],
-            )
+        self._retries.forget(backend, source_key)
+        await self._write_queue.put(
+            partial(self._mirror.clear_media_failure, backend, source_key)
+        )
 
     def _require_backend(self) -> str:
         if self._backend is None:

@@ -111,7 +111,7 @@ def _sync() -> Any:
     node_sync = MagicMock()
     node_sync.register_schema = AsyncMock(return_value=MagicMock())
     node_sync.enrichment_scope = MagicMock(side_effect=lambda: _no_retries())
-    node_sync.retrying = MagicMock(side_effect=lambda _: _no_retries())
+    node_sync.retries.register = MagicMock(side_effect=lambda *_: _no_retries())
     return node_sync
 
 

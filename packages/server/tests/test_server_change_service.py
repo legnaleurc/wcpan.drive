@@ -26,6 +26,7 @@ from wcpan.drive.server._services.media.probing import (
 from wcpan.drive.server._services.mirror.model import (
     MediaFailure,
 )
+from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.metadata import (
     METADATA_WORKER_COUNT,
 )
@@ -291,7 +292,7 @@ class TestNodeSyncServiceInit(IsolatedAsyncioTestCase):
         locate = AsyncMock()
         # when / then
         with self.assertRaises(ValueError):
-            await cs.retry_media_failures(locate=locate)
+            await Enrichment(cs).retry_failures(locate)
         locate.assert_not_awaited()
 
 
@@ -394,7 +395,7 @@ class TestMediaFailurePolicy(IsolatedAsyncioTestCase):
         )  # type: ignore[method-assign]
         locate = AsyncMock(return_value=None)
         # when
-        await cs.retry_media_failures(locate=locate)
+        await Enrichment(cs).retry_failures(locate)
         while not wq.empty():
             await wq.get_nowait()()
         # then

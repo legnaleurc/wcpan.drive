@@ -27,6 +27,7 @@ from wcpan.drive.server._services.mirror.store import (
 )
 from wcpan.drive.server._services.mounts import Mounts
 from wcpan.drive.server._services.off_main import OffMainService
+from wcpan.drive.server._services.sync.enrichment import Enrichment
 from wcpan.drive.server._services.sync.metadata import (
     create_metadata_queue,
     metadata_worker,
@@ -236,7 +237,7 @@ class TestBackendViews(IsolatedAsyncioTestCase):
             located.append(source_key)
 
         # when: a's file is gone
-        await self.node_sync.for_backend("a").retry_media_failures(locate=locate)
+        await Enrichment(self.node_sync.for_backend("a")).retry_failures(locate)
         await self.node_sync.wait_enrichment_drained()
 
         # then
