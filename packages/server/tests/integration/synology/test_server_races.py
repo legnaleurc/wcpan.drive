@@ -864,6 +864,46 @@ class TestMediaFailures(_RaceTestCase):
         self.assertEqual((stored.size, stored.width, stored.height), (2, 20, 20))
         self.assertEqual(await self.failures(), [])
 
+    async def test_failed_probe_sees_a_publication_written_after_its_batch(
+        self,
+    ) -> None:
+        # given: both probes start before either result is written, so the
+        # newer batch's barrier cannot help; the older probe succeeds first
+        older = replace(self.fresh, size=1)
+        newer = replace(self.fresh, size=2)
+        older_probe = _Gate(lambda r: r.size == 1)
+        newer_probe = _Gate(lambda r: r.size == 2)
+
+        async def enrich(observation: NodeObservation, **_: object) -> NodeRecord:
+            record = await older_probe.enrich(observation)
+            record = await newer_probe.enrich(observation)
+            if record.size == 2:
+                raise MediaEnrichmentError(record, ProbeFailure.INVALID, "garbage")
+            return replace(record, width=20, height=20)
+
+        with patch.object(self.node_sync._enricher, "enrich", enrich):
+            async with asyncio.timeout(5):
+                await self.observed(
+                    lambda r: self.node_sync.upsert_file_batch([_obs(older)], read=r)
+                )
+                await older_probe.entered.wait()
+                await self.observed(
+                    lambda r: self.node_sync.upsert_file_batch([_obs(newer)], read=r)
+                )
+                await newer_probe.entered.wait()
+                # when: the older success lands, then the newer probe fails
+                older_probe.release.set()
+                while await self.mirror.get_node_by_id(self.fresh.id) is None:
+                    await asyncio.sleep(0.01)
+                newer_probe.release.set()
+                await self.drain()
+
+        # then: the failure is decided against the published file
+        stored = await self.mirror.get_node_by_id(self.fresh.id)
+        assert stored is not None
+        self.assertEqual((stored.size, stored.width, stored.height), (2, 20, 20))
+        self.assertEqual(await self.failures(), [])
+
     async def test_older_success_does_not_apply_over_newer_failure(self) -> None:
         # given: an older read probes successfully but stalls; the content
         # changes, and a newer read finds it invalid

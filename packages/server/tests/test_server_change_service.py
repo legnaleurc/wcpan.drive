@@ -322,9 +322,27 @@ class TestMediaFailurePolicy(IsolatedAsyncioTestCase):
         await self._upsert(cs, changed)
         while not wq.empty():
             await wq.get_nowait()()
-        # then: the new metadata is written; the mirror keeps the dimensions
-        self.assertEqual(mirror._observations, [[changed]])
+        # then: the new metadata is written with the stored dimensions
+        self.assertEqual(
+            mirror._observations, [[replace(changed, width=10, height=20)]]
+        )
         self.assertEqual(mirror._pending, set())
+
+    async def test_failed_probe_keeps_stored_dims_over_observed_ones(self):
+        # given: the observation carries other, stale dimensions
+        cs, mirror, wq = _make_service()
+        mirror._nodes["n1"] = _make_record(is_image=True, width=10, height=20)
+        changed = replace(
+            _make_record(is_image=True, width=5, height=5), size=5, name="new.jpg"
+        )
+        # when
+        await self._upsert(cs, changed)
+        while not wq.empty():
+            await wq.get_nowait()()
+        # then
+        self.assertEqual(
+            mirror._observations, [[replace(changed, width=10, height=20)]]
+        )
 
     async def test_unchanged_content_reuses_dimensions_without_probing(self):
         # given: a rename of a published image
@@ -452,8 +470,8 @@ class TestNodeSyncServiceUpsertBatch(IsolatedAsyncioTestCase):
             # when
             async with cs.observe() as read:
                 await cs.upsert_batch([_obs(failed), _obs(kept)], read=read)
-        # then
-        self.assertEqual(wq.qsize(), 2)
+        # then: one write decides the failure and publishes the rest
+        self.assertEqual(wq.qsize(), 1)
         # when
         while not wq.empty():
             await wq.get_nowait()()

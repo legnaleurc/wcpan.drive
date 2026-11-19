@@ -88,6 +88,23 @@ class WriterStoppedError(RuntimeError):
     """The write worker ended while writes were still waiting to land."""
 
 
+@dataclass(frozen=True, slots=True)
+class _ProbeFailed:
+    """A media probe that failed; its write decides whether to keep or withhold."""
+
+    observation: NodeObservation
+    kind: ProbeFailure
+    reason: str
+
+
+# What a write publishes: an observation, or a failed probe of one.
+type _Outcome = NodeObservation | _ProbeFailed
+
+
+def _observation_of(outcome: _Outcome) -> NodeObservation:
+    return outcome.observation if isinstance(outcome, _ProbeFailed) else outcome
+
+
 @dataclass
 class _Workers:
     """Whether metadata workers must run, how many scopes run them, and the
@@ -238,16 +255,13 @@ class NodeSyncService:
         on any exit before that, cancellation included.
         """
         try:
-            enriched = await self._try_enrich(
-                item.observation, force_refresh=item.force_refresh, read=item.read
+            outcome = await self._try_enrich(
+                item.observation, force_refresh=item.force_refresh
             )
         except BaseException:
             self._order.release(item.read)
             raise
-        if enriched is None:
-            self._order.release(item.read)
-            return
-        await self._put_upserts([(enriched, item.read)])
+        await self._put_outcomes([(outcome, item.read)])
 
     @asynccontextmanager
     async def enrichment_scope(self) -> AsyncGenerator[None, None]:
@@ -312,25 +326,33 @@ class NodeSyncService:
                 self._order.release(read)
             raise
 
-    async def _put_upserts(self, items: list[tuple[NodeObservation, ReadSeq]]) -> None:
+    async def _put_outcomes(self, items: list[tuple[_Outcome, ReadSeq]]) -> None:
         """Enqueue a write of *items*; each read must already be held.
 
-        Observations from reads older than the node's latest applied one are
-        dropped when the write runs. The reads are released once the write
-        runs, or here if it cannot be queued.
+        Outcomes from reads older than the node's latest applied one are dropped
+        when the write runs. A failed probe is decided there too, against the
+        mirror as it is then: a published file keeps its stored dimensions,
+        and any other is withheld with a failure record. The reads are released
+        once the write runs, or here if it cannot be queued.
         """
 
         async def write() -> None:
             try:
-                admitted = [
-                    (o, read)
-                    for o, read in items
-                    if self._order.admits(o.record.id, read)
-                ]
-                applied = await self._mirror.apply_observations(
-                    [o for o, _ in admitted]
-                )
-                for o, read in admitted:
+                publish: list[tuple[NodeObservation, ReadSeq]] = []
+                for outcome, read in items:
+                    observation = _observation_of(outcome)
+                    if not self._order.admits(observation.record.id, read):
+                        continue
+                    if not isinstance(outcome, _ProbeFailed):
+                        publish.append((outcome, read))
+                        continue
+                    kept = await self._keep_or_withhold(outcome, read)
+                    if kept is not None:
+                        publish.append((kept, read))
+                if not publish:
+                    return
+                applied = await self._mirror.apply_observations([o for o, _ in publish])
+                for o, read in publish:
                     if o.record.id in applied:
                         self._order.record(o.record.id, read)
                         if o.backend is not None and o.source_key is not None:
@@ -340,6 +362,49 @@ class NodeSyncService:
                     self._order.release(read)
 
         await self._hand_off(self._write_queue, write, [read for _, read in items])
+
+    async def _keep_or_withhold(
+        self, failed: _ProbeFailed, read: ReadSeq
+    ) -> NodeObservation | None:
+        """From the write job: what an admitted failed probe publishes.
+
+        A file in the mirror is published with its stored dimensions, whatever
+        the observation carried. Any other is withheld: its failure is recorded
+        under the backend's source key, and ``None`` is returned.
+        """
+        observation = failed.observation
+        record = observation.record
+        existing = await self._mirror.get_node_by_id(record.id)
+        if existing is not None:
+            _L.warning(
+                "Keeping the last media dimensions of %s (%s); probing failed: %s",
+                record.id,
+                record.name,
+                failed.reason,
+            )
+            return replace(observation, record=_with_dims_of(record, existing))
+        _L.warning(
+            "Withholding %s (%s); probing failed: %s",
+            record.id,
+            record.name,
+            failed.reason,
+        )
+        backend = observation.backend
+        source_key = observation.source_key
+        if backend is None or source_key is None:
+            _L.warning(
+                "%s has no source key; its media failure is not recorded", record.id
+            )
+            return None
+        await self._mirror.mark_media_failure(backend, source_key, failed.kind)
+        # The failure is what this read observed; an older read's result must
+        # not apply over it.
+        self._order.record(record.id, read)
+        if failed.kind == ProbeFailure.TRANSIENT:
+            self._retries.failed(backend, source_key)
+        else:
+            self._retries.forget(backend, source_key)
+        return None
 
     # --- Shared primitives (used by multiple sources) ---
 
@@ -358,17 +423,14 @@ class NodeSyncService:
         self._order.hold(read)
         observation = self._own(observation)
         try:
-            enriched = await self._try_enrich(
-                observation, force_refresh=False, read=read, strict=strict
+            outcome = await self._try_enrich(
+                observation, force_refresh=False, strict=strict
             )
         except BaseException:
             self._order.release(read)
             raise
-        if enriched is None:
-            self._order.release(read)
-            return observation.record
-        await self._put_upserts([(enriched, read)])
-        return enriched.record
+        await self._put_outcomes([(outcome, read)])
+        return _observation_of(outcome).record
 
     async def delete(self, node_id: NodeId, *, read: ReadSeq) -> None:
         """Enqueue a subtree removal unless a later read already observed the node.
@@ -404,40 +466,31 @@ class NodeSyncService:
             return
         for _ in observations:
             self._order.hold(read)
-        # One hold per observation; those not yet released are owned here.
-        owned = len(observations)
-        enriched: list[tuple[NodeObservation, ReadSeq]] = []
+        outcomes: list[tuple[_Outcome, ReadSeq]] = []
         try:
             for o in observations:
-                o = self._own(o)
-                if (
-                    e := await self._try_enrich(o, force_refresh=False, read=read)
-                ) is not None:
-                    enriched.append((e, read))
-                else:
-                    self._order.release(read)
-                    owned -= 1
+                outcome = await self._try_enrich(self._own(o), force_refresh=False)
+                outcomes.append((outcome, read))
         except BaseException:
-            for _ in range(owned):
+            for _ in observations:
                 self._order.release(read)
             raise
-        if not enriched:
-            return
-        await self._put_upserts(enriched)
+        await self._put_outcomes(outcomes)
 
     async def _try_enrich(
         self,
         observation: NodeObservation,
         *,
         force_refresh: bool,
-        read: ReadSeq,
         strict: bool = False,
-    ) -> NodeObservation | None:
-        """Enrich *observation*, or ``None`` when it is withheld.
+    ) -> _Outcome:
+        """*observation* with its dimensions, or the failed probe of it.
 
-        A published file whose content is unchanged keeps its dimensions without
-        a probe. When the probe fails, a published file keeps its last probed
-        dimensions; a file never published is withheld and its failure recorded.
+        Only media whose stored dimensions do not apply is probed. What a failed
+        probe publishes is decided by its write (``_keep_or_withhold``).
+
+        Raises:
+            MediaEnrichmentError: With *strict*, if the probe fails.
         """
         record = observation.record
         if not _is_media(record):
@@ -461,57 +514,8 @@ class NodeSyncService:
                 raise ValueError(
                     f"Untagged observation of {record.id} needs enrichment"
                 ) from e
-            if existing is not None:
-                _L.warning(
-                    "Keeping the last media dimensions of %s (%s); probing failed: %s",
-                    record.id,
-                    record.name,
-                    e.reason,
-                )
-                return observation
-            _L.warning(
-                "Withholding %s (%s); probing failed: %s",
-                record.id,
-                record.name,
-                e.reason,
-            )
-            await self._mark_media_failure(observation, e.kind, read=read)
-            return None
+            return _ProbeFailed(observation=observation, kind=e.kind, reason=e.reason)
         return replace(observation, record=enriched)
-
-    async def _mark_media_failure(
-        self, observation: NodeObservation, kind: ProbeFailure, *, read: ReadSeq
-    ) -> None:
-        """Record the failure unless a later read already observed the node.
-
-        A transient failure is retried with backoff while the backend serves.
-        """
-        backend = observation.backend
-        source_key = observation.source_key
-        if backend is None or source_key is None:
-            _L.warning(
-                "%s has no source key; its media failure is not recorded",
-                observation.record.id,
-            )
-            return
-        node_id = observation.record.id
-        self._order.hold(read)
-
-        async def mark() -> None:
-            try:
-                if self._order.admits(node_id, read):
-                    await self._mirror.mark_media_failure(backend, source_key, kind)
-                    # The failure is what this read observed; an older read's
-                    # result must not apply over it.
-                    self._order.record(node_id, read)
-                    if kind == ProbeFailure.TRANSIENT:
-                        self._retries.failed(backend, source_key)
-                    else:
-                        self._retries.forget(backend, source_key)
-            finally:
-                self._order.release(read)
-
-        await self._hand_off(self._write_queue, mark, [read])
 
     async def upsert_file_batch(
         self, observations: list[NodeObservation], *, read: ReadSeq
@@ -559,7 +563,7 @@ class NodeSyncService:
             raise
 
         if skip_batch:
-            await self._put_upserts(skip_batch)
+            await self._put_outcomes(list(skip_batch))
 
     async def retry_media_failures(self, *, locate: LocateSource) -> None:
         """Observe the files whose media probe failed again, and probe them.

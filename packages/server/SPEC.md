@@ -768,8 +768,10 @@ failed probe never removes a node already in the mirror.
   metadata change).
 
 Only a file not yet in the mirror is withheld. A file already in the mirror keeps
-its stored dimensions when a probe fails, even if they are zero, because the
-upsert never overwrites nonzero dimensions with zero:
+its stored dimensions when a probe fails, even if they are zero. The prober only
+reports the failure; the write that applies it decides, after the read-order
+check and against the mirror as it is then, so a publication queued before it
+counts, and the stored dimensions are written whatever the observation carried:
 
 | Case | Behavior |
 | --- | --- |
