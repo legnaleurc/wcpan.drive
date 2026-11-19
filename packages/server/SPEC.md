@@ -229,9 +229,10 @@ produced it, travels through the same stages.
 
 Enrichment is a step that can run two ways. `Changes.upserted` runs it in the caller,
 because the caller needs the result and should not queue behind a scan backlog; it still
-shares probe capacity with the workers. The scan runner submits file batches to the
-enrichment queue. Directories need no probe, and a file whose dimensions can be reused
-goes straight to Write.
+shares probe capacity with the workers. The scan runner submits file batches; only images
+and videos whose stored dimensions do not apply enter the enrichment queue. Directories,
+other files, and media whose dimensions can be reused go straight to Write, so they need
+no enrichment workers, offline included.
 
 #### Pipelines
 

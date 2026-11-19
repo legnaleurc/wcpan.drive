@@ -61,6 +61,16 @@ def _with_dims_of(record: NodeRecord, source: NodeRecord) -> NodeRecord:
     )
 
 
+def _is_media(record: NodeRecord) -> bool:
+    """Whether *record* is an image or video, the only files probed."""
+    return record.is_image or record.is_video
+
+
+def _needs_probe(existing: NodeRecord | None, record: NodeRecord) -> bool:
+    """Whether *record* must be probed: media whose stored dimensions do not apply."""
+    return _is_media(record) and not _reusable_dims(existing, record)
+
+
 def _reusable_dims(existing: NodeRecord | None, record: NodeRecord) -> bool:
     """True when *existing*'s media dimensions still describe *record*.
 
@@ -430,11 +440,10 @@ class NodeSyncService:
         dimensions; a file never published is withheld and its failure recorded.
         """
         record = observation.record
-        existing = (
-            await self._mirror.get_node_by_id(record.id)
-            if record.is_image or record.is_video
-            else None
-        )
+        if not _is_media(record):
+            # Directories and other files are never probed.
+            return observation
+        existing = await self._mirror.get_node_by_id(record.id)
         if existing is not None and _reusable_dims(existing, record):
             return replace(observation, record=_with_dims_of(record, existing))
         if observation.backend is not None and observation.source_key is not None:
@@ -507,7 +516,10 @@ class NodeSyncService:
     async def upsert_file_batch(
         self, observations: list[NodeObservation], *, read: ReadSeq
     ) -> None:
-        """Write files whose stored dimensions still apply; queue the rest for probing.
+        """Queue media that needs a probe; write every other file directly.
+
+        Only an image or video whose stored dimensions do not apply is probed;
+        other files, and media keeping its dimensions, are written as observed.
 
         First waits for the writes queued before this call, not later ones, so
         the stored records it reads, here and in the metadata worker, include
@@ -527,12 +539,13 @@ class NodeSyncService:
         try:
             await self.barrier()
 
-            node_ids = [o.record.id for o in observations]
-            existing = await self._mirror.get_nodes_by_ids(node_ids)
+            media_ids = [o.record.id for o in observations if _is_media(o.record)]
+            existing = (
+                await self._mirror.get_nodes_by_ids(media_ids) if media_ids else {}
+            )
 
             for o in observations:
-                db_rec = existing.get(o.record.id)
-                if _reusable_dims(db_rec, o.record):
+                if not _needs_probe(existing.get(o.record.id), o.record):
                     skip_batch.append((o, read))
                 else:
                     self._check_workers()

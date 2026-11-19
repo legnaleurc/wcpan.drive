@@ -84,6 +84,11 @@ def _node(
     )
 
 
+def _image(name: str, parent_id: NodeId) -> NodeRecord:
+    """A file that needs a probe, unlike ``_node``'s."""
+    return replace(_node(name, parent_id), is_image=True, mime_type="image/png")
+
+
 def _folder(name: str, parent_id: NodeId) -> NodeRecord:
     return _node(name, parent_id, is_directory=True)
 
@@ -493,7 +498,7 @@ class ScanPassTest(_FlowTestCase):
         # given
         gate = _Gate()
         self.enricher.gates[_id("f")] = gate
-        scanner = _Scanner(_Source([_node("f", _A)]))
+        scanner = _Scanner(_Source([_image("f", _A)]))
         seen: list[bool] = []
 
         async def on_root_finished() -> None:
@@ -627,7 +632,7 @@ class ScanFailureTest(_FlowTestCase):
         gate = _Gate()
         self.enricher.gates[_id("f")] = gate
         log: list[str] = []
-        source = _Source([_node("f", _A), _folder("d", _A)])
+        source = _Source([_image("f", _A), _folder("d", _A)])
         failing = _Scanner(source, log=log)
         failing.broken_handles.add(_id("d"))
         failed = asyncio.create_task(self.scan(failing))
@@ -984,7 +989,7 @@ class ObserveTest(_FlowTestCase):
         # when
         with self.assertRaises(MediaEnrichmentError):
             async with self.core.observe() as changes:
-                await changes.upserted(_obs(_node("f", _A)), strict=True)
+                await changes.upserted(_obs(_image("f", _A)), strict=True)
                 reached_after = True
         # then
         self.assertFalse(reached_after)
@@ -1140,7 +1145,7 @@ class EnrichmentTest(_FlowTestCase):
         gate = _Gate()
         self.enricher.gates[_id("f")] = gate
         async with self.sync.observe() as read:
-            await self.sync.upsert_file_batch([_obs(_node("f", _A))], read=read)
+            await self.sync.upsert_file_batch([_obs(_image("f", _A))], read=read)
         await gate.entered.wait()
         draining = asyncio.create_task(self.core.enrichment.drain())
         await self.settle()

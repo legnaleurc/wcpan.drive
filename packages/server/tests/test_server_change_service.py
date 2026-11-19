@@ -527,6 +527,31 @@ class TestNodeSyncServiceUpsertFileBatch(IsolatedAsyncioTestCase):
         self.assertEqual(mq.qsize(), 0)
         self.assertGreaterEqual(wq.qsize(), 1)
 
+    async def test_new_file_that_is_not_media_writes_directly(self):
+        # given
+        mq: asyncio.Queue = asyncio.Queue()
+        cs, _, wq = _make_service(metadata_queue=mq)
+        # when
+        async with cs.observe() as read:
+            await cs.upsert_file_batch([_obs(_make_record("n1"))], read=read)
+        # then
+        self.assertEqual((mq.qsize(), wq.qsize()), (0, 1))
+
+    async def test_changed_file_that_is_not_media_writes_directly(self):
+        # given
+        mq: asyncio.Queue = asyncio.Queue()
+        mirror = _FakeMirror()
+        mirror._nodes["n1"] = _make_record("n1")
+        cs, mirror, wq = _make_service(mirror, metadata_queue=mq)
+        changed = replace(_make_record("n1"), size=99, hash="changed")
+        # when
+        async with cs.observe() as read:
+            await cs.upsert_file_batch([_obs(changed)], read=read)
+        # then
+        self.assertEqual((mq.qsize(), wq.qsize()), (0, 1))
+        await wq.get_nowait()()
+        self.assertEqual(mirror._nodes["n1"].size, 99)
+
     async def test_unchanged_other_file_writes_directly(self):
         # given
         mq: asyncio.Queue = asyncio.Queue()
@@ -587,7 +612,7 @@ class TestNodeSyncServiceLifecycle(IsolatedAsyncioTestCase):
         # given
         mq: asyncio.Queue = asyncio.Queue()
         cs, mirror, wq = _make_service(metadata_queue=mq)
-        record = _make_record()
+        record = _make_record(is_image=True)
         async with cs.observe() as read:
             await cs.upsert_file_batch([_obs(record)], read=read)
         item = mq.get_nowait()
@@ -684,7 +709,7 @@ class TestHeldReadOwnership(IsolatedAsyncioTestCase):
         # given
         mq: asyncio.Queue = asyncio.Queue()
         cs, _, wq = _make_service(metadata_queue=mq)
-        record = _make_record()
+        record = _make_record(is_image=True)
         async with cs.observe() as read:
             await cs.upsert_file_batch([_obs(record)], read=read)
         item = mq.get_nowait()
@@ -998,6 +1023,15 @@ class TestOfflineWorkersRequired(IsolatedAsyncioTestCase):
             await cs.upsert_batch(
                 [_obs(_make_record("d", is_directory=True))], read=read
             )
+        # then
+        self.assertEqual(mq.qsize(), 0)
+
+    async def test_files_that_are_not_media_need_no_workers(self):
+        # given
+        cs, mq = self._service()
+        # when
+        async with cs.observe() as read:
+            await cs.upsert_file_batch([_obs(_make_record("f"))], read=read)
         # then
         self.assertEqual(mq.qsize(), 0)
 

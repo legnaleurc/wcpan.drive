@@ -130,6 +130,15 @@ def _syno_item(
     }
 
 
+def _image(
+    node_id: str, parent_id: str | None, *, name: str | None = None
+) -> NodeRecord:
+    """A file that needs a probe, unlike ``_node``'s."""
+    return replace(
+        _node(node_id, parent_id, name=name), is_image=True, mime_type="image/png"
+    )
+
+
 class _Gate:
     """Blocks enrichment of selected records until released."""
 
@@ -228,7 +237,7 @@ class _RaceTestCase(DecoyTestCase):
 class TestStaleEnrichment(_RaceTestCase):
     async def test_pending_enrichment_does_not_resurrect_deleted_node(self) -> None:
         # given
-        f = _node("f", _MOUNT)
+        f = _image("f", _MOUNT)
         await self.mirror.bulk_upsert_nodes([f])
         gate = self.gate(lambda r: r.id == "f")
         # Changed content, so the file is probed again.
@@ -248,7 +257,7 @@ class TestStaleEnrichment(_RaceTestCase):
 
     async def test_pending_enrichment_does_not_overwrite_newer_upsert(self) -> None:
         # given
-        old = _node("f", _MOUNT, name="old")
+        old = _image("f", _MOUNT, name="old")
         new = replace(old, name="new")
         gate = self.gate(lambda r: r.name == "old")
 
@@ -271,7 +280,7 @@ class TestStaleEnrichment(_RaceTestCase):
     ) -> None:
         # given
         d = _node("d", _MOUNT, is_directory=True)
-        f = _node("f", "d")
+        f = _image("f", "d")
         await self.mirror.bulk_upsert_nodes([d])
         gate = self.gate(lambda r: r.id == "f")
 
@@ -291,7 +300,7 @@ class TestStaleEnrichment(_RaceTestCase):
         self,
     ) -> None:
         # given
-        f = _node("f", _MOUNT)
+        f = _image("f", _MOUNT)
         await self.mirror.bulk_upsert_nodes([f])
         gate = self.gate(lambda r: r.id == "f")
 
@@ -307,8 +316,8 @@ class TestStaleEnrichment(_RaceTestCase):
 
     async def test_unrelated_pending_enrichment_still_applies(self) -> None:
         # given
-        f = _node("f", _MOUNT)
-        g = _node("g", _MOUNT)
+        f = _image("f", _MOUNT)
+        g = _image("g", _MOUNT)
         await self.mirror.bulk_upsert_nodes([g])
         gate = self.gate(lambda r: r.id == "f")
 
